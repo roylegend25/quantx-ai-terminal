@@ -59,6 +59,7 @@ class StrategyRollingMetrics(Base):
     sharpe_ratio = Column(Float, default=0.0)
     max_drawdown = Column(Float, default=0.0)
     average_confidence = Column(Float, default=0.0)
+    current_weight = Column(Float, default=0.25)
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     trades_json = Column(Text, default="[]")

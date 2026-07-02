@@ -60,7 +60,9 @@ def test_persists_across_fresh_reads():
     assert stats["average_r_multiple"] == 1.5
 
 
-def test_no_current_weight_field_on_shadow_row():
-    # this table is deliberately not the production weight source
+def test_shadow_current_weight_defaults_and_is_not_production():
+    # the shadow table's current_weight is the Weight Calculator's candidate
+    # output (tests/test_weight_calculator.py) - it is never read by
+    # ensemble.py, unlike StrategyPerformance.current_weight
     stats = repository.get("trend")
-    assert "current_weight" not in stats
+    assert stats["current_weight"] == 0.25

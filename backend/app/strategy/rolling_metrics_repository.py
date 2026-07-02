@@ -20,6 +20,7 @@ def _row_to_dict(row: StrategyRollingMetrics) -> dict:
         "sharpe_ratio": row.sharpe_ratio,
         "max_drawdown": row.max_drawdown,
         "average_confidence": row.average_confidence,
+        "current_weight": row.current_weight,
         "regime_performance": json.loads(row.regime_performance_json or "{}"),
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }

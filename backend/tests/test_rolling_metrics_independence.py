@@ -78,3 +78,8 @@ def test_closing_trade_updates_both_repositories_independently(monkeypatch):
     # this shadow table existed (unchanged behavior, same call site)
     weights_after = performance_repository.get_weights()
     assert weights_after["trend"] > weights_before["trend"]
+
+    # the shadow candidate weight is also live now, computed independently
+    shadow_weights = rolling_metrics_repository.get_all()
+    assert abs(sum(s["current_weight"] for s in shadow_weights.values()) - 1.0) < 1e-6
+    assert shadow_weights["trend"]["current_weight"] > DEFAULT_WEIGHT

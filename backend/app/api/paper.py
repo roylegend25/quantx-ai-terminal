@@ -9,6 +9,7 @@ from app.db.session import get_db
 from app.db.models import Trade, Portfolio
 from app.strategy.performance_repository import repository as performance_repository
 from app.strategy.rolling_metrics_repository import repository as rolling_metrics_repository
+from app.strategy import weight_calculator
 
 router = APIRouter(prefix="/api/paper", tags=["paper"])
 
@@ -181,6 +182,7 @@ async def close_trade(trade_id: int, db: Session = Depends(get_db)):
                 regime=trade.regime,
                 db=db,
             )
+        weight_calculator.recompute_and_store(db=db)
 
     return {
         "ok": True,
