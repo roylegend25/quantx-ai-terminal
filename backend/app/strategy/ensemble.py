@@ -1,6 +1,7 @@
 from app.strategy.manager import StrategyManager
 from app.strategy.regime import detect
 from app.strategy.performance_repository import repository as performance_repository
+from app.intelligence import market_intelligence
 
 manager = StrategyManager()
 
@@ -18,7 +19,7 @@ def _probability_up(result: dict) -> float:
     return 50.0
 
 
-def evaluate(features: dict):
+def evaluate(features: dict, market_context: dict | None = None):
 
     strategies = manager.evaluate(features)
 
@@ -42,10 +43,17 @@ def evaluate(features: dict):
     else:
         direction = "NO_TRADE"
 
+    # market context only ever nudges confidence - it never changes direction
+    context_adjustment = 0.0
+    if market_context:
+        context_adjustment = market_intelligence.confidence_adjustment(market_context, direction)
+        confidence = round(max(0.0, min(100.0, confidence + context_adjustment)), 1)
+
     return {
         "regime": regime,
         "strategies": strategies,
         "weights": weights,
+        "market_context_adjustment": context_adjustment,
         "ensemble": {
             "direction": direction,
             "confidence": confidence,

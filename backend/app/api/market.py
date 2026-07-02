@@ -1,9 +1,17 @@
 from fastapi import APIRouter
 import httpx
 
+from app.core.config import settings
+from app.intelligence import market_intelligence
+
 router = APIRouter(prefix="/api/market", tags=["market"])
 
 BINANCE_FAPI = "https://fapi.binance.com"
+
+# registered before /{symbol} so "context" isn't swallowed as a symbol
+@router.get("/context")
+async def get_market_context(symbol: str = settings.default_symbol):
+    return await market_intelligence.get_context(symbol)
 
 @router.get("/{symbol}")
 async def get_market(symbol: str):

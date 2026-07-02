@@ -3,13 +3,14 @@ import httpx
 from app.quant.indicators import compute_features
 from app.trading.risk_manager import calculate_levels
 from app.strategy.ensemble import evaluate as ensemble_evaluate
+from app.intelligence import market_intelligence
 
 router = APIRouter(prefix="/api/prediction", tags=["prediction"])
 
 BINANCE_FAPI = "https://fapi.binance.com"
 
-def make_prediction(features: dict):
-    ens = ensemble_evaluate(features)
+def make_prediction(features: dict, market_context: dict | None = None):
+    ens = ensemble_evaluate(features, market_context)
     decision = ens["ensemble"]
 
     price = features["price"]
@@ -36,6 +37,8 @@ def make_prediction(features: dict):
         "trade_quality": round(decision["confidence"] / 10, 2),
         "strategies": ens["strategies"],
         "strategy_weights": ens["weights"],
+        "market_context": market_context,
+        "market_context_adjustment": ens["market_context_adjustment"],
         "risk": {
             "allowed": decision["direction"] != "NO_TRADE" and decision["confidence"] >= 70,
             "reason": "Risk checks passed" if decision["confidence"] >= 70 else "Confidence below threshold",
@@ -69,8 +72,13 @@ async def prediction(symbol: str, interval: str = "5m", limit: int = 220):
 
     features = compute_features(candles)["symbol_features"]
 
+    try:
+        market_context = await market_intelligence.get_context(symbol)
+    except Exception:
+        market_context = None
+
     return {
         "symbol": symbol,
         "interval": interval,
-        "prediction": make_prediction(features),
+        "prediction": make_prediction(features, market_context),
     }
