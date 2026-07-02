@@ -798,3 +798,44 @@ opacity:.7;
   border-left: 3px solid #7c5cff;
 }
 
+.regime-focus.allowed {
+  border-left-color: #00f5a0;
+}
+
+.regime-focus.blocked {
+  border-left-color: #ff5d73;
+}
+
+.decision-center {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.decision-updated {
+  margin-left: auto;
+  color: #8b90a8;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.1);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+

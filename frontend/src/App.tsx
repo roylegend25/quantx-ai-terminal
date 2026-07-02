@@ -20,6 +20,7 @@ import BacktestCard from "./components/Dashboard/BacktestCard";
 import PortfolioAnalytics from "./components/Dashboard/PortfolioAnalytics";
 import AIDecisionFlow from "./components/Dashboard/AIDecisionFlow";
 import MarketRegimePanel from "./components/Dashboard/MarketRegimePanel";
+import AIDecisionCenter from "./components/Dashboard/AIDecisionCenter";
 import LoginPage from "./components/Auth/LoginPage";
 import { authFetch, getToken, logout } from "./services/auth";
 
@@ -58,6 +59,7 @@ function App() {
   const [positions, setPositions] = useState<any[]>([]);
   const [history, setHistory] = useState<any[]>([]);
   const [backtest, setBacktest] = useState<any>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   async function load() {
     const [dashRes, predRes, candlesRes] = await Promise.all([
@@ -101,6 +103,7 @@ function App() {
         }),
       }))
     );
+    setLastUpdated(new Date());
   }
 
   
@@ -314,6 +317,10 @@ async function botAction(action: string) {
 
           <Card title="AI Decision Flow" full>
             <AIDecisionFlow prediction={prediction} ticker={ticker} />
+          </Card>
+
+          <Card title="AI Decision Center" full>
+            <AIDecisionCenter symbol={symbol} prediction={prediction} lastUpdated={lastUpdated} />
           </Card>
 
           <Card title="Live Order Book">
