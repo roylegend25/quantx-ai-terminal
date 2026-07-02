@@ -35,6 +35,7 @@ def make_prediction(features: dict):
         "feature_regime": features["regime"],
         "trade_quality": round(decision["confidence"] / 10, 2),
         "strategies": ens["strategies"],
+        "strategy_weights": ens["weights"],
         "risk": {
             "allowed": decision["direction"] != "NO_TRADE" and decision["confidence"] >= 70,
             "reason": "Risk checks passed" if decision["confidence"] >= 70 else "Confidence below threshold",
