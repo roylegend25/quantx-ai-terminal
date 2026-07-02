@@ -8,6 +8,7 @@ import httpx
 from app.db.session import get_db
 from app.db.models import Trade, Portfolio
 from app.strategy.performance_repository import repository as performance_repository
+from app.strategy.rolling_metrics_repository import repository as rolling_metrics_repository
 
 router = APIRouter(prefix="/api/paper", tags=["paper"])
 
@@ -165,6 +166,14 @@ async def close_trade(trade_id: int, db: Session = Depends(get_db)):
             if result.get("direction") != trade.side:
                 continue
             performance_repository.update_metrics(
+                name,
+                r_multiple=r_multiple,
+                win=pnl >= 0,
+                confidence=result.get("confidence") or 0,
+                regime=trade.regime,
+                db=db,
+            )
+            rolling_metrics_repository.record_trade(
                 name,
                 r_multiple=r_multiple,
                 win=pnl >= 0,

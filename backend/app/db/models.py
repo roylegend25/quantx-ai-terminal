@@ -41,6 +41,29 @@ class StrategyPerformance(Base):
     trades_json = Column(Text, default="[]")
     regime_performance_json = Column(Text, default="{}")
 
+class StrategyRollingMetrics(Base):
+    """Shadow rolling-window stats for future weighting work.
+
+    Independent of StrategyPerformance.current_weight (the value ensemble.py
+    actually consumes) - writing here has no effect on live predictions.
+    """
+    __tablename__ = "strategy_rolling_metrics"
+
+    strategy_name = Column(String, primary_key=True)
+    trades = Column(Integer, default=0)
+    wins = Column(Integer, default=0)
+    losses = Column(Integer, default=0)
+    rolling_win_rate = Column(Float, default=0.0)
+    average_r_multiple = Column(Float, default=0.0)
+    profit_factor = Column(Float, default=0.0)
+    sharpe_ratio = Column(Float, default=0.0)
+    max_drawdown = Column(Float, default=0.0)
+    average_confidence = Column(Float, default=0.0)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    trades_json = Column(Text, default="[]")
+    regime_performance_json = Column(Text, default="{}")
+
 class Portfolio(Base):
     __tablename__ = "portfolio"
 
