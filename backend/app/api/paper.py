@@ -1,12 +1,20 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
+from pydantic import BaseModel
+import json
 import httpx
 
 from app.db.session import get_db
 from app.db.models import Trade, Portfolio
+from app.strategy import weighting
 
 router = APIRouter(prefix="/api/paper", tags=["paper"])
+
+
+class StrategyContext(BaseModel):
+    regime: str | None = None
+    strategies: dict | None = None
 
 BINANCE_FAPI = "https://fapi.binance.com"
 
@@ -63,6 +71,7 @@ async def open_trade(
     usdt_size: float = 1000,
     sl: float | None = None,
     tp: float | None = None,
+    context: StrategyContext | None = None,
     db: Session = Depends(get_db),
 ):
     symbol = symbol.upper()
@@ -83,6 +92,8 @@ async def open_trade(
         sl=sl,
         tp=tp,
         pnl=0.0,
+        regime=context.regime if context else None,
+        strategy_snapshot=json.dumps(context.strategies) if context and context.strategies else None,
     )
 
     db.add(trade)
@@ -117,8 +128,20 @@ async def close_trade(trade_id: int, db: Session = Depends(get_db)):
 
     if trade.side == "LONG":
         pnl = (exit_price - trade.entry) * trade.qty
+        price_diff = exit_price - trade.entry
     else:
         pnl = (trade.entry - exit_price) * trade.qty
+        price_diff = trade.entry - exit_price
+
+    if trade.sl is not None:
+        risk_per_unit = abs(trade.entry - trade.sl)
+    else:
+        risk_per_unit = 0.0
+
+    if risk_per_unit > 0:
+        r_multiple = price_diff / risk_per_unit
+    else:
+        r_multiple = price_diff / (trade.entry * 0.01) if trade.entry else 0.0
 
     trade.exit = exit_price
     trade.pnl = pnl
@@ -135,6 +158,20 @@ async def close_trade(trade_id: int, db: Session = Depends(get_db)):
         p.losses += 1
 
     db.commit()
+
+    if trade.strategy_snapshot:
+        snapshot = json.loads(trade.strategy_snapshot)
+        for name, result in snapshot.items():
+            if result.get("direction") != trade.side:
+                continue
+            weighting.record_trade_result(
+                name,
+                r_multiple=r_multiple,
+                win=pnl >= 0,
+                confidence=result.get("confidence") or 0,
+                regime=trade.regime,
+                db=db,
+            )
 
     return {
         "ok": True,

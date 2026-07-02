@@ -53,6 +53,10 @@ class TradingEngine:
                         "sl": prediction["stop"],
                         "tp": prediction["target"],
                     },
+                    json={
+                        "regime": prediction["regime"],
+                        "strategies": prediction["strategies"],
+                    },
                 )
 
                 print("Trade opened.")

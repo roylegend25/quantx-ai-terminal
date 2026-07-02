@@ -2,12 +2,14 @@ from app.strategy import (
     trend,
     momentum,
     mean_reversion,
+    breakout,
 )
 
 STRATEGIES = {
     "trend": trend.evaluate,
     "momentum": momentum.evaluate,
     "mean_reversion": mean_reversion.evaluate,
+    "breakout": breakout.evaluate,
 }
 
 class StrategyManager:
