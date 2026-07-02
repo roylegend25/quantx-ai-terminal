@@ -24,6 +24,11 @@ class Settings(BaseSettings):
 
     paper_database_url: str = "sqlite:////app/data/paper.db"
 
+    secret_key: str
+    access_token_expire_minutes: int = 10080
+    admin_username: str = "admin"
+    admin_password_hash: str = ""
+
     class Config:
         env_file = ".env"
         extra = "ignore"

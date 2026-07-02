@@ -6,6 +6,7 @@ import {
   Bot,
   Brain,
   ChartCandlestick,
+  LogOut,
   PauseCircle,
   PlayCircle,
   Shield,
@@ -16,6 +17,8 @@ import {
 import "./App.css";
 import StrategyVotes from "./components/Dashboard/StrategyVotes";
 import BacktestCard from "./components/Dashboard/BacktestCard";
+import LoginPage from "./components/Auth/LoginPage";
+import { authFetch, getToken, logout } from "./services/auth";
 
 const API = "";
 
@@ -40,6 +43,7 @@ function Card({ title, children, wide = false }: any) {
 }
 
 function App() {
+  const [authed, setAuthed] = useState<boolean | null>(null);
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [dashboard, setDashboard] = useState<DashboardData>(null);
   const [prediction, setPrediction] = useState<PredictionData>(null);
@@ -54,10 +58,10 @@ function App() {
 
   async function load() {
     const [dashRes, predRes, candlesRes] = await Promise.all([
-      fetch(`${API}/api/dashboard`),
-      fetch(`${API}/api/prediction/${symbol}`),
-      fetch(`${API}/api/market/${symbol}/candles?limit=220`),
-      fetch(`${API}/api/orderbook/${symbol}?limit=10`),
+      authFetch(`${API}/api/dashboard`),
+      authFetch(`${API}/api/prediction/${symbol}`),
+      authFetch(`${API}/api/market/${symbol}/candles?limit=220`),
+      authFetch(`${API}/api/orderbook/${symbol}?limit=10`),
     ]);
 
     const dash = await dashRes.json();
@@ -67,21 +71,21 @@ function App() {
     setDashboard(dash);
     setPrediction(pred.prediction);
     try {
-      const obRes = await fetch(`${API}/api/orderbook/${symbol}?limit=10`);
+      const obRes = await authFetch(`${API}/api/orderbook/${symbol}?limit=10`);
       setOrderbook(await obRes.json());
 
-    const tradesRes = await fetch(`${API}/api/trades/${symbol}?limit=20`);
+    const tradesRes = await authFetch(`${API}/api/trades/${symbol}?limit=20`);
     const tradesData = await tradesRes.json();
     setTrades(tradesData.trades || []);
 
-    const portfolioRes = await fetch(`${API}/api/paper/portfolio`);
+    const portfolioRes = await authFetch(`${API}/api/paper/portfolio`);
     setPortfolio(await portfolioRes.json());
 
-    const positionsRes = await fetch(`${API}/api/paper/positions`);
+    const positionsRes = await authFetch(`${API}/api/paper/positions`);
     const positionsData = await positionsRes.json();
     setPositions(positionsData.positions || []);
 
-    const historyRes = await fetch(`${API}/api/paper/history`);
+    const historyRes = await authFetch(`${API}/api/paper/history`);
     const historyData = await historyRes.json();
     setHistory(historyData.trades || []);
     } catch {}
@@ -98,7 +102,7 @@ function App() {
 
   
 async function runBacktest() {
-  const res = await fetch(`${API}/api/backtest/run?symbol=${symbol}&interval=5m`);
+  const res = await authFetch(`${API}/api/backtest/run?symbol=${symbol}&interval=5m`);
   const data = await res.json();
   const results = data.results || data;
 
@@ -113,14 +117,14 @@ async function runBacktest() {
 }
 
 async function openPaperTrade(side: "LONG" | "SHORT") {
-  await fetch(`${API}/api/paper/open?symbol=${symbol}&side=${side}&usdt_size=1000`, {
+  await authFetch(`${API}/api/paper/open?symbol=${symbol}&side=${side}&usdt_size=1000`, {
     method: "POST",
   });
   load();
 }
 
 async function closePaperTrade(id:number){
-  await fetch(`${API}/api/paper/close/${id}`,{
+  await authFetch(`${API}/api/paper/close/${id}`,{
     method:"POST"
   });
   load();
@@ -128,17 +132,39 @@ async function closePaperTrade(id:number){
 
 async function botAction(action: string) {
 
-    const res = await fetch(`${API}/api/bot/${action}`, { method: "POST" });
+    const res = await authFetch(`${API}/api/bot/${action}`, { method: "POST" });
     const data = await res.json();
     setToast(data.message);
     setTimeout(() => setToast(""), 3000);
   }
 
   useEffect(() => {
+    if (!getToken()) {
+      setAuthed(false);
+      return;
+    }
+    authFetch(`${API}/api/auth/me`).then((res) => setAuthed(res.ok));
+  }, []);
+
+  function handleLogout() {
+    logout();
+    setAuthed(false);
+  }
+
+  useEffect(() => {
+    if (!authed) return;
     load();
     const id = setInterval(load, 10000);
     return () => clearInterval(id);
-  }, [symbol]);
+  }, [symbol, authed]);
+
+  if (authed === null) {
+    return null;
+  }
+
+  if (!authed) {
+    return <LoginPage onSuccess={() => setAuthed(true)} />;
+  }
 
   const market = dashboard?.symbols?.[symbol];
   const ticker = market?.ticker;
@@ -180,6 +206,9 @@ async function botAction(action: string) {
             <b>{dashboard?.bot?.status || "loading"}</b>
             <span>{dashboard?.mode || "paper"} mode</span>
           </div>
+          <button className="logout-btn" onClick={handleLogout} title="Log out">
+            <LogOut size={18} />
+          </button>
         </div>
       </aside>
 

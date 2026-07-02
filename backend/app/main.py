@@ -1,6 +1,7 @@
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
+from app.api.auth import router as auth_router
 from app.api.market import router as market_router
 from app.api.dashboard import router as dashboard_router
 from app.api.quant import router as quant_router
@@ -12,6 +13,7 @@ from app.api.paper import router as paper_router
 from app.api.ws import router as ws_router
 from app.api.backtest import router as backtest_router
 from datetime import datetime, timezone
+from app.core.deps import get_current_user
 from app.db.init_db import init_db
 from app.trading.scheduler import start_scheduler
 from app.trading.position_manager import start_position_manager
@@ -36,16 +38,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(market_router)
-app.include_router(dashboard_router)
-app.include_router(quant_router)
-app.include_router(prediction_router)
-app.include_router(bot_router)
-app.include_router(orderbook_router)
-app.include_router(trades_router)
-app.include_router(paper_router)
+protected = [Depends(get_current_user)]
+
+app.include_router(auth_router)
+app.include_router(market_router, dependencies=protected)
+app.include_router(dashboard_router, dependencies=protected)
+app.include_router(quant_router, dependencies=protected)
+app.include_router(prediction_router, dependencies=protected)
+app.include_router(bot_router, dependencies=protected)
+app.include_router(orderbook_router, dependencies=protected)
+app.include_router(trades_router, dependencies=protected)
+app.include_router(paper_router, dependencies=protected)
 app.include_router(ws_router)
-app.include_router(backtest_router)
+app.include_router(backtest_router, dependencies=protected)
 
 @app.get("/api/health")
 async def health():
