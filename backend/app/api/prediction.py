@@ -31,7 +31,8 @@ def make_prediction(features: dict):
         "stop": levels.stop_loss,
         "trailing_stop": levels.trailing_stop,
         "break_even": levels.break_even,
-        "regime": features["regime"],
+        "regime": ens["regime"],
+        "feature_regime": features["regime"],
         "trade_quality": round(decision["confidence"] / 10, 2),
         "strategies": ens["strategies"],
         "risk": {
