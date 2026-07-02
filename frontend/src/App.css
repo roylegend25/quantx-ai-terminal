@@ -17,6 +17,7 @@
 body {
   margin: 0;
   min-height: 100vh;
+  overflow-x: hidden;
   background:
     radial-gradient(circle at 20% 10%, rgba(124, 92, 255, 0.25), transparent 30%),
     radial-gradient(circle at 80% 0%, rgba(0, 245, 212, 0.15), transparent 30%),
@@ -403,16 +404,143 @@ button, select, input {
   }
 }
 
-@media (max-width: 1000px) {
+@media (max-width: 900px) {
   .app {
     flex-direction: column;
+    min-width: 0;
   }
+
+  .main {
+    padding: 16px 14px 32px;
+    min-width: 0;
+  }
+
+  /* ---------- Sidebar -> compact sticky top nav ---------- */
 
   .sidebar {
     width: 100%;
     height: auto;
-    position: relative;
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    flex-direction: column;
+    padding: 10px 14px;
+    gap: 10px;
+    border-right: none;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
   }
+
+  .sidebar .brand {
+    margin-bottom: 0;
+  }
+
+  .sidebar .brand-icon {
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    font-size: 11px;
+  }
+
+  .sidebar .brand h1 {
+    font-size: 14px;
+  }
+
+  .sidebar .brand p {
+    display: none;
+  }
+
+  .nav-list {
+    flex-direction: row;
+    flex: 0 0 auto;
+    overflow-x: auto;
+    overflow-y: hidden;
+    gap: 6px;
+    padding-bottom: 2px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .nav {
+    flex: 0 0 auto;
+    padding: 8px 12px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  /* Bot Status card collapses to a compact row instead of a tall panel */
+  .status-box {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 0;
+    padding: 8px 12px;
+    border-radius: 14px;
+    text-align: left;
+    gap: 8px 10px;
+  }
+
+  .status-box-head {
+    width: auto;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  .bot-orb,
+  .status-stats {
+    display: none;
+  }
+
+  .status-box-actions {
+    width: auto;
+    margin-top: 0;
+  }
+
+  .icon-btn.danger {
+    flex: 0 0 auto;
+    display: flex;
+    width: auto;
+    height: auto;
+    padding: 8px 12px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  /* ---------- Topbar / market ticker ---------- */
+
+  .topbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    min-width: 0;
+  }
+
+  .topbar-brand {
+    justify-content: space-between;
+  }
+
+  .ticker-strip {
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 10px 14px;
+  }
+
+  .ticker-item {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .topbar-actions {
+    justify-content: space-between;
+  }
+
+  /* ---------- Grids stack cleanly, full width ---------- */
 
   .dash-row-1, .dash-row-2, .dash-row-3, .page-grid {
     grid-template-columns: 1fr;
@@ -424,6 +552,20 @@ button, select, input {
 
   .card.wide, .card.full {
     grid-column: auto;
+  }
+
+  .card, .stack-card, .chart-card, .prediction-card {
+    width: 100%;
+  }
+
+  .dial {
+    width: 160px;
+    height: 160px;
+  }
+
+  .dial-inner {
+    width: 124px;
+    height: 124px;
   }
 }
 
