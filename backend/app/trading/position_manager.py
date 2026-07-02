@@ -2,16 +2,22 @@ import asyncio
 import httpx
 from datetime import datetime, timezone
 from app.core.config import settings
+from app.core.security import create_internal_service_token
 
 API = "http://127.0.0.1:8000"
 RUNNING = False
+_TOKEN = None
 
 async def manage_positions():
-    global RUNNING
+    global RUNNING, _TOKEN
 
     while RUNNING:
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            if _TOKEN is None:
+                _TOKEN = create_internal_service_token()
+
+            headers = {"Authorization": f"Bearer {_TOKEN}"}
+            async with httpx.AsyncClient(timeout=20, headers=headers) as client:
                 positions = (
                     await client.get(f"{API}/api/paper/positions")
                 ).json().get("positions", [])

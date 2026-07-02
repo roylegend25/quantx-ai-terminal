@@ -2,16 +2,19 @@ from datetime import datetime, timezone
 import httpx
 
 from app.core.config import settings
+from app.core.security import create_internal_service_token
 
 class TradingEngine:
 
     def __init__(self):
         self.symbol = settings.default_symbol
+        self._token = create_internal_service_token()
 
     async def run_cycle(self):
         print(f"\n========== {datetime.now(timezone.utc)} ==========")
 
-        async with httpx.AsyncClient(timeout=20) as client:
+        headers = {"Authorization": f"Bearer {self._token}"}
+        async with httpx.AsyncClient(timeout=20, headers=headers) as client:
 
             prediction = (
                 await client.get(

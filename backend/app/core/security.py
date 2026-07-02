@@ -17,6 +17,15 @@ def create_access_token(subject: str) -> str:
     return jwt.encode(payload, settings.secret_key, algorithm=JWT_ALGORITHM)
 
 
+INTERNAL_SERVICE_SUBJECT = "internal-scheduler"
+
+
+def create_internal_service_token() -> str:
+    """Token used by background loops (scheduler, position manager) to call
+    this API's own protected endpoints over HTTP."""
+    return create_access_token(subject=INTERNAL_SERVICE_SUBJECT)
+
+
 def decode_access_token(token: str) -> str | None:
     try:
         payload = jwt.decode(token, settings.secret_key, algorithms=[JWT_ALGORITHM])
