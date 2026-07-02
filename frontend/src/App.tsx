@@ -17,6 +17,7 @@ import {
 import "./App.css";
 import StrategyVotes from "./components/Dashboard/StrategyVotes";
 import BacktestCard from "./components/Dashboard/BacktestCard";
+import PortfolioAnalytics from "./components/Dashboard/PortfolioAnalytics";
 import LoginPage from "./components/Auth/LoginPage";
 import { authFetch, getToken, logout } from "./services/auth";
 
@@ -33,9 +34,9 @@ type Candle = {
   volume: number;
 };
 
-function Card({ title, children, wide = false }: any) {
+function Card({ title, children, wide = false, full = false }: any) {
   return (
-    <div className={`card ${wide ? "wide" : ""}`}>
+    <div className={`card ${wide ? "wide" : ""} ${full ? "full" : ""}`}>
       <div className="card-title">{title}</div>
       {children}
     </div>
@@ -366,6 +367,10 @@ Close
             <p>Unrealized PnL: <b className={(portfolio?.unrealized_pnl || 0) >= 0 ? "green" : "red"}>${portfolio?.unrealized_pnl || 0}</b></p>
             <p>Total PnL: <b className={(portfolio?.total_pnl || 0) >= 0 ? "green" : "red"}>${portfolio?.total_pnl || 0}</b></p>
             <p>Win Rate: <b>{portfolio?.win_rate || 0}%</b></p>
+          </Card>
+
+          <Card title="Portfolio Analytics" full>
+            <PortfolioAnalytics portfolio={portfolio} positions={positions} history={history} />
           </Card>
 
           <Card title="Open Positions">
