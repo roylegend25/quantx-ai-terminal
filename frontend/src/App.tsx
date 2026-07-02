@@ -19,6 +19,7 @@ import StrategyVotes from "./components/Dashboard/StrategyVotes";
 import BacktestCard from "./components/Dashboard/BacktestCard";
 import PortfolioAnalytics from "./components/Dashboard/PortfolioAnalytics";
 import AIDecisionFlow from "./components/Dashboard/AIDecisionFlow";
+import MarketRegimePanel from "./components/Dashboard/MarketRegimePanel";
 import LoginPage from "./components/Auth/LoginPage";
 import { authFetch, getToken, logout } from "./services/auth";
 
@@ -305,6 +306,10 @@ async function botAction(action: string) {
             <p>EMA20: <b>{prediction?.features?.ema20?.toFixed?.(2)}</b></p>
             <p>EMA50: <b>{prediction?.features?.ema50?.toFixed?.(2)}</b></p>
             <p>ATR: <b>{prediction?.features?.atr?.toFixed?.(2)}</b></p>
+          </Card>
+
+          <Card title="Market Regime" wide>
+            <MarketRegimePanel prediction={prediction} />
           </Card>
 
           <Card title="AI Decision Flow" full>

@@ -766,3 +766,35 @@ opacity:.7;
   }
 }
 
+.regime-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.regime-banner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.regime-banner h3 {
+  margin: 0;
+  font-size: 26px;
+}
+
+.regime-desc {
+  margin: 4px 0 0;
+  color: #aab0c8;
+  font-size: 13px;
+}
+
+.regime-focus {
+  padding: 16px 18px;
+  border-radius: 16px;
+  background: rgba(255,255,255,.05);
+  border: 1px solid rgba(255,255,255,.08);
+  border-left: 3px solid #7c5cff;
+}
+
