@@ -9,7 +9,7 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key")
 import pytest  # noqa: E402
 
 from app.db.session import Base, SessionLocal, engine  # noqa: E402
-from app.db.models import Portfolio, StrategyWeight, Trade  # noqa: E402
+from app.db.models import Portfolio, StrategyPerformance, Trade  # noqa: E402
 
 Base.metadata.create_all(bind=engine)
 
@@ -18,7 +18,7 @@ Base.metadata.create_all(bind=engine)
 def clean_tables():
     db = SessionLocal()
     try:
-        db.query(StrategyWeight).delete()
+        db.query(StrategyPerformance).delete()
         db.query(Trade).delete()
         db.query(Portfolio).delete()
         db.commit()

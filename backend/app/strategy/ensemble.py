@@ -1,6 +1,6 @@
 from app.strategy.manager import StrategyManager
 from app.strategy.regime import detect
-from app.strategy import weighting
+from app.strategy.performance_repository import repository as performance_repository
 
 manager = StrategyManager()
 
@@ -24,7 +24,7 @@ def evaluate(features: dict):
 
     regime = detect(features)
 
-    weights = weighting.get_weights()
+    weights = performance_repository.get_weights()
 
     probability_up = 0.0
     for name, result in strategies.items():

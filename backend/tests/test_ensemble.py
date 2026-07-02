@@ -16,7 +16,7 @@ def test_ensemble_applies_weighted_probability_formula(monkeypatch):
     }
 
     monkeypatch.setattr(ensemble.manager, "evaluate", lambda features: fixed_strategies)
-    monkeypatch.setattr(ensemble.weighting, "get_weights", lambda: fixed_weights)
+    monkeypatch.setattr(ensemble.performance_repository, "get_weights", lambda: fixed_weights)
     monkeypatch.setattr(ensemble, "detect", lambda features: "NORMAL")
 
     result = ensemble.evaluate({})

@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import app.api.paper as paper_module
-from app.strategy import weighting
+from app.strategy.performance_repository import DEFAULT_WEIGHT, repository
 
 
 def make_client(monkeypatch, prices):
@@ -38,29 +38,29 @@ def test_closing_trade_adapts_strategy_weights(monkeypatch):
     assert open_resp.status_code == 200
     trade_id = open_resp.json()["trade"]["id"]
 
-    before = weighting.get_stats()
-    assert before["trend"]["trade_count"] == 0
+    before = repository.get_all()
+    assert before["trend"]["trades"] == 0
 
     close_resp = client.post(f"/api/paper/close/{trade_id}")
     assert close_resp.status_code == 200
 
-    after = weighting.get_stats()
+    after = repository.get_all()
 
     # trend and momentum agreed with the LONG trade direction -> attributed
-    assert after["trend"]["trade_count"] == 1
-    assert after["momentum"]["trade_count"] == 1
-    assert after["trend"]["win_rate"] == 100.0
+    assert after["trend"]["trades"] == 1
+    assert after["momentum"]["trades"] == 1
+    assert after["trend"]["rolling_win_rate"] == 100.0
 
     # entry 100, sl 98 -> risk_per_unit 2; exit 106 -> price_diff 6 -> r_multiple 3.0
-    assert after["trend"]["avg_r_multiple"] == 3.0
+    assert after["trend"]["average_r_multiple"] == 3.0
 
     # mean_reversion disagreed (SHORT) and breakout had no opinion -> not attributed
-    assert after["mean_reversion"]["trade_count"] == 0
-    assert after["breakout"]["trade_count"] == 0
+    assert after["mean_reversion"]["trades"] == 0
+    assert after["breakout"]["trades"] == 0
 
     # weights must have adapted away from the equal-weight cold start
-    weights = weighting.get_weights()
-    assert weights["trend"] > weighting.DEFAULT_WEIGHT
+    weights = repository.get_weights()
+    assert weights["trend"] > DEFAULT_WEIGHT
     assert abs(sum(weights.values()) - 1.0) < 1e-6
 
 
@@ -77,7 +77,7 @@ def test_losing_trade_recorded_as_loss(monkeypatch):
 
     client.post(f"/api/paper/close/{trade_id}")
 
-    stats = weighting.get_stats()["trend"]
-    assert stats["trade_count"] == 1
-    assert stats["win_rate"] == 0.0
-    assert stats["avg_r_multiple"] < 0
+    stats = repository.get("trend")
+    assert stats["trades"] == 1
+    assert stats["rolling_win_rate"] == 0.0
+    assert stats["average_r_multiple"] < 0

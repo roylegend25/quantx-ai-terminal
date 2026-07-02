@@ -2,6 +2,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 from app.db.session import engine, Base, SessionLocal
 from app.db.models import Portfolio
+from app.strategy.performance_repository import repository as performance_repository
 
 def _migrate_trade_columns():
     """Add columns introduced after the trades table already existed on disk."""
@@ -35,5 +36,7 @@ def init_db():
             )
             db.add(portfolio)
             db.commit()
+
+        performance_repository.seed_defaults(db)
     finally:
         db.close()

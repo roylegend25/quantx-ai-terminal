@@ -7,7 +7,7 @@ import httpx
 
 from app.db.session import get_db
 from app.db.models import Trade, Portfolio
-from app.strategy import weighting
+from app.strategy.performance_repository import repository as performance_repository
 
 router = APIRouter(prefix="/api/paper", tags=["paper"])
 
@@ -164,7 +164,7 @@ async def close_trade(trade_id: int, db: Session = Depends(get_db)):
         for name, result in snapshot.items():
             if result.get("direction") != trade.side:
                 continue
-            weighting.record_trade_result(
+            performance_repository.update_metrics(
                 name,
                 r_multiple=r_multiple,
                 win=pnl >= 0,

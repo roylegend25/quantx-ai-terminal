@@ -20,20 +20,26 @@ class Trade(Base):
     regime = Column(String, nullable=True)
     strategy_snapshot = Column(Text, nullable=True)
 
-class StrategyWeight(Base):
-    __tablename__ = "strategy_weights"
+class StrategyPerformance(Base):
+    __tablename__ = "strategy_performance"
 
-    strategy = Column(String, primary_key=True)
-    weight = Column(Float, default=0.25)
-    trades_json = Column(Text, default="[]")
-    win_rate = Column(Float, default=0.0)
-    avg_r_multiple = Column(Float, default=0.0)
+    strategy_name = Column(String, primary_key=True)
+    trades = Column(Integer, default=0)
+    wins = Column(Integer, default=0)
+    losses = Column(Integer, default=0)
+    rolling_win_rate = Column(Float, default=0.0)
+    average_r_multiple = Column(Float, default=0.0)
     profit_factor = Column(Float, default=0.0)
     sharpe_ratio = Column(Float, default=0.0)
     max_drawdown = Column(Float, default=0.0)
-    avg_confidence = Column(Float, default=0.0)
-    regime_performance_json = Column(Text, default="{}")
+    average_confidence = Column(Float, default=0.0)
+    current_weight = Column(Float, default=0.25)
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    # internal bookkeeping (not part of the public field spec, but required
+    # to compute rolling-window stats and per-regime breakdowns)
+    trades_json = Column(Text, default="[]")
+    regime_performance_json = Column(Text, default="{}")
 
 class Portfolio(Base):
     __tablename__ = "portfolio"
