@@ -616,3 +616,153 @@ opacity:.7;
   font-size: 13px;
 }
 
+.yellow {
+  color: #ffd166;
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.flow-pipeline {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.flow-node {
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.05);
+  border-radius: 18px;
+  padding: 16px 18px;
+  transition: border-color .2s, background .2s, opacity .2s;
+}
+
+.flow-node.flow-idle {
+  opacity: .5;
+}
+
+.flow-node-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.flow-node-head h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.flow-status {
+  margin: 0 0 10px;
+  color: #aab0c8;
+  font-size: 12px;
+}
+
+.flow-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.flow-signal {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+}
+
+.flow-confidence {
+  font-variant-numeric: tabular-nums;
+}
+
+.flow-node progress {
+  height: 6px;
+}
+
+.flow-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.flow-dot.green {
+  background: #00f5a0;
+  color: #00f5a0;
+}
+
+.flow-dot.red {
+  background: #ff5d73;
+  color: #ff5d73;
+}
+
+.flow-dot.yellow {
+  background: #ffd166;
+  color: #ffd166;
+}
+
+.flow-pulse {
+  animation: flowPulse 1.8s ease-out infinite;
+}
+
+@keyframes flowPulse {
+  0% {
+    box-shadow: 0 0 0 0 currentColor;
+    opacity: 1;
+  }
+  70% {
+    box-shadow: 0 0 0 9px transparent;
+    opacity: .65;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+    opacity: 1;
+  }
+}
+
+.flow-connector {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  height: 30px;
+  color: #5b6180;
+}
+
+.flow-line {
+  width: 2px;
+  flex: 1;
+  background: linear-gradient(180deg, rgba(124,92,255,0) 0%, #7c5cff 50%, rgba(124,92,255,0) 100%);
+  background-size: 100% 200%;
+  animation: flowMove 1.8s linear infinite;
+}
+
+@keyframes flowMove {
+  0% {
+    background-position: 0 0;
+  }
+  100% {
+    background-position: 0 -200%;
+  }
+}
+
+.flow-arrow {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.flow-strategy-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+}
+
+@media (max-width: 1000px) {
+  .flow-strategy-row {
+    grid-template-columns: 1fr;
+  }
+}
+

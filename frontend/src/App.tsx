@@ -18,6 +18,7 @@ import "./App.css";
 import StrategyVotes from "./components/Dashboard/StrategyVotes";
 import BacktestCard from "./components/Dashboard/BacktestCard";
 import PortfolioAnalytics from "./components/Dashboard/PortfolioAnalytics";
+import AIDecisionFlow from "./components/Dashboard/AIDecisionFlow";
 import LoginPage from "./components/Auth/LoginPage";
 import { authFetch, getToken, logout } from "./services/auth";
 
@@ -306,6 +307,9 @@ async function botAction(action: string) {
             <p>ATR: <b>{prediction?.features?.atr?.toFixed?.(2)}</b></p>
           </Card>
 
+          <Card title="AI Decision Flow" full>
+            <AIDecisionFlow prediction={prediction} ticker={ticker} />
+          </Card>
 
           <Card title="Live Order Book">
             <div className="orderbook">
