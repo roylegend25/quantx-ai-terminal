@@ -13,6 +13,7 @@ from app.api.paper import router as paper_router
 from app.api.ws import router as ws_router
 from app.api.backtest import router as backtest_router
 from app.api.strategy import router as strategy_router
+from app.api.timeframes import router as timeframes_router
 from datetime import datetime, timezone
 from app.core.deps import get_current_user
 from app.db.init_db import init_db
@@ -53,6 +54,7 @@ app.include_router(paper_router, dependencies=protected)
 app.include_router(ws_router)
 app.include_router(backtest_router, dependencies=protected)
 app.include_router(strategy_router, dependencies=protected)
+app.include_router(timeframes_router, dependencies=protected)
 
 @app.get("/api/health")
 async def health():
