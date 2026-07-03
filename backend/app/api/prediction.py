@@ -1,3 +1,5 @@
+import time
+
 from fastapi import APIRouter
 import httpx
 from app.quant.indicators import compute_features
@@ -5,8 +7,13 @@ from app.trading.risk_manager import calculate_levels
 from app.strategy.ensemble import evaluate as ensemble_evaluate
 from app.intelligence import market_intelligence
 from app.timeframes.multi_timeframe import evaluate_all as evaluate_all_timeframes
+from app.monitoring.logging import get_logger, log_event
+from app.monitoring.metrics import PREDICTION_LATENCY
+from app.monitoring.tracing import span
 
 router = APIRouter(prefix="/api/prediction", tags=["prediction"])
+
+logger = get_logger("quantx.prediction")
 
 BINANCE_FAPI = "https://fapi.binance.com"
 
@@ -77,40 +84,62 @@ def make_prediction(features: dict, market_context: dict | None = None, consensu
 @router.get("/{symbol}")
 async def prediction(symbol: str, interval: str = "5m", limit: int = 220):
     symbol = symbol.upper()
+    start = time.perf_counter()
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.get(
-            f"{BINANCE_FAPI}/fapi/v1/klines",
-            params={"symbol": symbol, "interval": interval, "limit": limit},
-        )
-        r.raise_for_status()
+    with span("prediction", symbol=symbol, interval=interval):
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"{BINANCE_FAPI}/fapi/v1/klines",
+                params={"symbol": symbol, "interval": interval, "limit": limit},
+            )
+            r.raise_for_status()
 
-    candles = [
-        {
-            "time": k[0],
-            "open": float(k[1]),
-            "high": float(k[2]),
-            "low": float(k[3]),
-            "close": float(k[4]),
-            "volume": float(k[5]),
-        }
-        for k in r.json()
-    ]
+        candles = [
+            {
+                "time": k[0],
+                "open": float(k[1]),
+                "high": float(k[2]),
+                "low": float(k[3]),
+                "close": float(k[4]),
+                "volume": float(k[5]),
+            }
+            for k in r.json()
+        ]
 
-    features = compute_features(candles)["symbol_features"]
+        features = compute_features(candles)["symbol_features"]
 
-    try:
-        market_context = await market_intelligence.get_context(symbol)
-    except Exception:
-        market_context = None
+        try:
+            market_context = await market_intelligence.get_context(symbol)
+        except Exception:
+            market_context = None
 
-    try:
-        consensus = (await evaluate_all_timeframes(symbol, market_context))["consensus"]
-    except Exception:
-        consensus = None
+        try:
+            consensus = (await evaluate_all_timeframes(symbol, market_context))["consensus"]
+        except Exception:
+            consensus = None
+
+        pred = make_prediction(features, market_context, consensus)
+
+    latency_ms = round((time.perf_counter() - start) * 1000, 2)
+    PREDICTION_LATENCY.labels(symbol=symbol).observe(latency_ms / 1000)
+
+    weights = pred.get("strategy_weights") or {}
+    dominant_strategy = max(weights, key=weights.get) if weights else None
+
+    log_event(
+        logger,
+        message="prediction_generated",
+        endpoint=f"/api/prediction/{symbol}",
+        prediction_id=pred.get("feature_id"),
+        strategy=dominant_strategy,
+        confidence=pred.get("confidence"),
+        latency_ms=latency_ms,
+        symbol=symbol,
+        error=None,
+    )
 
     return {
         "symbol": symbol,
         "interval": interval,
-        "prediction": make_prediction(features, market_context, consensus),
+        "prediction": pred,
     }

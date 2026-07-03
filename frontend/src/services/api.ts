@@ -49,4 +49,5 @@ export const api = {
   mlDatasetInfo: () => getJson("/api/ml/dataset/info"),
   mlModels: () => getJson("/api/ml/models"),
   mlPerformance: () => getJson("/api/ml/performance"),
+  systemStatus: () => getJson("/api/health/status"),
 };

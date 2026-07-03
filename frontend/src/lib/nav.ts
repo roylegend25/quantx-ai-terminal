@@ -7,7 +7,8 @@ export type NavKey =
   | "bot-settings"
   | "risk"
   | "logs"
-  | "backtesting";
+  | "backtesting"
+  | "system-status";
 
 export const NAV_ITEMS: { key: NavKey; label: string }[] = [
   { key: "dashboard", label: "Dashboard" },
@@ -19,4 +20,5 @@ export const NAV_ITEMS: { key: NavKey; label: string }[] = [
   { key: "risk", label: "Risk Management" },
   { key: "logs", label: "Logs" },
   { key: "backtesting", label: "Backtesting" },
+  { key: "system-status", label: "System Status" },
 ];

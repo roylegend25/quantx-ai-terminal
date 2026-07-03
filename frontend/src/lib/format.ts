@@ -34,3 +34,26 @@ export function toneClass(t: Tone): string {
   if (t === "neg") return "red";
   return "";
 }
+
+export function fmtDuration(seconds?: number | null): string {
+  if (typeof seconds !== "number" || Number.isNaN(seconds)) return "—";
+  const total = Math.floor(seconds);
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m`;
+  return `${total}s`;
+}
+
+export function fmtRelativeTime(iso?: string | null): string {
+  if (!iso) return "—";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "—";
+  const diffSeconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (diffSeconds < 60) return "just now";
+  if (diffSeconds < 3600) return `${Math.floor(diffSeconds / 60)}m ago`;
+  if (diffSeconds < 86400) return `${Math.floor(diffSeconds / 3600)}h ago`;
+  return `${Math.floor(diffSeconds / 86400)}d ago`;
+}

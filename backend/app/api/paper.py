@@ -10,6 +10,7 @@ from app.db.models import Trade, Portfolio
 from app.strategy.performance_repository import repository as performance_repository
 from app.strategy.rolling_metrics_repository import repository as rolling_metrics_repository
 from app.strategy import weight_calculator
+from app.monitoring.metrics import PAPER_TRADES_CLOSED, PAPER_TRADES_OPENED
 
 router = APIRouter(prefix="/api/paper", tags=["paper"])
 
@@ -102,6 +103,8 @@ async def open_trade(
     db.commit()
     db.refresh(trade)
 
+    PAPER_TRADES_OPENED.labels(symbol=symbol, side=side).inc()
+
     return {
         "ok": True,
         "message": f"Paper {side} opened on {symbol}",
@@ -183,6 +186,8 @@ async def close_trade(trade_id: int, db: Session = Depends(get_db)):
                 db=db,
             )
         weight_calculator.recompute_and_store(db=db)
+
+    PAPER_TRADES_CLOSED.labels(symbol=trade.symbol).inc()
 
     return {
         "ok": True,

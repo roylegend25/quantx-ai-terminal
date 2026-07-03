@@ -12,6 +12,7 @@ import BotSettingsPage from "./pages/BotSettingsPage";
 import RiskPage from "./pages/RiskPage";
 import LogsPage from "./pages/LogsPage";
 import BacktestingPage from "./pages/BacktestingPage";
+import SystemStatusPage from "./pages/SystemStatusPage";
 import { useAppData } from "./hooks/useAppData";
 import { useAuth } from "./hooks/useAuth";
 import type { NavKey } from "./lib/nav";
@@ -53,6 +54,8 @@ function App() {
         return <LogsPage />;
       case "backtesting":
         return <BacktestingPage {...data} />;
+      case "system-status":
+        return <SystemStatusPage {...data} />;
       default:
         return <DashboardPage {...data} navigate={setActive} />;
     }

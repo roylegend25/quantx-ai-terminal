@@ -16,9 +16,13 @@ from app.api.strategy import router as strategy_router
 from app.api.timeframes import router as timeframes_router
 from app.api.ml import router as ml_router
 from app.api.research import router as research_router
+from app.monitoring.health import router as health_router
+from app.monitoring.logging import RequestLoggingMiddleware
+from app.monitoring.metrics import PrometheusMiddleware, instrument_db_engine
 from datetime import datetime, timezone
 from app.core.deps import get_current_user
 from app.db.init_db import init_db
+from app.db.session import engine as db_engine
 from app.trading.scheduler import start_scheduler
 from app.trading.position_manager import start_position_manager
 
@@ -32,6 +36,7 @@ async def delayed_background_start():
 @app.on_event("startup")
 async def startup_event():
     init_db()
+    instrument_db_engine(db_engine)
     asyncio.create_task(delayed_background_start())
 
 app.add_middleware(
@@ -41,6 +46,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(PrometheusMiddleware)
 
 protected = [Depends(get_current_user)]
 
@@ -59,6 +66,7 @@ app.include_router(strategy_router, dependencies=protected)
 app.include_router(timeframes_router, dependencies=protected)
 app.include_router(ml_router, dependencies=protected)
 app.include_router(research_router, dependencies=protected)
+app.include_router(health_router)
 
 @app.get("/api/health")
 async def health():

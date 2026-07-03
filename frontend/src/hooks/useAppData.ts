@@ -30,6 +30,7 @@ export function useAppData(authed: boolean | null) {
   const [timeframesConsensus, setTimeframesConsensus] = useState<any>(null);
   const [strategyWeights, setStrategyWeights] = useState<any>(null);
   const [botStatus, setBotStatus] = useState<any>(null);
+  const [systemStatus, setSystemStatus] = useState<any>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [toast, setToast] = useState("");
   const [loading, setLoading] = useState(false);
@@ -60,7 +61,7 @@ export function useAppData(authed: boolean | null) {
         }))
       );
 
-      const [ob, tr, pf, pos, hist, ctx, tf, weights, bot] = await Promise.all([
+      const [ob, tr, pf, pos, hist, ctx, tf, weights, bot, sys] = await Promise.all([
         api.orderbook(symbol, 10).catch(() => null),
         api.trades(symbol, 20).catch(() => ({ trades: [] })),
         api.portfolio().catch(() => null),
@@ -70,6 +71,7 @@ export function useAppData(authed: boolean | null) {
         api.timeframes(symbol).catch(() => null),
         api.strategyWeights().catch(() => null),
         api.botStatus().catch(() => null),
+        api.systemStatus().catch(() => null),
       ]);
 
       setOrderbook(ob);
@@ -81,6 +83,7 @@ export function useAppData(authed: boolean | null) {
       setTimeframesConsensus(tf);
       setStrategyWeights(weights);
       setBotStatus(bot);
+      setSystemStatus(sys);
       setLastUpdated(new Date());
     } finally {
       setLoading(false);
@@ -141,6 +144,7 @@ export function useAppData(authed: boolean | null) {
     timeframesConsensus,
     strategyWeights,
     botStatus,
+    systemStatus,
     lastUpdated,
     toast,
     showToast,

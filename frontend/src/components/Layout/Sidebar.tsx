@@ -12,6 +12,7 @@ import {
   LogOut,
   StopCircle,
   Bot,
+  Activity,
 } from "lucide-react";
 import { NAV_ITEMS, type NavKey } from "../../lib/nav";
 
@@ -25,6 +26,7 @@ const ICONS: Record<NavKey, ComponentType<{ size?: number }>> = {
   risk: ShieldAlert,
   logs: FileText,
   backtesting: FlaskConical,
+  "system-status": Activity,
 };
 
 type Props = {

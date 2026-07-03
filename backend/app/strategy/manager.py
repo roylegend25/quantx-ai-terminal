@@ -1,9 +1,12 @@
+import time
+
 from app.strategy import (
     trend,
     momentum,
     mean_reversion,
     breakout,
 )
+from app.monitoring.metrics import STRATEGY_EXECUTION_TIME
 
 STRATEGIES = {
     "trend": trend.evaluate,
@@ -19,6 +22,7 @@ class StrategyManager:
         results = {}
 
         for name, strategy in STRATEGIES.items():
+            start = time.perf_counter()
             try:
                 results[name] = strategy(features)
             except Exception as e:
@@ -27,5 +31,7 @@ class StrategyManager:
                     "confidence": 0,
                     "reason": str(e),
                 }
+            finally:
+                STRATEGY_EXECUTION_TIME.labels(strategy=name).observe(time.perf_counter() - start)
 
         return results
