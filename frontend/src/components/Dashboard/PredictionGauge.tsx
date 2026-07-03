@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { ArrowDownRight, ArrowUpRight, Minus } from "lucide-react";
 import { fmtPct, fmtUsd } from "../../lib/format";
 
@@ -15,7 +15,7 @@ function directionTone(direction?: string): "green" | "red" | "yellow" {
   return "yellow";
 }
 
-export default function PredictionGauge({ prediction, lastUpdated }: Props) {
+function PredictionGauge({ prediction, lastUpdated }: Props) {
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
@@ -71,3 +71,5 @@ export default function PredictionGauge({ prediction, lastUpdated }: Props) {
     </div>
   );
 }
+
+export default memo(PredictionGauge);

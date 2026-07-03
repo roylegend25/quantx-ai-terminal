@@ -22,12 +22,31 @@ class Settings(BaseSettings):
 
     binance_fapi_url: str = "https://fapi.binance.com"
 
+    # Hard safety gate for backend/app/exchanges - adapters refuse to
+    # construct at all unless this is true. There is no live-trading flag
+    # to pair it with: no adapter implements order placement.
+    exchange_read_only: bool = True
+
     paper_database_url: str = "sqlite:////app/data/paper.db"
 
     secret_key: str
     access_token_expire_minutes: int = 10080
     admin_username: str = "admin"
     admin_password_hash: str = ""
+
+    # --- ML lifecycle platform (app/mlops/) ---
+    auto_retrain: bool = True
+    mlops_retrain_schedule: str = "daily"  # daily | weekly | monthly
+    mlops_scheduler_interval_seconds: int = 3600
+    max_model_history: int = 20
+    model_retention_days: int = 90
+    champion_min_accuracy: float = 0.55
+    champion_min_profit_factor: float = 1.0
+    champion_min_sharpe: float = 0.0
+    champion_max_drawdown_pct: float = 25.0
+    champion_min_stability: float = 0.7
+    champion_max_latency_ms: float = 500.0
+    max_allowed_drift: float = 0.25
 
     class Config:
         env_file = ".env"

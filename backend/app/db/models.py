@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, JSON
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, JSON, Boolean
 from datetime import datetime, timezone
 from app.db.session import Base
 
@@ -149,6 +149,159 @@ class ResearchExperiment(Base):
     average_confidence = Column(Float, nullable=True)
     prediction_accuracy_pct = Column(Float, nullable=True)
     raw_metrics = Column(JSON, nullable=True)
+    notes = Column(Text, nullable=True)
+
+
+class StressTestRun(Base):
+    """One scenario result from a POST /api/stress/run batch (see app/stress/).
+
+    Purely a read-only fault-injection audit trail: scenarios never open,
+    close, or otherwise mutate a trade, and nothing here is read back by the
+    live trading path.
+    """
+    __tablename__ = "stress_test_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(String, index=True)
+    scenario_id = Column(String, index=True)
+    scenario_name = Column(String)
+    category = Column(String, nullable=True)
+    status = Column(String)  # PASSED | FAILED
+    reason = Column(Text, nullable=True)
+    checks = Column(JSON, nullable=True)
+    new_trades_blocked = Column(Boolean, nullable=True)
+    open_positions_protected = Column(Boolean, nullable=True)
+    positions_detail = Column(Text, nullable=True)
+    risk_result = Column(JSON, nullable=True)
+    duration_ms = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class MLOpsModel(Base):
+    """One row per trained model version in the Phase 15 ML lifecycle
+    platform (see app/mlops/). Independent of MLModelRegistry (app/ml/) -
+    that table's Champion row is always the live adaptive ensemble and its
+    Challenger rows are the one-shot backtest_models.py comparisons. This
+    table tracks the full multi-status lifecycle (Training -> Testing ->
+    Challenger -> Champion -> Archived / Failed) for models managed through
+    /api/models. Rows are never deleted, only archived."""
+    __tablename__ = "mlops_models"
+
+    id = Column(Integer, primary_key=True, index=True)
+    model_id = Column(String, unique=True, index=True)
+    model_name = Column(String, index=True)
+    algorithm = Column(String, nullable=True)
+    version = Column(String, index=True)
+    status = Column(String, default="Training", index=True)
+    trained_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    promoted_at = Column(DateTime, nullable=True)
+    dataset_version = Column(String, nullable=True)
+    feature_version = Column(String, nullable=True)
+    train_accuracy = Column(Float, nullable=True)
+    val_accuracy = Column(Float, nullable=True)
+    win_rate = Column(Float, nullable=True)
+    sharpe_ratio = Column(Float, nullable=True)
+    profit_factor = Column(Float, nullable=True)
+    max_drawdown_pct = Column(Float, nullable=True)
+    latency_ms = Column(Float, nullable=True)
+    training_duration_seconds = Column(Float, nullable=True)
+    parameters = Column(JSON, nullable=True)
+    feature_list = Column(JSON, nullable=True)
+    git_commit = Column(String, nullable=True)
+    model_path = Column(String, nullable=True)
+    notes = Column(Text, nullable=True)
+
+
+class MLOpsExperiment(Base):
+    """One training run tracked by app/mlops/experiment.py - hyperparameters,
+    seed, dataset/feature versions and resulting metrics. Distinct from
+    ResearchExperiment (app/research/), which logs backtest/benchmark runs
+    rather than training runs."""
+    __tablename__ = "mlops_experiments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    experiment_id = Column(String, unique=True, index=True)
+    model_name = Column(String, index=True)
+    algorithm = Column(String, nullable=True)
+    model_id = Column(String, nullable=True, index=True)
+    hyperparameters = Column(JSON, nullable=True)
+    random_seed = Column(Integer, nullable=True)
+    dataset_version = Column(String, nullable=True)
+    feature_version = Column(String, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    training_duration_seconds = Column(Float, nullable=True)
+    status = Column(String, default="running")
+    metrics = Column(JSON, nullable=True)
+    notes = Column(Text, nullable=True)
+
+
+class MLOpsFeatureSnapshot(Base):
+    """A versioned snapshot of the feature set used for model training/drift
+    comparison (app/mlops/feature_store.py). Built from data already
+    computed by the live path (PredictionFeature.technical_features,
+    market_context) rather than recomputing indicators."""
+    __tablename__ = "mlops_feature_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    feature_version = Column(String, index=True)
+    symbol = Column(String, index=True)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    features = Column(JSON, nullable=True)
+
+
+class MLOpsDriftRecord(Base):
+    """One drift-check result (app/mlops/drift_detector.py): feature,
+    prediction, or market drift, scored via PSI or a KS test."""
+    __tablename__ = "mlops_drift_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    checked_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    drift_type = Column(String, index=True)  # feature | prediction | market
+    method = Column(String)  # PSI | KS
+    score = Column(Float, nullable=True)
+    threshold = Column(Float, nullable=True)
+    is_drifted = Column(Boolean, default=False)
+    details = Column(JSON, nullable=True)
+
+
+class MLOpsEvaluation(Base):
+    """One evaluation-history row for a MLOpsModel version
+    (app/mlops/evaluation.py). Multiple rows can exist per model_id since
+    evaluation can be re-run as new outcomes/drift checks come in."""
+    __tablename__ = "mlops_evaluations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    model_id = Column(String, index=True)
+    evaluated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    accuracy = Column(Float, nullable=True)
+    precision = Column(Float, nullable=True)
+    recall = Column(Float, nullable=True)
+    f1 = Column(Float, nullable=True)
+    roc_auc = Column(Float, nullable=True)
+    sharpe_ratio = Column(Float, nullable=True)
+    sortino_ratio = Column(Float, nullable=True)
+    profit_factor = Column(Float, nullable=True)
+    win_rate = Column(Float, nullable=True)
+    average_r = Column(Float, nullable=True)
+    max_drawdown_pct = Column(Float, nullable=True)
+    expectancy = Column(Float, nullable=True)
+    average_confidence = Column(Float, nullable=True)
+    latency_ms = Column(Float, nullable=True)
+
+
+class MLOpsRetrainRun(Base):
+    """One retraining job log entry (app/mlops/retrainer.py + scheduler.py)."""
+    __tablename__ = "mlops_retrain_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    triggered_by = Column(String)  # schedule | drift | accuracy | manual
+    model_name = Column(String, index=True)
+    status = Column(String, default="running")  # running | success | failed | skipped
+    started_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    finished_at = Column(DateTime, nullable=True)
+    result_model_id = Column(String, nullable=True)
+    error = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
 
 

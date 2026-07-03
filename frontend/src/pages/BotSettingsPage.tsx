@@ -24,7 +24,7 @@ export default function BotSettingsPage(props: AppData) {
           </div>
           <div>
             <span className="tile-label">Live Trading</span>
-            <b className={`tile-value ${liveEnabled ? "green" : "red"}`}>{liveEnabled ? "ENABLED" : "LOCKED"}</b>
+            <b className={`tile-value ${liveEnabled ? "red" : "green"}`}>{liveEnabled ? "ENABLED" : "LOCKED"}</b>
           </div>
           <div className="align-right">
             <span className="tile-label">Last Action</span>

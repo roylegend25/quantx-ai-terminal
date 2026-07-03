@@ -10,6 +10,7 @@ from app.db.models import Trade, Portfolio
 from app.strategy.performance_repository import repository as performance_repository
 from app.strategy.rolling_metrics_repository import repository as rolling_metrics_repository
 from app.strategy import weight_calculator
+from app.ml.feature_store import store as feature_store
 from app.monitoring.metrics import PAPER_TRADES_CLOSED, PAPER_TRADES_OPENED
 
 router = APIRouter(prefix="/api/paper", tags=["paper"])
@@ -74,6 +75,8 @@ async def open_trade(
     usdt_size: float = 1000,
     sl: float | None = None,
     tp: float | None = None,
+    feature_id: int | None = None,
+    entry_price: float | None = None,
     context: StrategyContext | None = None,
     db: Session = Depends(get_db),
 ):
@@ -83,7 +86,11 @@ async def open_trade(
     if side not in ["LONG", "SHORT"]:
         raise HTTPException(status_code=400, detail="side must be LONG or SHORT")
 
-    price = await get_price(symbol)
+    # entry_price lets a caller that already simulated the fill (see
+    # app/execution) book the trade at that price instead of a fresh last-
+    # trade lookup, so its slippage/quality accounting stays consistent
+    # with what actually got persisted here.
+    price = entry_price if entry_price and entry_price > 0 else await get_price(symbol)
     qty = usdt_size / price
 
     trade = Trade(
@@ -97,6 +104,7 @@ async def open_trade(
         pnl=0.0,
         regime=context.regime if context else None,
         strategy_snapshot=json.dumps(context.strategies) if context and context.strategies else None,
+        feature_id=feature_id,
     )
 
     db.add(trade)
@@ -163,6 +171,17 @@ async def close_trade(trade_id: int, db: Session = Depends(get_db)):
         p.losses += 1
 
     db.commit()
+
+    if trade.feature_id:
+        try:
+            feature_store.record_outcome(
+                trade.feature_id,
+                exit_price=exit_price,
+                pnl=pnl,
+                db=db,
+            )
+        except Exception as e:
+            print("Feature store outcome update error:", repr(e))
 
     if trade.strategy_snapshot:
         snapshot = json.loads(trade.strategy_snapshot)

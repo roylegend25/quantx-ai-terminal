@@ -1,6 +1,7 @@
+import { memo } from "react";
 import { Flame } from "lucide-react";
 
-export default function LiquidationHeatmapCard() {
+function LiquidationHeatmapCard() {
   return (
     <div className="coming-soon-panel">
       <Flame size={28} />
@@ -13,3 +14,5 @@ export default function LiquidationHeatmapCard() {
     </div>
   );
 }
+
+export default memo(LiquidationHeatmapCard);

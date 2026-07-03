@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { Bell, Sun, UserRound } from "lucide-react";
 
 type Props = {
@@ -16,7 +16,7 @@ function tickerRow(label: string, value: string, tone?: "green" | "red") {
   );
 }
 
-export default function Topbar({ dashboard, onBellClick, onThemeClick }: Props) {
+function Topbar({ dashboard, onBellClick, onThemeClick }: Props) {
   const [now, setNow] = useState(new Date());
 
   useEffect(() => {
@@ -69,6 +69,8 @@ export default function Topbar({ dashboard, onBellClick, onThemeClick }: Props) 
     </header>
   );
 }
+
+export default memo(Topbar);
 
 function fmtCompact(n: number): string {
   return Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format(n);

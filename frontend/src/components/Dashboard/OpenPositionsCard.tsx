@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { fmtUsd, toneClass, toneOf } from "../../lib/format";
 import type { Position } from "../../lib/portfolioStats";
 import type { NavKey } from "../../lib/nav";
@@ -9,7 +10,7 @@ type Props = {
   compact?: boolean;
 };
 
-export default function OpenPositionsCard({ positions, onClose, onViewAll, compact = true }: Props) {
+function OpenPositionsCard({ positions, onClose, onViewAll, compact = true }: Props) {
   const rows = compact ? positions.slice(0, 5) : positions;
 
   return (
@@ -61,3 +62,5 @@ export default function OpenPositionsCard({ positions, onClose, onViewAll, compa
     </div>
   );
 }
+
+export default memo(OpenPositionsCard);

@@ -8,6 +8,25 @@ API = "http://127.0.0.1:8000"
 RUNNING = False
 _TOKEN = None
 
+
+def should_close_position(side: str, mark: float, sl: float | None, tp: float | None) -> tuple[bool, str]:
+    """Pure SL/TP decision, extracted so it can be exercised directly (e.g.
+    by the stress-test harness) without running the live polling loop."""
+    if side == "LONG":
+        if sl and mark <= float(sl):
+            return True, "SL hit"
+        if tp and mark >= float(tp):
+            return True, "TP hit"
+
+    if side == "SHORT":
+        if sl and mark >= float(sl):
+            return True, "SL hit"
+        if tp and mark <= float(tp):
+            return True, "TP hit"
+
+    return False, ""
+
+
 async def manage_positions():
     global RUNNING, _TOKEN
 
@@ -29,24 +48,7 @@ async def manage_positions():
                     sl = pos.get("sl")
                     tp = pos.get("tp")
 
-                    should_close = False
-                    reason = ""
-
-                    if side == "LONG":
-                        if sl and mark <= float(sl):
-                            should_close = True
-                            reason = "SL hit"
-                        elif tp and mark >= float(tp):
-                            should_close = True
-                            reason = "TP hit"
-
-                    if side == "SHORT":
-                        if sl and mark >= float(sl):
-                            should_close = True
-                            reason = "SL hit"
-                        elif tp and mark <= float(tp):
-                            should_close = True
-                            reason = "TP hit"
+                    should_close, reason = should_close_position(side, mark, sl, tp)
 
                     if should_close:
                         await client.post(f"{API}/api/paper/close/{trade_id}")

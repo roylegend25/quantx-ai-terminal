@@ -3,6 +3,8 @@ import httpx
 
 from app.core.config import settings
 from app.core.security import create_internal_service_token
+from app.execution.execution_engine import engine as execution_engine
+from app.execution.order_router import OrderType
 
 class TradingEngine:
 
@@ -34,6 +36,8 @@ class TradingEngine:
                 )
             ).json()["positions"]
 
+            signal_time = datetime.now(timezone.utc)
+
             print("Prediction :", prediction["direction"])
             print("Confidence :", prediction["confidence"])
             print("Open Trades:", len(positions))
@@ -45,24 +49,30 @@ class TradingEngine:
                 and len(positions) < settings.max_open_positions
             ):
 
-                print("Opening paper trade...")
+                print("Routing paper trade through execution engine...")
 
-                await client.post(
-                    "http://127.0.0.1:8000/api/paper/open",
-                    params={
-                        "symbol": self.symbol,
-                        "side": prediction["direction"],
-                        "usdt_size": 1000,
-                        "sl": prediction["stop"],
-                        "tp": prediction["target"],
-                    },
-                    json={
-                        "regime": prediction["regime"],
-                        "strategies": prediction["strategies"],
-                    },
+                result = await execution_engine.submit_order(
+                    symbol=self.symbol,
+                    side=prediction["direction"],
+                    usdt_size=1000,
+                    order_type=OrderType.IOC,
+                    sl=prediction["stop"],
+                    tp=prediction["target"],
+                    feature_id=prediction.get("feature_id"),
+                    regime=prediction["regime"],
+                    strategies=prediction["strategies"],
+                    signal_time=signal_time,
+                    open_positions=len(positions),
+                    equity=portfolio.get("equity"),
                 )
 
-                print("Trade opened.")
+                print(
+                    f"Execution {result.status}: filled {result.filled_qty}/{result.requested_qty} "
+                    f"@ {result.avg_fill_price} (slippage {result.actual_slippage_bps} bps, "
+                    f"{result.latency_ms}ms, {result.retries} retries)"
+                    if result.status in ("FILLED", "PARTIAL")
+                    else f"Execution {result.status}: {result.reason}"
+                )
 
             else:
                 print("No trade this cycle.")

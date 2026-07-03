@@ -1,9 +1,12 @@
+import { memo, useMemo } from "react";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Star, TrendingDown, TrendingUp } from "lucide-react";
 import type { Candle } from "../../hooks/useAppData";
-import { fmtNum } from "../../lib/format";
+import { fmtAxisNumber, fmtNum } from "../../lib/format";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 
 const TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"];
+const MOBILE_MAX_POINTS = 60;
 
 type Props = {
   symbol: string;
@@ -15,7 +18,7 @@ type Props = {
   prediction: any;
 };
 
-export default function ChartPanel({
+function ChartPanel({
   symbol,
   onSymbolChange,
   interval,
@@ -24,10 +27,17 @@ export default function ChartPanel({
   ticker,
   prediction,
 }: Props) {
+  const isMobile = useMediaQuery("(max-width: 640px)");
   const lastPrice = Number(ticker?.lastPrice || 0);
   const change = Number(ticker?.priceChangePercent || 0);
   const changeAbs = Number(ticker?.priceChange || 0);
   const features = prediction?.features || {};
+
+  const chartData = useMemo(() => {
+    if (!isMobile || candles.length <= MOBILE_MAX_POINTS) return candles;
+    const step = Math.ceil(candles.length / MOBILE_MAX_POINTS);
+    return candles.filter((_, i) => i % step === 0);
+  }, [candles, isMobile]);
 
   return (
     <div className="chart-card">
@@ -65,7 +75,7 @@ export default function ChartPanel({
       </div>
 
       <ResponsiveContainer width="100%" height={340}>
-        <AreaChart data={candles}>
+        <AreaChart data={chartData}>
           <defs>
             <linearGradient id="price" x1="0" y1="0" x2="0" y2="1">
               <stop offset="5%" stopColor="#7c5cff" stopOpacity={0.5} />
@@ -73,9 +83,22 @@ export default function ChartPanel({
             </linearGradient>
           </defs>
           <XAxis dataKey="label" stroke="#8b90a8" fontSize={12} />
-          <YAxis domain={["dataMin", "dataMax"]} stroke="#8b90a8" fontSize={12} />
+          <YAxis
+            domain={["dataMin", "dataMax"]}
+            stroke="#8b90a8"
+            fontSize={12}
+            tickFormatter={fmtAxisNumber}
+            width={64}
+          />
           <Tooltip />
-          <Area type="monotone" dataKey="close" stroke="#7c5cff" fill="url(#price)" strokeWidth={2.5} />
+          <Area
+            type="monotone"
+            dataKey="close"
+            stroke="#7c5cff"
+            fill="url(#price)"
+            strokeWidth={2.5}
+            isAnimationActive={false}
+          />
         </AreaChart>
       </ResponsiveContainer>
 
@@ -102,3 +125,5 @@ export default function ChartPanel({
     </div>
   );
 }
+
+export default memo(ChartPanel);

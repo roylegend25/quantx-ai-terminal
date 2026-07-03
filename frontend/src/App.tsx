@@ -1,26 +1,46 @@
-import { useState } from "react";
+import { lazy, Suspense, useCallback, useState } from "react";
 import "./App.css";
 import Sidebar from "./components/Layout/Sidebar";
 import Topbar from "./components/Layout/Topbar";
 import LoginPage from "./components/Auth/LoginPage";
 import DashboardPage from "./pages/DashboardPage";
-import PredictionsPage from "./pages/PredictionsPage";
-import PositionsPage from "./pages/PositionsPage";
-import PerformancePage from "./pages/PerformancePage";
-import MarketPage from "./pages/MarketPage";
-import BotSettingsPage from "./pages/BotSettingsPage";
-import RiskPage from "./pages/RiskPage";
-import LogsPage from "./pages/LogsPage";
-import BacktestingPage from "./pages/BacktestingPage";
-import SystemStatusPage from "./pages/SystemStatusPage";
 import { useAppData } from "./hooks/useAppData";
 import { useAuth } from "./hooks/useAuth";
 import type { NavKey } from "./lib/nav";
+
+const PredictionsPage = lazy(() => import("./pages/PredictionsPage"));
+const PositionsPage = lazy(() => import("./pages/PositionsPage"));
+const PerformancePage = lazy(() => import("./pages/PerformancePage"));
+const MarketPage = lazy(() => import("./pages/MarketPage"));
+const BotSettingsPage = lazy(() => import("./pages/BotSettingsPage"));
+const RiskPage = lazy(() => import("./pages/RiskPage"));
+const LogsPage = lazy(() => import("./pages/LogsPage"));
+const BacktestingPage = lazy(() => import("./pages/BacktestingPage"));
+const SystemStatusPage = lazy(() => import("./pages/SystemStatusPage"));
+const StressTestPage = lazy(() => import("./pages/StressTestPage"));
+const ExecutionPage = lazy(() => import("./pages/ExecutionPage"));
+const ModelCenterPage = lazy(() => import("./pages/ModelCenterPage"));
+
+function PageFallback() {
+  return <div className="page-fallback" aria-hidden="true" />;
+}
 
 function App() {
   const { authed, login: onLoginSuccess, logout } = useAuth();
   const [active, setActive] = useState<NavKey>("dashboard");
   const data = useAppData(authed);
+
+  const handleStopBot = useCallback(() => {
+    data.botAction("stop");
+  }, [data.botAction]);
+
+  const handleBellClick = useCallback(() => {
+    data.showToast("Notifications are coming soon");
+  }, [data.showToast]);
+
+  const handleThemeClick = useCallback(() => {
+    data.showToast("Theme switcher is coming soon");
+  }, [data.showToast]);
 
   if (authed === null) {
     return null;
@@ -28,10 +48,6 @@ function App() {
 
   if (!authed) {
     return <LoginPage onSuccess={onLoginSuccess} />;
-  }
-
-  function handleStopBot() {
-    data.botAction("stop");
   }
 
   function renderPage() {
@@ -56,6 +72,12 @@ function App() {
         return <BacktestingPage {...data} />;
       case "system-status":
         return <SystemStatusPage {...data} />;
+      case "stress-test":
+        return <StressTestPage {...data} />;
+      case "execution":
+        return <ExecutionPage {...data} />;
+      case "model-center":
+        return <ModelCenterPage {...data} />;
       default:
         return <DashboardPage {...data} navigate={setActive} />;
     }
@@ -73,15 +95,11 @@ function App() {
       />
 
       <main className="main">
-        <Topbar
-          dashboard={data.dashboard}
-          onBellClick={() => data.showToast("Notifications are coming soon")}
-          onThemeClick={() => data.showToast("Theme switcher is coming soon")}
-        />
+        <Topbar dashboard={data.dashboard} onBellClick={handleBellClick} onThemeClick={handleThemeClick} />
 
         {data.toast && <div className="toast">{data.toast}</div>}
 
-        {renderPage()}
+        <Suspense fallback={<PageFallback />}>{renderPage()}</Suspense>
 
         <footer className="app-footer">Built with ❤️ for serious traders</footer>
       </main>

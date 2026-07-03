@@ -1,9 +1,11 @@
+import { memo } from "react";
+
 type Props = {
   orderbook: any;
   rows?: number;
 };
 
-export default function OrderBookCard({ orderbook, rows = 6 }: Props) {
+function OrderBookCard({ orderbook, rows = 6 }: Props) {
   const asks = (orderbook?.asks || []).slice(0, rows).slice().reverse();
   const bids = (orderbook?.bids || []).slice(0, rows);
   const bestBid = orderbook?.bids?.[0]?.price;
@@ -43,3 +45,5 @@ export default function OrderBookCard({ orderbook, rows = 6 }: Props) {
     </div>
   );
 }
+
+export default memo(OrderBookCard);

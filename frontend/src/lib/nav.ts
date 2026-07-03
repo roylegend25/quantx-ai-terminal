@@ -8,7 +8,10 @@ export type NavKey =
   | "risk"
   | "logs"
   | "backtesting"
-  | "system-status";
+  | "system-status"
+  | "stress-test"
+  | "execution"
+  | "model-center";
 
 export const NAV_ITEMS: { key: NavKey; label: string }[] = [
   { key: "dashboard", label: "Dashboard" },
@@ -21,4 +24,7 @@ export const NAV_ITEMS: { key: NavKey; label: string }[] = [
   { key: "logs", label: "Logs" },
   { key: "backtesting", label: "Backtesting" },
   { key: "system-status", label: "System Status" },
+  { key: "stress-test", label: "Stress Test" },
+  { key: "execution", label: "Execution" },
+  { key: "model-center", label: "AI Model Center" },
 ];

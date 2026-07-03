@@ -1,3 +1,4 @@
+import { memo } from "react";
 import {
   ResponsiveContainer,
   LineChart,
@@ -7,13 +8,14 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { fmtAxisNumber } from "../../lib/format";
 
 type Props = {
   backtest: any;
   runBacktest: () => void;
 };
 
-export default function BacktestCard({
+function BacktestCard({
   backtest,
   runBacktest,
 }: Props) {
@@ -73,7 +75,7 @@ export default function BacktestCard({
 
                   <XAxis dataKey="trade"/>
 
-                  <YAxis/>
+                  <YAxis tickFormatter={fmtAxisNumber} width={64} />
 
                   <Tooltip/>
 
@@ -99,3 +101,5 @@ export default function BacktestCard({
     </>
   );
 }
+
+export default memo(BacktestCard);

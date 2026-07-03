@@ -8,6 +8,7 @@ export type Portfolio = {
   wins?: number;
   losses?: number;
   open_positions?: number;
+  sharpe_ratio?: number;
 };
 
 export type Position = {

@@ -1,3 +1,4 @@
+import { memo, useMemo } from "react";
 import { fmtPct, fmtUsd } from "../../lib/format";
 import {
   drawdownCurveOf,
@@ -17,14 +18,15 @@ type Props = {
   history: Trade[];
 };
 
-export default function RiskStatusCard({ portfolio, positions, history }: Props) {
-  const margin = marginUsagePct(positions, portfolio);
+function RiskStatusCard({ portfolio, positions, history }: Props) {
+  const margin = useMemo(() => marginUsagePct(positions, portfolio), [positions, portfolio]);
   const risk = riskLevelOf(margin);
 
-  const equityCurve = equityCurveOf(portfolio, history);
-  const drawdownCurve = drawdownCurveOf(equityCurve);
-  const maxDrawdown = maxDrawdownOf(drawdownCurve);
-  const var95 = historicalVaR95(history);
+  const { maxDrawdown, var95 } = useMemo(() => {
+    const equityCurve = equityCurveOf(portfolio, history);
+    const drawdownCurve = drawdownCurveOf(equityCurve);
+    return { maxDrawdown: maxDrawdownOf(drawdownCurve), var95: historicalVaR95(history) };
+  }, [portfolio, history]);
 
   return (
     <div className="stack-card">
@@ -51,3 +53,5 @@ export default function RiskStatusCard({ portfolio, positions, history }: Props)
     </div>
   );
 }
+
+export default memo(RiskStatusCard);

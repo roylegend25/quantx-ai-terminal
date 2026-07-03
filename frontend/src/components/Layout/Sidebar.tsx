@@ -1,4 +1,4 @@
-import { useEffect, useState, type ComponentType } from "react";
+import { memo, useEffect, useState, type ComponentType } from "react";
 import {
   LayoutDashboard,
   Brain,
@@ -13,6 +13,9 @@ import {
   StopCircle,
   Bot,
   Activity,
+  Siren,
+  Zap,
+  Boxes,
 } from "lucide-react";
 import { NAV_ITEMS, type NavKey } from "../../lib/nav";
 
@@ -27,6 +30,9 @@ const ICONS: Record<NavKey, ComponentType<{ size?: number }>> = {
   logs: FileText,
   backtesting: FlaskConical,
   "system-status": Activity,
+  "stress-test": Siren,
+  execution: Zap,
+  "model-center": Boxes,
 };
 
 type Props = {
@@ -50,7 +56,7 @@ function formatUptime(ms: number): string {
   return `${minutes}m`;
 }
 
-export default function Sidebar({ active, onNavigate, botStatus, dashboard, onStopBot, onLogout }: Props) {
+function Sidebar({ active, onNavigate, botStatus, dashboard, onStopBot, onLogout }: Props) {
   const status = (botStatus?.status || dashboard?.bot?.status || "loading").toUpperCase();
   const mode = (botStatus?.mode || dashboard?.mode || "paper").toUpperCase();
   const isLive = status === "RUNNING";
@@ -120,3 +126,5 @@ export default function Sidebar({ active, onNavigate, botStatus, dashboard, onSt
     </aside>
   );
 }
+
+export default memo(Sidebar);

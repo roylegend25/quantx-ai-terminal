@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 type Trade = {
   id: number;
   price: number;
@@ -11,7 +13,7 @@ type Props = {
   rows?: number;
 };
 
-export default function RecentTradesCard({ trades, rows = 8 }: Props) {
+function RecentTradesCard({ trades, rows = 8 }: Props) {
   return (
     <div className="table-wrap">
       <table className="data-table">
@@ -37,3 +39,5 @@ export default function RecentTradesCard({ trades, rows = 8 }: Props) {
     </div>
   );
 }
+
+export default memo(RecentTradesCard);

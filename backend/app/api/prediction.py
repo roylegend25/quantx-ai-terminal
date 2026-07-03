@@ -7,6 +7,7 @@ from app.trading.risk_manager import calculate_levels
 from app.strategy.ensemble import evaluate as ensemble_evaluate
 from app.intelligence import market_intelligence
 from app.timeframes.multi_timeframe import evaluate_all as evaluate_all_timeframes
+from app.ml.feature_store import store as feature_store
 from app.monitoring.logging import get_logger, log_event
 from app.monitoring.metrics import PREDICTION_LATENCY
 from app.monitoring.tracing import span
@@ -119,6 +120,15 @@ async def prediction(symbol: str, interval: str = "5m", limit: int = 220):
             consensus = None
 
         pred = make_prediction(features, market_context, consensus)
+
+        try:
+            pred["feature_id"] = feature_store.save_prediction(
+                symbol=symbol,
+                timeframe=interval,
+                prediction=pred,
+            )
+        except Exception:
+            pred["feature_id"] = None
 
     latency_ms = round((time.perf_counter() - start) * 1000, 2)
     PREDICTION_LATENCY.labels(symbol=symbol).observe(latency_ms / 1000)

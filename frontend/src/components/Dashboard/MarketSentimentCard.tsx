@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 type Props = {
   marketContext: any;
 };
@@ -8,7 +10,7 @@ function toneOfBias(bias?: string): "green" | "red" | "yellow" {
   return "yellow";
 }
 
-export default function MarketSentimentCard({ marketContext }: Props) {
+function MarketSentimentCard({ marketContext }: Props) {
   const bias = marketContext?.market_bias ?? "NEUTRAL";
   const tone = toneOfBias(bias);
 
@@ -58,3 +60,5 @@ export default function MarketSentimentCard({ marketContext }: Props) {
     </div>
   );
 }
+
+export default memo(MarketSentimentCard);

@@ -1,3 +1,4 @@
+import { memo, useMemo } from "react";
 import { Area, AreaChart, ResponsiveContainer } from "recharts";
 import { fmtPct } from "../../lib/format";
 import {
@@ -13,12 +14,12 @@ type Props = {
   history: Trade[];
 };
 
-export default function PerformanceMiniCard({ portfolio, history }: Props) {
-  const equityCurve = equityCurveOf(portfolio, history);
-  const initial = initialBalanceOf(portfolio);
+function PerformanceMiniCard({ portfolio, history }: Props) {
+  const equityCurve = useMemo(() => equityCurveOf(portfolio, history), [portfolio, history]);
+  const initial = useMemo(() => initialBalanceOf(portfolio), [portfolio]);
   const current = portfolio?.equity ?? initial;
   const returnPct = initial > 0 ? ((current - initial) / initial) * 100 : 0;
-  const stats = winLossStats(history, portfolio);
+  const stats = useMemo(() => winLossStats(history, portfolio), [history, portfolio]);
 
   return (
     <div>
@@ -37,7 +38,14 @@ export default function PerformanceMiniCard({ portfolio, history }: Props) {
               <stop offset="95%" stopColor="#7c5cff" stopOpacity={0} />
             </linearGradient>
           </defs>
-          <Area type="monotone" dataKey="equity" stroke="#7c5cff" fill="url(#perfMini)" strokeWidth={2} />
+          <Area
+            type="monotone"
+            dataKey="equity"
+            stroke="#7c5cff"
+            fill="url(#perfMini)"
+            strokeWidth={2}
+            isAnimationActive={false}
+          />
         </AreaChart>
       </ResponsiveContainer>
 
@@ -62,3 +70,5 @@ export default function PerformanceMiniCard({ portfolio, history }: Props) {
     </div>
   );
 }
+
+export default memo(PerformanceMiniCard);

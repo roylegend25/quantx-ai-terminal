@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 type Strategy = {
   direction: string;
   confidence: number;
@@ -8,7 +10,7 @@ type Props = {
   strategies?: Record<string, Strategy>;
 };
 
-export default function StrategyVotes({ strategies }: Props) {
+function StrategyVotes({ strategies }: Props) {
   if (!strategies) return null;
 
   return (
@@ -27,3 +29,5 @@ export default function StrategyVotes({ strategies }: Props) {
     </div>
   );
 }
+
+export default memo(StrategyVotes);

@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 type Signal = "bullish" | "bearish" | "neutral";
 type Tone = "green" | "red" | "yellow";
 
@@ -58,7 +60,7 @@ function fmtNum(n?: number | null, digits = 2): string {
   return typeof n === "number" ? n.toFixed(digits) : "—";
 }
 
-export default function AIDecisionCenter({ symbol, prediction, lastUpdated }: Props) {
+function AIDecisionCenter({ symbol, prediction, lastUpdated }: Props) {
   const signal = signalFromDirection(prediction?.direction);
   const tone = toneClass(signal);
 
@@ -164,3 +166,5 @@ export default function AIDecisionCenter({ symbol, prediction, lastUpdated }: Pr
     </div>
   );
 }
+
+export default memo(AIDecisionCenter);

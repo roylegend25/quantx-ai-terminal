@@ -12,6 +12,7 @@ import {
   Zap,
 } from "lucide-react";
 import Card from "../components/Layout/Card";
+import ExchangeStatusCard from "../components/Dashboard/ExchangeStatusCard";
 import { fmtDuration, fmtNum, fmtPct, fmtRelativeTime } from "../lib/format";
 import type { AppData } from "../hooks/useAppData";
 
@@ -30,8 +31,8 @@ function StatusPill({ ok, label }: { ok: boolean | undefined; label: string }) {
   );
 }
 
-export default function SystemStatusPage({ systemStatus }: Props) {
-  const s = systemStatus;
+export default function SystemStatusPage(props: Props) {
+  const { systemStatus: s, exchangeStatus, exchangeRiskCheck, exchangeBalances, exchangePositions, exchangeOpenOrders } = props;
   const alerts: { level: string; message: string }[] = s?.alerts || [];
 
   return (
@@ -154,6 +155,16 @@ export default function SystemStatusPage({ systemStatus }: Props) {
             </b>
           </div>
         </div>
+      </Card>
+
+      <Card title="Exchange Status" full>
+        <ExchangeStatusCard
+          exchangeStatus={exchangeStatus}
+          exchangeRiskCheck={exchangeRiskCheck}
+          exchangeBalances={exchangeBalances}
+          exchangePositions={exchangePositions}
+          exchangeOpenOrders={exchangeOpenOrders}
+        />
       </Card>
     </div>
   );

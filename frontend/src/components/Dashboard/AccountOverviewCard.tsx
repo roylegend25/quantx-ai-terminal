@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { fmtPct, fmtUsd, toneClass, toneOf } from "../../lib/format";
 import { marginUsagePct, type Portfolio, type Position } from "../../lib/portfolioStats";
 
@@ -6,7 +7,7 @@ type Props = {
   positions: Position[];
 };
 
-export default function AccountOverviewCard({ portfolio, positions }: Props) {
+function AccountOverviewCard({ portfolio, positions }: Props) {
   const margin = marginUsagePct(positions, portfolio);
   const available = (portfolio?.equity ?? 0) - ((portfolio?.equity ?? 0) * margin) / 100;
   const dailyPnl = portfolio?.daily_pnl ?? 0;
@@ -44,3 +45,5 @@ export default function AccountOverviewCard({ portfolio, positions }: Props) {
     </div>
   );
 }
+
+export default memo(AccountOverviewCard);

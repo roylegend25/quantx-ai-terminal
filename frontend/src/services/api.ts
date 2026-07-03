@@ -50,4 +50,44 @@ export const api = {
   mlModels: () => getJson("/api/ml/models"),
   mlPerformance: () => getJson("/api/ml/performance"),
   systemStatus: () => getJson("/api/health/status"),
+  stressScenarios: () => getJson("/api/stress/scenarios"),
+  stressReport: () => getJson("/api/stress/report"),
+  runStressTest: async (scenarioId?: string) => {
+    const qs = scenarioId ? `?scenario_id=${encodeURIComponent(scenarioId)}` : "";
+    const res = await authFetch(`${API}/api/stress/run${qs}`, { method: "POST" });
+    return res.json();
+  },
+  exchangeStatus: () => getJson("/api/exchange/status"),
+  exchangeRiskCheck: () => getJson("/api/exchange/risk-check"),
+  exchangeBalances: (exchange: string) => getJson(`/api/exchange/balances?exchange=${exchange}`),
+  exchangePositions: (exchange: string) => getJson(`/api/exchange/positions?exchange=${exchange}`),
+  exchangeOpenOrders: (exchange: string) => getJson(`/api/exchange/open-orders?exchange=${exchange}`),
+  executionStatus: () => getJson("/api/execution/status"),
+  executionMetrics: () => getJson("/api/execution/metrics"),
+  modelsList: () => getJson("/api/models"),
+  modelsChampion: (modelName?: string) =>
+    getJson(`/api/models/champion${modelName ? `?model_name=${encodeURIComponent(modelName)}` : ""}`),
+  modelsHistory: (modelName: string) => getJson(`/api/models/history?model_name=${encodeURIComponent(modelName)}`),
+  modelsExperiments: () => getJson("/api/models/experiments"),
+  modelsDrift: () => getJson("/api/models/drift"),
+  modelsTrain: async (modelName: string, algorithm?: string) => {
+    const res = await authFetch(`${API}/api/models/train`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model_name: modelName, algorithm: algorithm || modelName }),
+    });
+    return res.json();
+  },
+  modelsPromote: async (modelId: string) => {
+    const res = await authFetch(`${API}/api/models/promote/${encodeURIComponent(modelId)}`, { method: "POST" });
+    return res.json();
+  },
+  modelsRollback: async (modelId: string) => {
+    const res = await authFetch(`${API}/api/models/rollback/${encodeURIComponent(modelId)}`, { method: "POST" });
+    return res.json();
+  },
+  modelsArchive: async (modelId: string) => {
+    const res = await authFetch(`${API}/api/models/archive/${encodeURIComponent(modelId)}`, { method: "POST" });
+    return res.json();
+  },
 };

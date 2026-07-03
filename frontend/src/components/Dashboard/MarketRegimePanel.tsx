@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 type Regime = "TRENDING" | "RANGING" | "HIGH_VOL" | "NORMAL";
 type Tone = "green" | "red" | "yellow";
 
@@ -61,7 +63,7 @@ function rsiState(rsi: number): { label: string; tone: Tone } {
   return { label: "Neutral", tone: "yellow" };
 }
 
-export default function MarketRegimePanel({ prediction }: Props) {
+function MarketRegimePanel({ prediction }: Props) {
   const regime = isRegime(prediction?.regime) ? prediction.regime : null;
   const featureRegime = prediction?.feature_regime;
 
@@ -119,3 +121,5 @@ export default function MarketRegimePanel({ prediction }: Props) {
     </div>
   );
 }
+
+export default memo(MarketRegimePanel);

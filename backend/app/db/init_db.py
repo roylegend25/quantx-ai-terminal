@@ -16,6 +16,8 @@ def _migrate_trade_columns():
             conn.execute(text("ALTER TABLE trades ADD COLUMN regime VARCHAR"))
         if "strategy_snapshot" not in existing:
             conn.execute(text("ALTER TABLE trades ADD COLUMN strategy_snapshot TEXT"))
+        if "feature_id" not in existing:
+            conn.execute(text("ALTER TABLE trades ADD COLUMN feature_id INTEGER"))
 
 def init_db():
     Base.metadata.create_all(bind=engine)

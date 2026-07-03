@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 type Signal = "bullish" | "bearish" | "neutral";
 
 type StrategyResult = {
@@ -85,7 +87,7 @@ function FlowConnector() {
   );
 }
 
-export default function AIDecisionFlow({ prediction, ticker }: Props) {
+function AIDecisionFlow({ prediction, ticker }: Props) {
   const change = Number(ticker?.priceChangePercent ?? 0);
   const marketActive = !!ticker;
   const marketNode: FlowNodeData = {
@@ -171,3 +173,5 @@ export default function AIDecisionFlow({ prediction, ticker }: Props) {
     </div>
   );
 }
+
+export default memo(AIDecisionFlow);

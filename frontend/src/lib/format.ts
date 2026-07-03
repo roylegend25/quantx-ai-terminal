@@ -17,6 +17,15 @@ export function fmtPct(n?: number | null, digits = 2): string {
   return `${n.toFixed(digits)}%`;
 }
 
+/** Formats a chart-axis number with sensible precision — avoids raw
+ *  high-precision floats overflowing the axis gutter and getting clipped. */
+export function fmtAxisNumber(n: number): string {
+  if (typeof n !== "number" || Number.isNaN(n)) return "";
+  const abs = Math.abs(n);
+  const digits = abs >= 1000 ? 0 : abs >= 1 ? 1 : 4;
+  return n.toLocaleString(undefined, { maximumFractionDigits: digits });
+}
+
 export function fmtCompact(n?: number | null): string {
   if (typeof n !== "number" || Number.isNaN(n)) return "—";
   return Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format(n);
