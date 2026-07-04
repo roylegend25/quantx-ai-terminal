@@ -17,6 +17,7 @@
 body {
   margin: 0;
   min-height: 100vh;
+  min-height: 100dvh;
   overflow-x: hidden;
   background:
     radial-gradient(circle at 20% 10%, rgba(124, 92, 255, 0.25), transparent 30%),
@@ -33,6 +34,7 @@ button, select, input {
 .app {
   display: flex;
   min-height: 100vh;
+  min-height: 100dvh;
   max-width: 100vw;
   overflow-x: hidden;
 }
@@ -69,6 +71,7 @@ button, select, input {
   position: sticky;
   top: 0;
   height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
 }
@@ -438,7 +441,280 @@ button, select, input {
   }
 }
 
-@media (max-width: 900px) {
+/* =====================================================================
+   iPad breakpoints (portrait 768-1024, landscape 1025-1366)
+   Covers iPad Pro 11" (834x1194) and iPad Pro 13" (1024x1366) M4 in both
+   orientations, on Safari and Chrome for iPadOS.
+   ===================================================================== */
+
+@media (min-width: 768px) and (max-width: 1024px) {
+  /* ---------- Portrait: compact sticky top nav instead of full sidebar --- */
+
+  .app {
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .main {
+    padding: 18px 22px 32px;
+    min-width: 0;
+  }
+
+  .sidebar {
+    width: 100%;
+    height: auto;
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    flex-direction: column;
+    padding: 12px 18px;
+    gap: 10px;
+    border-right: none;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    backdrop-filter: blur(14px);
+  }
+
+  .sidebar .brand {
+    margin-bottom: 0;
+  }
+
+  .sidebar .brand-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 11px;
+    font-size: 12px;
+  }
+
+  .sidebar .brand h1 {
+    font-size: 15px;
+  }
+
+  .sidebar .brand p {
+    display: none;
+  }
+
+  .nav-list {
+    flex-direction: row;
+    flex: 0 0 auto;
+    overflow-x: auto;
+    overflow-y: hidden;
+    gap: 6px;
+    padding-bottom: 2px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .nav {
+    flex: 0 0 auto;
+    padding: 10px 14px;
+    font-size: 13px;
+    white-space: nowrap;
+    min-height: 44px;
+  }
+
+  .status-box {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 0;
+    padding: 10px 14px;
+    border-radius: 14px;
+    text-align: left;
+    gap: 8px 14px;
+  }
+
+  .status-box-head {
+    width: auto;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  .bot-orb {
+    width: 44px;
+    height: 44px;
+  }
+
+  .status-stats {
+    display: none;
+  }
+
+  .status-box-actions {
+    width: auto;
+    margin-top: 0;
+  }
+
+  .icon-btn.danger {
+    padding: 0 14px;
+    font-size: 12px;
+  }
+
+  /* ---------- Topbar ---------- */
+
+  .topbar {
+    flex-wrap: wrap;
+    gap: 14px;
+  }
+
+  .ticker-strip {
+    order: 3;
+    flex: 1 1 100%;
+    width: 100%;
+    overflow-x: auto;
+    justify-content: flex-start;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* ---------- Dashboard grid: clean 2-column, chart full-width on top --- */
+
+  .dash-grid, .page-grid {
+    gap: 16px;
+  }
+
+  .dash-row-1 {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .dash-row-1 > .chart-card {
+    grid-column: 1 / -1;
+  }
+
+  .dash-row-2, .dash-row-3, .page-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .dash-row-2 > :last-child,
+  .dash-row-3 > :last-child {
+    grid-column: 1 / -1;
+  }
+
+  .card.wide, .card.full {
+    grid-column: 1 / -1;
+  }
+
+  /* ---------- Card spacing: tighter, consistent, less "tall" ---------- */
+
+  .card, .stack-card, .chart-card, .prediction-card {
+    padding: 16px;
+    border-radius: 20px;
+  }
+
+  .card-head {
+    margin-bottom: 12px;
+  }
+
+  .dial {
+    width: 180px;
+    height: 180px;
+  }
+
+  .dial-inner {
+    width: 140px;
+    height: 140px;
+  }
+}
+
+@media (min-width: 1025px) and (max-width: 1366px) {
+  /* ---------- Landscape: sidebar stays, but compact ---------- */
+
+  .sidebar {
+    width: 208px;
+    padding: 20px 16px;
+    backdrop-filter: blur(14px);
+  }
+
+  .sidebar .brand-icon {
+    width: 38px;
+    height: 38px;
+  }
+
+  .sidebar .brand h1 {
+    font-size: 15px;
+  }
+
+  .nav {
+    padding: 10px 12px;
+    font-size: 13px;
+    min-height: 44px;
+  }
+
+  .main {
+    padding: 18px 22px 32px;
+    min-width: 0;
+  }
+
+  .dash-grid, .page-grid {
+    gap: 14px;
+  }
+
+  /* Chart wide on the left, AI Prediction / Account+Risk stacked beside it */
+
+  .dash-row-1 {
+    grid-template-columns: 1.6fr 1fr;
+    grid-template-rows: auto auto;
+  }
+
+  .dash-row-1 > .chart-card {
+    grid-column: 1;
+    grid-row: 1 / 3;
+  }
+
+  .dash-row-1 > .prediction-card {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .dash-row-1 > .stack-col {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .dash-row-2, .dash-row-3 {
+    gap: 14px;
+  }
+
+  .card, .stack-card, .chart-card, .prediction-card {
+    padding: 18px;
+  }
+}
+
+/* ---------- Touch-friendly targets across both iPad breakpoints ---------- */
+
+@media (min-width: 768px) and (max-width: 1366px) {
+  .icon-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  .tf-btn {
+    padding: 9px 14px;
+    min-height: 40px;
+  }
+
+  .mini-btn {
+    padding: 9px 14px;
+    min-height: 36px;
+  }
+
+  .controls button,
+  .btn-long, .btn-short {
+    min-height: 44px;
+  }
+
+  .brand-icon {
+    box-shadow: 0 0 18px rgba(124, 92, 255, .3);
+  }
+
+  .bot-orb.live {
+    box-shadow: 0 0 14px rgba(0,245,160,.22);
+  }
+
+  .dial::before {
+    filter: blur(2px);
+  }
+}
+
+@media (max-width: 767px) {
   .app {
     flex-direction: column;
     min-width: 0;
@@ -714,7 +990,7 @@ button, select, input {
 
 .chart-price-row h3 {
   margin: 0;
-  font-size: 30px;
+  font-size: clamp(22px, 2.4vw, 30px);
 }
 
 .indicators-row {
@@ -826,7 +1102,7 @@ button, select, input {
 
 .dial-inner h3 {
   margin: 4px 0 0;
-  font-size: 22px;
+  font-size: clamp(17px, 2vw, 22px);
   letter-spacing: .02em;
   white-space: nowrap;
 }
@@ -1398,8 +1674,8 @@ progress.disabled::-webkit-progress-value {
 
 .toast {
   position: fixed;
-  bottom: 22px;
-  right: 22px;
+  bottom: calc(22px + env(safe-area-inset-bottom, 0px));
+  right: calc(22px + env(safe-area-inset-right, 0px));
   background: #121827;
   border: 1px solid rgba(255,255,255,.18);
   padding: 14px 18px;
@@ -1458,7 +1734,7 @@ progress.disabled::-webkit-progress-value {
 .strategy-card b {
   display: block;
   margin-top: 10px;
-  font-size: 24px;
+  font-size: clamp(18px, 2vw, 24px);
   color: var(--c-green);
 }
 
@@ -1565,7 +1841,7 @@ progress.disabled::-webkit-progress-value {
 
 .regime-banner h3 {
   margin: 0;
-  font-size: 24px;
+  font-size: clamp(18px, 2vw, 24px);
 }
 
 .regime-focus {
@@ -1754,6 +2030,7 @@ progress.disabled::-webkit-progress-value {
 
 .login-page {
   min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   place-items: center;
   padding: 24px;

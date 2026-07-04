@@ -28,6 +28,9 @@ function ChartPanel({
   prediction,
 }: Props) {
   const isMobile = useMediaQuery("(max-width: 640px)");
+  const isTabletPortrait = useMediaQuery("(min-width: 768px) and (max-width: 1024px)");
+  const isTabletLandscape = useMediaQuery("(min-width: 1025px) and (max-width: 1366px)");
+  const chartHeight = isTabletPortrait ? 300 : isTabletLandscape ? 320 : 340;
   const lastPrice = Number(ticker?.lastPrice || 0);
   const change = Number(ticker?.priceChangePercent || 0);
   const changeAbs = Number(ticker?.priceChange || 0);
@@ -74,7 +77,7 @@ function ChartPanel({
         </span>
       </div>
 
-      <ResponsiveContainer width="100%" height={340}>
+      <ResponsiveContainer width="100%" height={chartHeight}>
         <AreaChart data={chartData}>
           <defs>
             <linearGradient id="price" x1="0" y1="0" x2="0" y2="1">
