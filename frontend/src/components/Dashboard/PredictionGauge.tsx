@@ -1,16 +1,14 @@
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { ArrowDownRight, ArrowUpRight, Minus } from "lucide-react";
 import { fmtPct, fmtUsd } from "../../lib/format";
 
 type Props = {
   prediction: any;
+  lastUpdated: Date | null;
 };
 
 // Must match backend/app/api/prediction.py's PREDICTION_CACHE_TTL_SECONDS -
-// that's the real cadence at which the backend recomputes a prediction, and
-// `prediction.computed_at` is the single source of truth for when the current
-// one was produced. Polling more often than this just re-serves the same
-// cached prediction/timestamp, so it never perturbs the countdown below.
+// that's the real cadence at which the backend recomputes a prediction.
 const CYCLE_SECONDS = 60;
 
 function directionTone(direction?: string): "green" | "red" | "yellow" {
@@ -19,13 +17,44 @@ function directionTone(direction?: string): "green" | "red" | "yellow" {
   return "yellow";
 }
 
-function PredictionGauge({ prediction }: Props) {
+function PredictionGauge({ prediction, lastUpdated }: Props) {
   const [now, setNow] = useState(Date.now());
+  // Single source of truth for the countdown: the epoch ms at which the
+  // current cycle ends. Only ever written by the effect below, never derived
+  // inline from `now`, so it can't drift or get stomped by an unrelated
+  // render/poll.
+  const [nextPredictionAt, setNextPredictionAt] = useState<number | null>(null);
 
+  // Kept up to date every render without being a dependency of the effect
+  // below, so using it as a fallback anchor doesn't force that effect to
+  // re-run (and reset the countdown) on every poll tick.
+  const lastUpdatedRef = useRef(lastUpdated);
+  lastUpdatedRef.current = lastUpdated;
+
+  // The one and only timer in this component: just re-renders every second
+  // so the countdown display stays live. It never touches nextPredictionAt.
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, []);
+
+  // Recomputes the countdown anchor ONLY when `prediction` itself changes.
+  // useAppData dedupes the prediction state (deep-equality), so its identity
+  // is stable across polls that return the same data - this effect simply
+  // will not fire for those, which is what stops the countdown resetting on
+  // every API refresh. It fires again once the backend genuinely produces a
+  // new prediction (new computed_at / different values).
+  useEffect(() => {
+    if (!prediction) return;
+    const backendAnchor =
+      typeof prediction.next_prediction_at === "number"
+        ? prediction.next_prediction_at
+        : typeof prediction.computed_at === "number"
+        ? prediction.computed_at + CYCLE_SECONDS * 1000
+        : null;
+    const fallbackAnchor = (lastUpdatedRef.current?.getTime() ?? Date.now()) + CYCLE_SECONDS * 1000;
+    setNextPredictionAt(backendAnchor ?? fallbackAnchor);
+  }, [prediction]);
 
   const direction = prediction?.direction;
   const tone = directionTone(direction);
@@ -33,9 +62,9 @@ function PredictionGauge({ prediction }: Props) {
   const isNoTrade = direction === "NO_TRADE";
   const riskReason = prediction?.risk?.reason;
 
-  const computedAt: number | null = prediction?.computed_at ?? null;
-  const elapsed = computedAt ? Math.floor((now - computedAt) / 1000) : 0;
-  const remaining = Math.max(0, CYCLE_SECONDS - elapsed);
+  const remaining = nextPredictionAt
+    ? Math.max(0, Math.ceil((nextPredictionAt - now) / 1000))
+    : CYCLE_SECONDS;
   const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
   const ss = String(remaining % 60).padStart(2, "0");
 
