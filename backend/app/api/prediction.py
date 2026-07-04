@@ -23,6 +23,13 @@ MTF_AGREE_BOOST_MAX = 15.0
 MTF_DISAGREE_PENALTY_MAX = 20.0
 MTF_NO_TRADE_PENALTY = 10.0
 
+# How long a computed prediction stays valid before the next request triggers a
+# recompute. The frontend's "Next Prediction In" countdown mirrors this exact
+# window via `computed_at`, so the two must stay in lockstep - see
+# frontend/src/components/Dashboard/PredictionGauge.tsx (CYCLE_SECONDS).
+PREDICTION_CACHE_TTL_SECONDS = 60
+_prediction_cache: dict[tuple[str, str], dict] = {}
+
 
 def _consensus_adjustment(consensus: dict | None, direction: str) -> float:
     if not consensus:
@@ -87,6 +94,11 @@ async def prediction(symbol: str, interval: str = "5m", limit: int = 220):
     symbol = symbol.upper()
     start = time.perf_counter()
 
+    cache_key = (symbol, interval)
+    cached = _prediction_cache.get(cache_key)
+    if cached and time.time() - cached["computed_at"] / 1000 < PREDICTION_CACHE_TTL_SECONDS:
+        return cached["response"]
+
     with span("prediction", symbol=symbol, interval=interval):
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.get(
@@ -120,6 +132,7 @@ async def prediction(symbol: str, interval: str = "5m", limit: int = 220):
             consensus = None
 
         pred = make_prediction(features, market_context, consensus)
+        pred["computed_at"] = int(time.time() * 1000)
 
         try:
             pred["feature_id"] = feature_store.save_prediction(
@@ -148,8 +161,10 @@ async def prediction(symbol: str, interval: str = "5m", limit: int = 220):
         error=None,
     )
 
-    return {
+    response = {
         "symbol": symbol,
         "interval": interval,
         "prediction": pred,
     }
+    _prediction_cache[cache_key] = {"computed_at": pred["computed_at"], "response": response}
+    return response

@@ -4,9 +4,13 @@ import { fmtPct, fmtUsd } from "../../lib/format";
 
 type Props = {
   prediction: any;
-  lastUpdated: Date | null;
 };
 
+// Must match backend/app/api/prediction.py's PREDICTION_CACHE_TTL_SECONDS -
+// that's the real cadence at which the backend recomputes a prediction, and
+// `prediction.computed_at` is the single source of truth for when the current
+// one was produced. Polling more often than this just re-serves the same
+// cached prediction/timestamp, so it never perturbs the countdown below.
 const CYCLE_SECONDS = 60;
 
 function directionTone(direction?: string): "green" | "red" | "yellow" {
@@ -15,7 +19,7 @@ function directionTone(direction?: string): "green" | "red" | "yellow" {
   return "yellow";
 }
 
-function PredictionGauge({ prediction, lastUpdated }: Props) {
+function PredictionGauge({ prediction }: Props) {
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
@@ -29,8 +33,9 @@ function PredictionGauge({ prediction, lastUpdated }: Props) {
   const isNoTrade = direction === "NO_TRADE";
   const riskReason = prediction?.risk?.reason;
 
-  const elapsed = lastUpdated ? Math.floor((now - lastUpdated.getTime()) / 1000) : 0;
-  const remaining = CYCLE_SECONDS - (elapsed % CYCLE_SECONDS);
+  const computedAt: number | null = prediction?.computed_at ?? null;
+  const elapsed = computedAt ? Math.floor((now - computedAt) / 1000) : 0;
+  const remaining = Math.max(0, CYCLE_SECONDS - elapsed);
   const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
   const ss = String(remaining % 60).padStart(2, "0");
 
