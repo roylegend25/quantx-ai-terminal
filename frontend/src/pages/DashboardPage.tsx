@@ -1,6 +1,6 @@
 import { Flame } from "lucide-react";
 import Card from "../components/Layout/Card";
-import ChartPanel from "../components/Dashboard/ChartPanel";
+import PredictionChart from "../components/Charts/PredictionChart";
 import PredictionGauge from "../components/Dashboard/PredictionGauge";
 import AccountOverviewCard from "../components/Dashboard/AccountOverviewCard";
 import RiskStatusCard from "../components/Dashboard/RiskStatusCard";
@@ -22,7 +22,7 @@ export default function DashboardPage(props: Props) {
   return (
     <div className="dash-grid">
       <div className="dash-row-1">
-        <ChartPanel
+        <PredictionChart
           symbol={props.symbol}
           onSymbolChange={props.setSymbol}
           interval={props.interval}

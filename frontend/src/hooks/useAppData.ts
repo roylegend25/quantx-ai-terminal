@@ -35,7 +35,7 @@ function useDedupedState<T>(initial: T): [T, (next: T) => void] {
 
 export function useAppData(authed: boolean | null) {
   const [symbol, setSymbol] = useState("BTCUSDT");
-  const [interval, setInterval_] = useState("15m");
+  const [interval, setInterval_] = useState("1h");
 
   const [dashboard, setDashboard] = useDedupedState<any>(null);
   const [prediction, setPrediction] = useDedupedState<any>(null);
@@ -67,17 +67,26 @@ export function useAppData(authed: boolean | null) {
   const [labWalkForward, setLabWalkForward] = useState<any>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [toast, setToast] = useState("");
+  const [toastTone, setToastTone] = useState<"success" | "error">("success");
   const [loading, setLoading] = useState(false);
 
   const toastTimer = useRef<number | null>(null);
+  // Guards against out-of-order network responses: if the user switches
+  // symbol/interval (or the 10s poll fires) again before an in-flight load()
+  // resolves, the older response must not clobber state with stale data.
+  const loadRequestId = useRef(0);
 
-  const showToast = useCallback((message: string) => {
+  const showToast = useCallback((message: string, tone: "success" | "error" = "success") => {
     setToast(message);
+    setToastTone(tone);
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(""), 3000);
   }, []);
 
   const load = useCallback(async () => {
+    const requestId = ++loadRequestId.current;
+    const isStale = () => loadRequestId.current !== requestId;
+
     setLoading(true);
     try {
       const [dash, predRes, candleRows] = await Promise.all([
@@ -85,6 +94,8 @@ export function useAppData(authed: boolean | null) {
         api.prediction(symbol, interval),
         api.candles(symbol, interval, 220),
       ]);
+
+      if (isStale()) return;
 
       setDashboard(dash);
       setPrediction(predRes.prediction);
@@ -117,6 +128,8 @@ export function useAppData(authed: boolean | null) {
           api.modelsExperiments().catch(() => null),
           api.modelsDrift().catch(() => null),
         ]);
+
+      if (isStale()) return;
 
       setOrderbook(ob);
       setTrades(tr?.trades || []);
@@ -161,7 +174,7 @@ export function useAppData(authed: boolean | null) {
 
       setLastUpdated(new Date());
     } finally {
-      setLoading(false);
+      if (!isStale()) setLoading(false);
     }
   }, [symbol, interval]);
 
@@ -180,18 +193,28 @@ export function useAppData(authed: boolean | null) {
 
   const openPaperTrade = useCallback(
     async (side: "LONG" | "SHORT") => {
-      const res = await api.openPaperTrade(symbol, side, 1000);
-      showToast(res?.message || `${side} opened`);
-      await load();
+      try {
+        const res = await api.openPaperTrade(symbol, side, 1000);
+        showToast(res?.message || `${side} opened`, "success");
+      } catch (e: any) {
+        showToast(e?.message || `Failed to open ${side} trade`, "error");
+      } finally {
+        await load();
+      }
     },
     [symbol, showToast, load]
   );
 
   const closePaperTrade = useCallback(
     async (id: number) => {
-      const res = await api.closePaperTrade(id);
-      showToast(res?.message || "Trade closed");
-      await load();
+      try {
+        const res = await api.closePaperTrade(id);
+        showToast(res?.message || "Trade closed", "success");
+      } catch (e: any) {
+        showToast(e?.message || "Failed to close trade", "error");
+      } finally {
+        await load();
+      }
     },
     [showToast, load]
   );
@@ -294,10 +317,14 @@ export function useAppData(authed: boolean | null) {
   }, []);
 
   const botAction = useCallback(async (action: string) => {
-    const data = await api.botAction(action);
-    showToast(data.message || `Bot ${action}`);
-    setBotStatus(data.state || null);
-  }, [showToast]);
+    try {
+      const data = await api.botAction(action);
+      showToast(data.message || `Bot ${action}`, data.ok === false ? "error" : "success");
+      setBotStatus(data.state || null);
+    } catch (e: any) {
+      showToast(e?.message || `Failed to ${action} bot`, "error");
+    }
+  }, [showToast, setBotStatus]);
 
   useEffect(() => {
     if (!authed) return;
@@ -342,6 +369,7 @@ export function useAppData(authed: boolean | null) {
     labWalkForward,
     lastUpdated,
     toast,
+    toastTone,
     showToast,
     loading,
     load,
