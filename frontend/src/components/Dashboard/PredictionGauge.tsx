@@ -26,6 +26,8 @@ function PredictionGauge({ prediction, lastUpdated }: Props) {
   const direction = prediction?.direction;
   const tone = directionTone(direction);
   const confidence = Math.max(0, Math.min(100, prediction?.confidence ?? 0));
+  const isNoTrade = direction === "NO_TRADE";
+  const riskReason = prediction?.risk?.reason;
 
   const elapsed = lastUpdated ? Math.floor((now - lastUpdated.getTime()) / 1000) : 0;
   const remaining = CYCLE_SECONDS - (elapsed % CYCLE_SECONDS);
@@ -46,28 +48,35 @@ function PredictionGauge({ prediction, lastUpdated }: Props) {
       <div className="dial" style={{ ["--pct" as any]: confidence, ["--tone" as any]: `var(--c-${tone})` }}>
         <div className="dial-inner">
           <Icon size={26} className={tone} />
-          <h3 className={tone}>{direction || "—"}</h3>
+          <h3 className={`${tone}${isNoTrade ? " no-trade-label" : ""}`}>{isNoTrade ? "NO TRADE" : direction || "—"}</h3>
           <p>Confidence</p>
           <b className="dial-confidence">{fmtPct(confidence, 0)}</b>
         </div>
       </div>
 
-      <div className="target-stop-row">
-        <div>
-          <span className="tile-label">Target Price</span>
-          <b className="tile-value green">{fmtUsd(prediction?.target)}</b>
+      {isNoTrade ? (
+        <div className="no-trade-panel">
+          <span className="no-trade-message">No active trade setup</span>
+          {riskReason && <span className="no-trade-reason">{riskReason}</span>}
         </div>
-        <div className="align-right">
-          <span className="tile-label">Stop Loss</span>
-          <b className="tile-value red">{fmtUsd(prediction?.stop)}</b>
+      ) : (
+        <div className="target-stop-row">
+          <div>
+            <span className="tile-label">Target Price</span>
+            <b className="tile-value green">{fmtUsd(prediction?.target)}</b>
+          </div>
+          <div className="align-right">
+            <span className="tile-label">Stop Loss</span>
+            <b className="tile-value red">{fmtUsd(prediction?.stop)}</b>
+          </div>
         </div>
-      </div>
+      )}
 
-      <div className="strength-row">
+      <div className={`strength-row${isNoTrade ? " disabled" : ""}`}>
         <span className="tile-label">Prediction Strength</span>
-        <b>{fmtPct(confidence, 0)}</b>
+        <b>{isNoTrade ? "—" : fmtPct(confidence, 0)}</b>
       </div>
-      <progress value={confidence} max={100} />
+      <progress value={isNoTrade ? 0 : confidence} max={100} className={isNoTrade ? "disabled" : undefined} />
     </div>
   );
 }
