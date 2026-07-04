@@ -16,6 +16,7 @@ import {
   Siren,
   Zap,
   Boxes,
+  Microscope,
 } from "lucide-react";
 import { NAV_ITEMS, type NavKey } from "../../lib/nav";
 
@@ -33,6 +34,7 @@ const ICONS: Record<NavKey, ComponentType<{ size?: number }>> = {
   "stress-test": Siren,
   execution: Zap,
   "model-center": Boxes,
+  "research-lab": Microscope,
 };
 
 type Props = {

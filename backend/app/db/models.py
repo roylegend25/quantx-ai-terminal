@@ -152,6 +152,30 @@ class ResearchExperiment(Base):
     notes = Column(Text, nullable=True)
 
 
+class ResearchLabExperiment(Base):
+    """One backtest run from the Phase 16 Research Lab (see app/research/lab_*
+    and POST /api/research/lab/run). Distinct from ResearchExperiment above -
+    that table logs a single always-on adaptive-ensemble snapshot/benchmark;
+    this one logs an arbitrary, repeatable (strategy, symbol, timeframe, date
+    range, parameters, fees) combination a researcher explicitly configured
+    and ran, with the full trade list and equity/drawdown curves persisted so
+    /montecarlo/{id} and /walkforward/{id} can replay it later. Read-only
+    research tooling - nothing here feeds back into live trading."""
+    __tablename__ = "research_lab_experiments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    experiment_id = Column(String, unique=True, index=True)
+    strategy = Column(String, index=True)  # trend | momentum | mean_reversion | breakout | ensemble | champion_ml | challenger_ml
+    symbol = Column(String, index=True)
+    timeframe = Column(String)
+    start_date = Column(DateTime, nullable=True)
+    end_date = Column(DateTime, nullable=True)
+    parameters = Column(JSON, nullable=True)  # risk knobs: atr_sl_mult, atr_tp_mult, entry_confidence_threshold, position_size_usd
+    fees = Column(JSON, nullable=True)  # commission_pct, slippage_bps, spread_bps, funding_rate_pct, latency_ms, partial_fill_ratio
+    results = Column(JSON, nullable=True)  # {"metrics": {...}, "trades": [...], "equity_curve": [...], "drawdown_curve": [...]}
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
 class StressTestRun(Base):
     """One scenario result from a POST /api/stress/run batch (see app/stress/).
 

@@ -90,4 +90,28 @@ export const api = {
     const res = await authFetch(`${API}/api/models/archive/${encodeURIComponent(modelId)}`, { method: "POST" });
     return res.json();
   },
+  labExperiments: (strategy?: string, symbol?: string) => {
+    const params = new URLSearchParams();
+    if (strategy) params.set("strategy", strategy);
+    if (symbol) params.set("symbol", symbol);
+    const qs = params.toString();
+    return getJson(`/api/research/lab/experiments${qs ? `?${qs}` : ""}`);
+  },
+  labRun: async (payload: Record<string, unknown>) => {
+    const res = await authFetch(`${API}/api/research/lab/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    return res.json();
+  },
+  labExperiment: (experimentId: string) => getJson(`/api/research/lab/experiment/${encodeURIComponent(experimentId)}`),
+  labCompare: (symbol: string, timeframe = "5m") =>
+    getJson(`/api/research/lab/compare?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`),
+  labMonteCarlo: (experimentId: string, simulations = 1000) =>
+    getJson(`/api/research/lab/montecarlo/${encodeURIComponent(experimentId)}?simulations=${simulations}`),
+  labWalkForward: (experimentId: string, trainBars = 500, validateBars = 150) =>
+    getJson(
+      `/api/research/lab/walkforward/${encodeURIComponent(experimentId)}?train_bars=${trainBars}&validate_bars=${validateBars}`
+    ),
 };

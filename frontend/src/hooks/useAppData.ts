@@ -60,6 +60,11 @@ export function useAppData(authed: boolean | null) {
   const [executionStatus, setExecutionStatus] = useDedupedState<any>(null);
   const [executionMetrics, setExecutionMetrics] = useDedupedState<any>(null);
   const [modelCenter, setModelCenter] = useDedupedState<any>(null);
+  const [labExperiments, setLabExperiments] = useDedupedState<any[]>([]);
+  const [labRun, setLabRun] = useState<any>(null);
+  const [labCompare, setLabCompare] = useDedupedState<any>(null);
+  const [labMonteCarlo, setLabMonteCarlo] = useState<any>(null);
+  const [labWalkForward, setLabWalkForward] = useState<any>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [toast, setToast] = useState("");
   const [loading, setLoading] = useState(false);
@@ -249,6 +254,45 @@ export function useAppData(authed: boolean | null) {
     [reloadModelCenter]
   );
 
+  const loadLabExperiments = useCallback(
+    async (strategy?: string, symbol?: string) => {
+      const res = await api.labExperiments(strategy, symbol).catch(() => null);
+      setLabExperiments(res?.experiments || []);
+    },
+    [setLabExperiments]
+  );
+
+  const runLabBacktest = useCallback(
+    async (payload: Record<string, unknown>) => {
+      const res = await api.labRun(payload);
+      setLabRun(res);
+      await loadLabExperiments();
+      return res;
+    },
+    [loadLabExperiments]
+  );
+
+  const runLabCompare = useCallback(
+    async (compareSymbol: string, timeframe = "5m") => {
+      const res = await api.labCompare(compareSymbol, timeframe);
+      setLabCompare(res);
+      return res;
+    },
+    [setLabCompare]
+  );
+
+  const runLabMonteCarlo = useCallback(async (experimentId: string, simulations = 1000) => {
+    const res = await api.labMonteCarlo(experimentId, simulations);
+    setLabMonteCarlo(res);
+    return res;
+  }, []);
+
+  const runLabWalkForward = useCallback(async (experimentId: string, trainBars = 500, validateBars = 150) => {
+    const res = await api.labWalkForward(experimentId, trainBars, validateBars);
+    setLabWalkForward(res);
+    return res;
+  }, []);
+
   const botAction = useCallback(async (action: string) => {
     const data = await api.botAction(action);
     showToast(data.message || `Bot ${action}`);
@@ -291,6 +335,11 @@ export function useAppData(authed: boolean | null) {
     executionStatus,
     executionMetrics,
     modelCenter,
+    labExperiments,
+    labRun,
+    labCompare,
+    labMonteCarlo,
+    labWalkForward,
     lastUpdated,
     toast,
     showToast,
@@ -305,6 +354,11 @@ export function useAppData(authed: boolean | null) {
     promoteModel,
     rollbackModel,
     archiveModel,
+    loadLabExperiments,
+    runLabBacktest,
+    runLabCompare,
+    runLabMonteCarlo,
+    runLabWalkForward,
   };
 }
 

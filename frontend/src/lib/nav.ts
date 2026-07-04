@@ -11,7 +11,8 @@ export type NavKey =
   | "system-status"
   | "stress-test"
   | "execution"
-  | "model-center";
+  | "model-center"
+  | "research-lab";
 
 export const NAV_ITEMS: { key: NavKey; label: string }[] = [
   { key: "dashboard", label: "Dashboard" },
@@ -27,4 +28,5 @@ export const NAV_ITEMS: { key: NavKey; label: string }[] = [
   { key: "stress-test", label: "Stress Test" },
   { key: "execution", label: "Execution" },
   { key: "model-center", label: "AI Model Center" },
+  { key: "research-lab", label: "Research Lab" },
 ];

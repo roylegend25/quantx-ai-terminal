@@ -10,6 +10,7 @@ A trade dict is expected to look like:
         "exit_time": datetime | None,
         "confidence": float | None,
         "correct": bool | None,   # did the predicted direction win
+        "r_multiple": float | None,  # pnl / initial risk (Phase 16 execution_sim trades only)
     }
 Only "pnl" is required - the rest degrade gracefully to None when absent.
 """
@@ -33,6 +34,8 @@ AVERAGEABLE_FIELDS = [
     "average_confidence",
     "prediction_accuracy_pct",
     "total_return_pct",
+    "average_r",
+    "exposure_time_pct",
 ]
 
 
@@ -60,6 +63,10 @@ def _empty_metrics(starting_balance: float) -> dict:
         "average_confidence": None,
         "prediction_accuracy_pct": None,
         "total_return_pct": 0.0,
+        "best_trade_pnl": None,
+        "worst_trade_pnl": None,
+        "average_r": None,
+        "exposure_time_pct": None,
         "starting_balance": round(starting_balance, 2),
         "final_balance": round(starting_balance, 2),
         "equity_curve": [round(starting_balance, 2)],
@@ -82,6 +89,8 @@ def compute_metrics(trades: list[dict], starting_balance: float = 10000.0) -> di
     holding_times = []
     confidences = []
     correctness = []
+    pnls = []
+    r_multiples = []
 
     for t in trades:
         pnl = float(t.get("pnl") or 0.0)
@@ -89,6 +98,7 @@ def compute_metrics(trades: list[dict], starting_balance: float = 10000.0) -> di
         balance += pnl
         equity_curve.append(balance)
         returns.append(pnl / prior_balance if prior_balance else 0.0)
+        pnls.append(pnl)
 
         (wins if pnl >= 0 else losses).append(pnl)
 
@@ -100,6 +110,8 @@ def compute_metrics(trades: list[dict], starting_balance: float = 10000.0) -> di
             confidences.append(float(t["confidence"]))
         if t.get("correct") is not None:
             correctness.append(1.0 if t["correct"] else 0.0)
+        if t.get("r_multiple") is not None:
+            r_multiples.append(float(t["r_multiple"]))
 
     peak = equity_curve[0]
     max_dd = 0.0
@@ -147,6 +159,13 @@ def compute_metrics(trades: list[dict], starting_balance: float = 10000.0) -> di
 
     calmar = (cagr / max_dd) if cagr is not None and max_dd > 0 else None
 
+    # exposure = fraction of the backtest's wall-clock span actually spent
+    # in a position; only meaningful once the run spans a real time window
+    span_seconds = years * YEAR_SECONDS
+    exposure_time_pct = (
+        round(sum(holding_times) / span_seconds * 100, 2) if holding_times and span_seconds > 0 else None
+    )
+
     return {
         "total_trades": len(trades),
         "wins": len(wins),
@@ -163,6 +182,10 @@ def compute_metrics(trades: list[dict], starting_balance: float = 10000.0) -> di
         "average_confidence": round(mean(confidences), 2) if confidences else None,
         "prediction_accuracy_pct": round(mean(correctness) * 100, 2) if correctness else None,
         "total_return_pct": round(total_return * 100, 2),
+        "best_trade_pnl": round(max(pnls), 2),
+        "worst_trade_pnl": round(min(pnls), 2),
+        "average_r": round(mean(r_multiples), 4) if r_multiples else None,
+        "exposure_time_pct": exposure_time_pct,
         "starting_balance": round(starting_balance, 2),
         "final_balance": round(balance, 2),
         "equity_curve": [round(e, 2) for e in equity_curve],
