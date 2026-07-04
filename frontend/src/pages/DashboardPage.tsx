@@ -1,3 +1,4 @@
+import { Flame } from "lucide-react";
 import Card from "../components/Layout/Card";
 import ChartPanel from "../components/Dashboard/ChartPanel";
 import PredictionGauge from "../components/Dashboard/PredictionGauge";
@@ -60,8 +61,8 @@ export default function DashboardPage(props: Props) {
       </div>
 
       <div className="dash-row-3">
-        <Card title="Market Analysis">
-          <LiquidationHeatmapCard />
+        <Card title="Liquidation Heatmap" right={<Flame size={16} />}>
+          <LiquidationHeatmapCard symbol={symbol} />
         </Card>
 
         <Card title={`Order Book (${symbol})`}>

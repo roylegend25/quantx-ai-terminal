@@ -14,8 +14,8 @@ export default function MarketPage(props: AppData) {
         <MarketSentimentCard marketContext={marketContext} />
       </Card>
 
-      <Card title="Market Analysis">
-        <LiquidationHeatmapCard />
+      <Card title="Liquidation Heatmap">
+        <LiquidationHeatmapCard symbol={symbol} />
       </Card>
 
       <Card title={`Order Book (${symbol})`}>

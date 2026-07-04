@@ -2,7 +2,7 @@ from fastapi import APIRouter
 import httpx
 
 from app.core.config import settings
-from app.intelligence import market_intelligence
+from app.intelligence import liquidation_heatmap, market_intelligence
 
 router = APIRouter(prefix="/api/market", tags=["market"])
 
@@ -32,6 +32,14 @@ async def get_market(symbol: str):
         "funding": funding.json(),
         "open_interest": oi.json(),
     }
+
+@router.get("/{symbol}/liquidation-heatmap")
+async def get_liquidation_heatmap(symbol: str):
+    symbol = symbol.upper()
+    try:
+        return await liquidation_heatmap.build(symbol)
+    except Exception as exc:
+        return liquidation_heatmap.degraded(symbol, error=str(exc))
 
 @router.get("/{symbol}/candles")
 async def get_candles(symbol: str, interval: str = "5m", limit: int = 220):

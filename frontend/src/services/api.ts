@@ -16,6 +16,7 @@ export const api = {
   orderbook: (symbol: string, limit = 10) => getJson(`/api/orderbook/${symbol}?limit=${limit}`),
   trades: (symbol: string, limit = 20) => getJson(`/api/trades/${symbol}?limit=${limit}`),
   marketContext: (symbol: string) => getJson(`/api/market/context?symbol=${symbol}`),
+  liquidationHeatmap: (symbol: string) => getJson(`/api/market/${symbol}/liquidation-heatmap`),
   timeframes: (symbol: string) => getJson(`/api/timeframes/${symbol}`),
   strategyWeights: () => getJson("/api/strategy/weights"),
   botStatus: () => getJson("/api/bot/status"),

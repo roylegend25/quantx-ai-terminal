@@ -981,6 +981,166 @@ progress::-webkit-progress-value {
   margin-bottom: -8px;
 }
 
+/* ---------- Liquidation heatmap ---------- */
+
+.liq-heatmap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.liq-heatmap-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #8b90a8;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.liq-heatmap-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--c-cyan);
+}
+
+.liq-heatmap-symbol {
+  font-weight: 700;
+  color: #c8cbe0;
+}
+
+.liq-heatmap-stats-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
+  gap: 8px;
+}
+
+.liq-stat {
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(255,255,255,.05);
+  border: 1px solid rgba(255,255,255,.08);
+}
+
+.liq-stat .tile-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.liq-stat b {
+  display: block;
+  font-size: 14px;
+  margin-top: 2px;
+}
+
+.liq-heatmap-canvas-wrap {
+  position: relative;
+  border-radius: 16px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid rgba(255,255,255,.08);
+  background: linear-gradient(180deg, #0d1224, #05060a);
+  touch-action: pan-x pinch-zoom;
+}
+
+.liq-heatmap-canvas {
+  display: block;
+  width: max(100%, 480px);
+  height: 240px;
+}
+
+.liq-heatmap-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #6b7190;
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.liq-heatmap-tooltip {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  min-width: 150px;
+  border-radius: 12px;
+  background: rgba(10, 12, 24, 0.92);
+  border: 1px solid rgba(124, 92, 255, 0.35);
+  box-shadow: 0 8px 24px rgba(0,0,0,.4);
+  font-size: 11px;
+  color: #8b90a8;
+  pointer-events: none;
+  backdrop-filter: blur(6px);
+}
+
+.liq-heatmap-tooltip b {
+  color: white;
+  font-size: 12px;
+}
+
+.liq-heatmap-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 11px;
+  color: #8b90a8;
+}
+
+.liq-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.liq-legend-item i {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  display: inline-block;
+}
+
+.liq-heatmap-insights {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.liq-insight-tile {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(255,255,255,.05);
+  border: 1px solid rgba(255,255,255,.08);
+  contain: layout paint;
+}
+
+.liq-insight-tile .tile-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.liq-insight-tile b {
+  display: block;
+  font-size: 15px;
+  margin-top: 3px;
+}
+
+@media (max-width: 640px) {
+  .liq-heatmap-canvas {
+    height: 200px;
+  }
+}
+
 /* ---------- Order book ---------- */
 
 .orderbook-3col {
