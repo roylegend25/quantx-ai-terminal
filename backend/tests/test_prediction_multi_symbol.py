@@ -19,6 +19,7 @@ from app.db.models import PredictionFeature
 from app.db.session import SessionLocal
 
 SYMBOLS = ["BTCUSDT", "ETHUSDT"]
+TIMEFRAMES = ["30m", "1h", "4h"]
 
 
 def _synthetic_klines(n=220, start_price=100.0, step=0.05):
@@ -77,8 +78,16 @@ def make_client():
     return TestClient(app)
 
 
-def _assert_valid_prediction_response(body: dict, symbol: str):
+def _assert_valid_prediction_response(body: dict, symbol: str, timeframe: str = "5m"):
     assert body["symbol"] == symbol
+    assert body["timeframe"] == timeframe
+    assert body["interval"] == timeframe
+    assert isinstance(body["reason"], str) and body["reason"]
+    horizon = body["prediction_horizon"]
+    assert horizon["interval"] == timeframe
+    assert horizon["bars"] > 0
+    assert horizon["horizon_ms"] > 0
+
     pred = body["prediction"]
 
     assert pred["direction"] in ("LONG", "SHORT", "NO_TRADE")
@@ -120,6 +129,49 @@ def test_prediction_route_returns_valid_structure_for_both_symbols(monkeypatch):
         _assert_valid_prediction_response(resp.json(), symbol)
 
 
+def test_prediction_route_returns_valid_structure_for_every_timeframe(monkeypatch):
+    """30m/1h/4h must return either a real directional prediction or an
+    honest NO_TRADE with a reason - never a malformed/empty response - for
+    both BTCUSDT and ETHUSDT."""
+    monkeypatch.setattr(prediction_module.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr(prediction_module.market_intelligence, "get_context", _fake_get_context)
+    monkeypatch.setattr(prediction_module, "evaluate_all_timeframes", _fake_evaluate_all_timeframes)
+
+    client = make_client()
+
+    for symbol in SYMBOLS:
+        for tf in TIMEFRAMES:
+            prediction_module._prediction_cache.clear()
+            resp = client.get(f"/api/prediction/{symbol}", params={"interval": tf})
+            assert resp.status_code == 200, f"{symbol}@{tf} failed: {resp.text}"
+            _assert_valid_prediction_response(resp.json(), symbol, timeframe=tf)
+
+
+def test_prediction_route_accepts_timeframe_query_param_as_interval_alias(monkeypatch):
+    """?timeframe=1h must actually compute on 1h data instead of silently
+    falling back to the "5m" default - previously `timeframe` was not a
+    recognized parameter at all and was dropped without error."""
+    monkeypatch.setattr(prediction_module.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr(prediction_module.market_intelligence, "get_context", _fake_get_context)
+    monkeypatch.setattr(prediction_module, "evaluate_all_timeframes", _fake_evaluate_all_timeframes)
+    prediction_module._prediction_cache.clear()
+
+    client = make_client()
+    resp = client.get("/api/prediction/BTCUSDT", params={"timeframe": "1h"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["interval"] == "1h"
+    assert body["timeframe"] == "1h"
+
+
+def test_prediction_route_rejects_unsupported_timeframe(monkeypatch):
+    monkeypatch.setattr(prediction_module.httpx, "AsyncClient", _FakeAsyncClient)
+    client = make_client()
+    resp = client.get("/api/prediction/BTCUSDT", params={"timeframe": "3m"})
+    assert resp.status_code == 400
+    assert "3m" in resp.json()["detail"]
+
+
 def test_prediction_history_route_returns_a_list_for_both_symbols():
     db = SessionLocal()
     try:
@@ -141,6 +193,44 @@ def test_prediction_history_route_returns_a_list_for_both_symbols():
             assert isinstance(body["history"], list)
             assert len(body["history"]) == 1
             assert body["history"][0]["symbol"] == symbol
+    finally:
+        db.query(PredictionFeature).delete()
+        db.commit()
+        db.close()
+
+
+def test_prediction_history_filters_by_symbol_and_timeframe_together():
+    """A BTC 1h row must never leak into an ETH query or a 15m query -
+    never show ETH history on a BTC chart, never show 15m history on a 1h
+    chart."""
+    db = SessionLocal()
+    try:
+        db.query(PredictionFeature).delete()
+        db.commit()
+        combos = [
+            ("BTCUSDT", "1h"), ("BTCUSDT", "15m"), ("BTCUSDT", "30m"), ("BTCUSDT", "4h"),
+            ("ETHUSDT", "1h"), ("ETHUSDT", "30m"), ("ETHUSDT", "4h"),
+        ]
+        for symbol, tf in combos:
+            db.add(PredictionFeature(
+                symbol=symbol, timeframe=tf, direction="LONG", confidence=80.0,
+                entry_price=100.0, target=105.0, stop=97.0,
+            ))
+        db.commit()
+
+        client = make_client()
+        for symbol, tf in combos:
+            resp = client.get("/api/prediction/history", params={"symbol": symbol, "timeframe": tf})
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["count"] == 1, f"expected exactly one row for {symbol}@{tf}, got {body['count']}"
+            row = body["history"][0]
+            assert row["symbol"] == symbol
+            assert row["timeframe"] == tf
+            # the enriched aliases required by the history-record contract
+            assert "actual_price_at_prediction" in row
+            assert "actual_price_when_resolved" in row
+            assert "error_pct" in row
     finally:
         db.query(PredictionFeature).delete()
         db.commit()

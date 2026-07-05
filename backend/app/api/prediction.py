@@ -1,7 +1,7 @@
 import time
 from datetime import timezone
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 import httpx
 from app.db.models import PredictionFeature
 from app.db.session import SessionLocal
@@ -40,6 +40,26 @@ _prediction_cache: dict[tuple[str, str], dict] = {}
 # still runs (useful for observability/debugging) but its direction is
 # overridden to NO_TRADE rather than acted on.
 MIN_CANDLES_FOR_PREDICTION = 50
+
+# Every timeframe the prediction pipeline is expected to serve end-to-end
+# (chart timeframe selector, scheduler, research/backtest). An unsupported
+# value is rejected outright (400) rather than silently falling back to a
+# default interval, so a typo'd or unwired timeframe never masquerades as a
+# real (if uninteresting) prediction.
+SUPPORTED_INTERVALS_MS = {
+    "1m": 60_000,
+    "5m": 5 * 60_000,
+    "15m": 15 * 60_000,
+    "30m": 30 * 60_000,
+    "1h": 3_600_000,
+    "4h": 4 * 3_600_000,
+    "1d": 86_400_000,
+}
+
+# How many bars ahead the AI forecast cone projects - must match the
+# frontend's FORECAST_BARS (ProChartCanvas.tsx/PredictionChart.tsx) since
+# prediction_horizon below describes the same cone the chart draws.
+FORECAST_BARS = 40
 
 
 def _consensus_adjustment(consensus: dict | None, direction: str) -> float:
@@ -196,9 +216,11 @@ def serialize_history_rows(rows: list[PredictionFeature]) -> list[dict]:
             moved_up = actual_price > row.entry_price
             outcome = "CORRECT" if (moved_up == (row.direction == "LONG")) else "INCORRECT"
 
+        error_pct = None
         accuracy_pct = None
         if predicted_price and actual_price:
-            accuracy_pct = round(max(0.0, 100.0 - abs(actual_price - predicted_price) / actual_price * 100.0), 2)
+            error_pct = round(abs(actual_price - predicted_price) / actual_price * 100.0, 2)
+            accuracy_pct = round(max(0.0, 100.0 - error_pct), 2)
 
         out.append(
             {
@@ -215,6 +237,13 @@ def serialize_history_rows(rows: list[PredictionFeature]) -> list[dict]:
                 "target": row.target,
                 "stop": row.stop,
                 "actual_price": actual_price,
+                # Aliases matching the documented history-record contract
+                # (GET /api/prediction/history) - kept alongside the
+                # original entry_price/actual_price names above rather than
+                # renamed, so existing chart/tooltip code keeps working.
+                "actual_price_at_prediction": row.entry_price,
+                "actual_price_when_resolved": actual_price,
+                "error_pct": error_pct,
                 "outcome": outcome,
                 "accuracy_pct": accuracy_pct,
                 "pnl": row.pnl,
@@ -263,8 +292,19 @@ def prediction_history(
 
 
 @router.get("/{symbol}")
-async def prediction(symbol: str, interval: str = "5m", limit: int = 220):
+async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = None, limit: int = 220):
     symbol = symbol.upper()
+    # `timeframe` is accepted as an alias of `interval` (and takes precedence
+    # when both are given) so GET /api/prediction/{symbol}?timeframe=1h works
+    # the same as ?interval=1h instead of silently falling back to the "5m"
+    # default - see PredictionFeature.timeframe / GET /api/prediction/history,
+    # which already used "timeframe" as its query param name.
+    interval = (timeframe or interval).lower()
+    if interval not in SUPPORTED_INTERVALS_MS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported timeframe '{interval}'. Supported: {', '.join(SUPPORTED_INTERVALS_MS)}",
+        )
     start = time.perf_counter()
 
     cache_key = (symbol, interval)
@@ -338,6 +378,18 @@ async def prediction(symbol: str, interval: str = "5m", limit: int = 220):
     response = {
         "symbol": symbol,
         "interval": interval,
+        # Convenience top-level mirrors of fields already nested in
+        # `prediction` (kept, unchanged, for existing consumers) - added so
+        # every timeframe/symbol combination exposes the same documented
+        # top-level contract without a client having to know which fields
+        # live under `prediction`.
+        "timeframe": interval,
+        "reason": pred["risk"]["reason"],
+        "prediction_horizon": {
+            "bars": FORECAST_BARS,
+            "interval": interval,
+            "horizon_ms": FORECAST_BARS * SUPPORTED_INTERVALS_MS[interval],
+        },
         "prediction": pred,
     }
     _prediction_cache[cache_key] = {"computed_at": pred["computed_at"], "response": response}
