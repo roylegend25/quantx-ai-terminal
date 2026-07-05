@@ -30,3 +30,12 @@ export const NAV_ITEMS: { key: NavKey; label: string }[] = [
   { key: "model-center", label: "AI Model Center" },
   { key: "research-lab", label: "Research Lab" },
 ];
+
+/** Purely a sidebar rendering grouping - NAV_ITEMS above stays the flat
+ * source of truth (labels, icon lookups) for anything else that needs it. */
+export const NAV_SECTIONS: { label: string; keys: NavKey[] }[] = [
+  { label: "Main", keys: ["dashboard", "predictions", "positions", "performance"] },
+  { label: "Trading", keys: ["market", "bot-settings", "risk", "execution"] },
+  { label: "Analysis", keys: ["backtesting", "model-center", "research-lab", "stress-test"] },
+  { label: "System", keys: ["logs", "system-status"] },
+];

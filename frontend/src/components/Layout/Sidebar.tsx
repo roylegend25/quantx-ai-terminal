@@ -18,7 +18,7 @@ import {
   Boxes,
   Microscope,
 } from "lucide-react";
-import { NAV_ITEMS, type NavKey } from "../../lib/nav";
+import { NAV_ITEMS, NAV_SECTIONS, type NavKey } from "../../lib/nav";
 
 const ICONS: Record<NavKey, ComponentType<{ size?: number }>> = {
   dashboard: LayoutDashboard,
@@ -80,19 +80,26 @@ function Sidebar({ active, onNavigate, botStatus, dashboard, onStopBot, onLogout
       </div>
 
       <nav className="nav-list">
-        {NAV_ITEMS.map((item) => {
-          const Icon = ICONS[item.key];
-          return (
-            <button
-              key={item.key}
-              className={active === item.key ? "nav active" : "nav"}
-              onClick={() => onNavigate(item.key)}
-            >
-              <Icon size={18} />
-              <span>{item.label}</span>
-            </button>
-          );
-        })}
+        {NAV_SECTIONS.map((section) => (
+          <div className="nav-section" key={section.label}>
+            <span className="nav-section-label">{section.label}</span>
+            {section.keys.map((key) => {
+              const item = NAV_ITEMS.find((i) => i.key === key);
+              if (!item) return null;
+              const Icon = ICONS[key];
+              return (
+                <button
+                  key={key}
+                  className={active === key ? "nav active" : "nav"}
+                  onClick={() => onNavigate(key)}
+                >
+                  <Icon size={18} />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        ))}
       </nav>
 
       <div className="status-box">

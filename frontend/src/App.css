@@ -80,7 +80,7 @@ button, select, input {
   display: flex;
   gap: 12px;
   align-items: center;
-  margin-bottom: 28px;
+  margin-bottom: 20px;
 }
 
 .brand-icon {
@@ -104,7 +104,7 @@ button, select, input {
 }
 
 .brand h1 {
-  font-size: 18px;
+  font-size: clamp(16px, 1.4vw, 18px);
   margin: 0;
   letter-spacing: .01em;
 }
@@ -120,14 +120,29 @@ button, select, input {
 .nav-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
   flex: 1;
   overflow-y: auto;
 }
 
+.nav-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-section-label {
+  padding: 4px 14px 2px;
+  color: #565c78;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
 .nav {
   width: 100%;
-  padding: 12px 14px;
+  padding: 9px 14px;
   border: 0;
   border-radius: 14px;
   color: #9095ac;
@@ -158,13 +173,13 @@ button, select, input {
 }
 
 .status-box {
-  margin-top: 16px;
-  padding: 18px;
+  margin-top: 12px;
+  padding: 16px;
   border-radius: 22px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03));
   border: 1px solid rgba(255,255,255,0.1);
   text-align: center;
@@ -184,12 +199,12 @@ button, select, input {
 
 .bot-orb {
   position: relative;
-  width: 76px;
-  height: 76px;
+  width: 64px;
+  height: 64px;
   border-radius: 50%;
   display: grid;
   place-items: center;
-  margin: 4px 0;
+  margin: 2px 0;
   border: 1px solid rgba(255,255,255,.12);
   background: rgba(255,255,255,.04);
   color: #6b7190;
@@ -327,7 +342,7 @@ button, select, input {
 
 .topbar-brand h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: clamp(16px, 1.6vw, 20px);
   letter-spacing: .02em;
 }
 
@@ -391,41 +406,45 @@ button, select, input {
 .dash-grid, .page-grid {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 20px;
 }
 
 .dash-row-1 {
   display: grid;
   grid-template-columns: 2fr 1fr;
-  gap: 18px;
-  align-items: start;
+  gap: 20px;
+  /* stretch (grid's default) - not start - so a short card in a row grows
+     to match its tallest neighbor instead of leaving a dead gap of bare
+     page background beneath it. See .card > :last-child below for how
+     empty-state content re-centers inside that extra height. */
+  align-items: stretch;
 }
 
 .dash-row-2 {
   display: grid;
   grid-template-columns: 1.4fr 1fr 1fr;
-  gap: 18px;
-  align-items: start;
+  gap: 20px;
+  align-items: stretch;
 }
 
 .dash-row-3 {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
-  gap: 18px;
-  align-items: start;
+  gap: 20px;
+  align-items: stretch;
 }
 
 .page-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 18px;
-  align-items: start;
+  gap: 20px;
+  align-items: stretch;
 }
 
 .stack-col {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 20px;
 }
 
 @media (max-width: 1400px) {
@@ -498,12 +517,23 @@ button, select, input {
     flex: 0 0 auto;
     overflow-x: auto;
     overflow-y: hidden;
-    gap: 6px;
+    gap: 8px;
     padding-bottom: 2px;
     -webkit-overflow-scrolling: touch;
   }
 
+  /* Section grouping is a desktop-sidebar affordance only - on a
+     horizontally-scrolled tab strip it flattens back to one row of pills. */
+  .nav-section {
+    display: contents;
+  }
+
+  .nav-section-label {
+    display: none;
+  }
+
   .nav {
+    width: auto;
     flex: 0 0 auto;
     padding: 10px 14px;
     font-size: 13px;
@@ -761,12 +791,21 @@ button, select, input {
     flex: 0 0 auto;
     overflow-x: auto;
     overflow-y: hidden;
-    gap: 6px;
+    gap: 8px;
     padding-bottom: 2px;
     -webkit-overflow-scrolling: touch;
   }
 
+  .nav-section {
+    display: contents;
+  }
+
+  .nav-section-label {
+    display: none;
+  }
+
   .nav {
+    width: auto;
     flex: 0 0 auto;
     padding: 8px 12px;
     font-size: 12px;
@@ -852,6 +891,14 @@ button, select, input {
     grid-column: auto;
   }
 
+  /* The <=1400px breakpoint's "last card spans 2 columns" fix (so a 3rd
+     card doesn't strand a half-empty row) would otherwise survive down to
+     this single-column layout and force a phantom implicit 2nd column. */
+  .dash-row-2 > :last-child,
+  .dash-row-3 > :last-child {
+    grid-column: auto;
+  }
+
   .card.wide, .card.full {
     grid-column: auto;
   }
@@ -874,6 +921,8 @@ button, select, input {
 /* ---------- Cards ---------- */
 
 .card, .stack-card {
+  display: flex;
+  flex-direction: column;
   border: 1px solid rgba(255,255,255,0.1);
   background: linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.025));
   border-radius: 24px;
@@ -882,6 +931,18 @@ button, select, input {
   min-width: 0;
   min-height: 64px;
   contain: layout paint;
+}
+
+/* Grid rows stretch every card to the row's tallest neighbor (see
+   .dash-row-* align-items above); this lets a card's actual body content
+   grow to fill that height instead of leaving the extra space stranded
+   below a short card, so a lone empty-state message can re-center in it
+   via .analytics-empty:only-child rather than sticking to the top. */
+.card > :last-child {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .page-grid > .card.wide {
@@ -1891,6 +1952,16 @@ progress.disabled::-webkit-progress-value {
 .analytics-empty {
   color: #8b90a8;
   font-size: 13px;
+}
+
+/* Only re-centers when the empty message is the card body's sole content
+   (:only-child) - a message alongside other always-present content (a
+   header, other stats) is left in normal flow so it doesn't get yanked
+   away from its neighbors. */
+.analytics-empty:only-child {
+  margin: auto 0;
+  width: 100%;
+  text-align: center;
 }
 
 /* ---------- Logs page ---------- */
