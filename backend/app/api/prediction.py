@@ -152,6 +152,7 @@ async def prediction(symbol: str, interval: str = "5m", limit: int = 220):
     log_event(
         logger,
         message="prediction_generated",
+        category="prediction",
         endpoint=f"/api/prediction/{symbol}",
         prediction_id=pred.get("feature_id"),
         strategy=dominant_strategy,

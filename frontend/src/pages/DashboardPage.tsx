@@ -32,9 +32,8 @@ export default function DashboardPage(props: Props) {
           prediction={prediction}
         />
 
-        <PredictionGauge prediction={prediction} lastUpdated={props.lastUpdated} />
-
         <div className="stack-col">
+          <PredictionGauge prediction={prediction} lastUpdated={props.lastUpdated} />
           <AccountOverviewCard portfolio={props.portfolio} positions={props.positions} />
           <RiskStatusCard portfolio={props.portfolio} positions={props.positions} history={props.history} />
         </div>

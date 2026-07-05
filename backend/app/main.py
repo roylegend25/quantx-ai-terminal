@@ -31,6 +31,7 @@ from app.trading.position_manager import start_position_manager
 from app.mlops.scheduler import start_scheduler as start_mlops_scheduler
 from app.api.models import router as models_router
 from app.api.research_lab import router as research_lab_router
+from app.api.logs import router as logs_router
 
 app = FastAPI(title="QuantX AI Terminal API", version="2.0.0")
 
@@ -78,6 +79,7 @@ app.include_router(exchange_router, dependencies=protected)
 app.include_router(execution_router, dependencies=protected)
 app.include_router(models_router, dependencies=protected)
 app.include_router(research_lab_router, dependencies=protected)
+app.include_router(logs_router, dependencies=protected)
 app.include_router(health_router)
 
 @app.get("/api/health")

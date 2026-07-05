@@ -7,6 +7,15 @@ async function getJson<T = any>(url: string): Promise<T> {
   return res.json();
 }
 
+async function postJson<T = any>(url: string, options: RequestInit = {}): Promise<T> {
+  const res = await authFetch(`${API}${url}`, { method: "POST", ...options });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.detail || data?.message || `Request failed (${res.status})`);
+  }
+  return data;
+}
+
 export const api = {
   dashboard: () => getJson("/api/dashboard"),
   prediction: (symbol: string, interval: string) =>
@@ -20,24 +29,13 @@ export const api = {
   timeframes: (symbol: string) => getJson(`/api/timeframes/${symbol}`),
   strategyWeights: () => getJson("/api/strategy/weights"),
   botStatus: () => getJson("/api/bot/status"),
-  botAction: async (action: string) => {
-    const res = await authFetch(`${API}/api/bot/${action}`, { method: "POST" });
-    return res.json();
-  },
+  botAction: (action: string) => postJson(`/api/bot/${action}`),
   portfolio: () => getJson("/api/paper/portfolio"),
   positions: () => getJson("/api/paper/positions"),
   history: () => getJson("/api/paper/history"),
-  openPaperTrade: async (symbol: string, side: "LONG" | "SHORT", usdtSize = 1000) => {
-    const res = await authFetch(
-      `${API}/api/paper/open?symbol=${symbol}&side=${side}&usdt_size=${usdtSize}`,
-      { method: "POST" }
-    );
-    return res.json();
-  },
-  closePaperTrade: async (id: number) => {
-    const res = await authFetch(`${API}/api/paper/close/${id}`, { method: "POST" });
-    return res.json();
-  },
+  openPaperTrade: (symbol: string, side: "LONG" | "SHORT", usdtSize = 1000) =>
+    postJson(`/api/paper/open?symbol=${symbol}&side=${side}&usdt_size=${usdtSize}`),
+  closePaperTrade: (id: number) => postJson(`/api/paper/close/${id}`),
   runBacktest: (symbol: string, interval = "5m") =>
     getJson(`/api/backtest/run?symbol=${symbol}&interval=${interval}`),
   downloadHistory: (symbol: string, interval = "5m", limit = 1000) =>
@@ -115,4 +113,12 @@ export const api = {
     getJson(
       `/api/research/lab/walkforward/${encodeURIComponent(experimentId)}?train_bars=${trainBars}&validate_bars=${validateBars}`
     ),
+  logsRecent: (opts: { sinceId?: number; level?: string; category?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.sinceId != null) params.set("since_id", String(opts.sinceId));
+    if (opts.level) params.set("level", opts.level);
+    if (opts.category) params.set("category", opts.category);
+    params.set("limit", String(opts.limit ?? 200));
+    return getJson(`/api/logs/recent?${params.toString()}`);
+  },
 };

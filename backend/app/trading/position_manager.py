@@ -1,12 +1,14 @@
 import asyncio
+import logging
 import httpx
-from datetime import datetime, timezone
 from app.core.config import settings
 from app.core.security import create_internal_service_token
+from app.monitoring.logging import get_logger, log_event
 
 API = "http://127.0.0.1:8000"
 RUNNING = False
 _TOKEN = None
+logger = get_logger("quantx.position_manager")
 
 
 def should_close_position(side: str, mark: float, sl: float | None, tp: float | None) -> tuple[bool, str]:
@@ -52,12 +54,17 @@ async def manage_positions():
 
                     if should_close:
                         await client.post(f"{API}/api/paper/close/{trade_id}")
-                        print(
-                            f"[{datetime.now(timezone.utc)}] Closed trade {trade_id}: {reason}"
+                        log_event(
+                            logger,
+                            message="position_closed_auto",
+                            category="trading",
+                            trade_id=trade_id,
+                            side=side,
+                            reason=reason,
                         )
 
         except Exception as e:
-            print("Position Manager error:", repr(e))
+            log_event(logger, message="position_manager_error", level=logging.ERROR, category="scheduler", error=repr(e))
 
         await asyncio.sleep(settings.position_manager_interval_seconds)
 

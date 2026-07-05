@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 from pydantic import BaseModel
 import json
+import logging
 import httpx
 
 from app.db.session import get_db
@@ -12,8 +13,22 @@ from app.strategy.rolling_metrics_repository import repository as rolling_metric
 from app.strategy import weight_calculator
 from app.ml.feature_store import store as feature_store
 from app.monitoring.metrics import PAPER_TRADES_CLOSED, PAPER_TRADES_OPENED
+from app.monitoring.logging import get_logger, log_event
 
 router = APIRouter(prefix="/api/paper", tags=["paper"])
+
+logger = get_logger("quantx.paper")
+
+
+def _iso_utc(dt: datetime | None) -> str | None:
+    """Trades are timestamped with tz-aware UTC datetimes, but SQLite drops
+    tzinfo on round-trip, so isoformat() would otherwise omit the offset and
+    let clients misread the value as local time instead of UTC."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
 
 
 class StrategyContext(BaseModel):
@@ -112,6 +127,15 @@ async def open_trade(
     db.refresh(trade)
 
     PAPER_TRADES_OPENED.labels(symbol=symbol, side=side).inc()
+    log_event(
+        logger,
+        message="paper_trade_opened",
+        category="trading",
+        symbol=symbol,
+        trade_id=trade.id,
+        side=side,
+        entry=round(price, 2),
+    )
 
     return {
         "ok": True,
@@ -181,7 +205,14 @@ async def close_trade(trade_id: int, db: Session = Depends(get_db)):
                 db=db,
             )
         except Exception as e:
-            print("Feature store outcome update error:", repr(e))
+            log_event(
+                logger,
+                message="feature_store_outcome_error",
+                level=logging.ERROR,
+                category="trading",
+                trade_id=trade.id,
+                error=repr(e),
+            )
 
     if trade.strategy_snapshot:
         snapshot = json.loads(trade.strategy_snapshot)
@@ -207,6 +238,16 @@ async def close_trade(trade_id: int, db: Session = Depends(get_db)):
         weight_calculator.recompute_and_store(db=db)
 
     PAPER_TRADES_CLOSED.labels(symbol=trade.symbol).inc()
+    log_event(
+        logger,
+        message="paper_trade_closed",
+        category="trading",
+        symbol=trade.symbol,
+        trade_id=trade.id,
+        side=trade.side,
+        exit_price=round(exit_price, 2),
+        pnl=round(pnl, 2),
+    )
 
     return {
         "ok": True,
@@ -233,7 +274,7 @@ async def positions(db: Session = Depends(get_db)):
             "pnl": round(pnl, 2),
             "sl": t.sl,
             "tp": t.tp,
-            "opened_at": t.opened_at.isoformat() if t.opened_at else None,
+            "opened_at": _iso_utc(t.opened_at),
         })
 
     return {"positions": result}
@@ -253,8 +294,8 @@ async def history(db: Session = Depends(get_db)):
                 "qty": round(t.qty, 6) if t.qty else None,
                 "status": t.status,
                 "pnl": round(t.pnl, 2) if t.pnl else 0,
-                "opened_at": t.opened_at.isoformat() if t.opened_at else None,
-                "closed_at": t.closed_at.isoformat() if t.closed_at else None,
+                "opened_at": _iso_utc(t.opened_at),
+                "closed_at": _iso_utc(t.closed_at),
             }
             for t in trades
         ]

@@ -5,6 +5,9 @@ from app.core.config import settings
 from app.core.security import create_internal_service_token
 from app.execution.execution_engine import engine as execution_engine
 from app.execution.order_router import OrderType
+from app.monitoring.logging import get_logger, log_event
+
+logger = get_logger("quantx.trading_engine")
 
 class TradingEngine:
 
@@ -13,7 +16,6 @@ class TradingEngine:
         self._token = create_internal_service_token()
 
     async def run_cycle(self):
-        print(f"\n========== {datetime.now(timezone.utc)} ==========")
 
         headers = {"Authorization": f"Bearer {self._token}"}
         async with httpx.AsyncClient(timeout=20, headers=headers) as client:
@@ -38,18 +40,20 @@ class TradingEngine:
 
             signal_time = datetime.now(timezone.utc)
 
-            print("Prediction :", prediction["direction"])
-            print("Confidence :", prediction["confidence"])
-            print("Open Trades:", len(positions))
-            print("Equity     :", portfolio["equity"])
+            log_event(
+                logger,
+                message="scheduler_cycle",
+                category="scheduler",
+                symbol=self.symbol,
+                direction=prediction["direction"],
+                confidence=prediction["confidence"],
+            )
 
             if (
                 prediction["direction"] in ["LONG", "SHORT"]
                 and prediction["confidence"] >= settings.confidence_threshold
                 and len(positions) < settings.max_open_positions
             ):
-
-                print("Routing paper trade through execution engine...")
 
                 result = await execution_engine.submit_order(
                     symbol=self.symbol,
@@ -66,13 +70,13 @@ class TradingEngine:
                     equity=portfolio.get("equity"),
                 )
 
-                print(
-                    f"Execution {result.status}: filled {result.filled_qty}/{result.requested_qty} "
-                    f"@ {result.avg_fill_price} (slippage {result.actual_slippage_bps} bps, "
-                    f"{result.latency_ms}ms, {result.retries} retries)"
-                    if result.status in ("FILLED", "PARTIAL")
-                    else f"Execution {result.status}: {result.reason}"
+                log_event(
+                    logger,
+                    message="scheduler_execution_result",
+                    category="scheduler",
+                    symbol=self.symbol,
+                    reason=result.reason if result.status not in ("FILLED", "PARTIAL") else None,
                 )
 
             else:
-                print("No trade this cycle.")
+                log_event(logger, message="scheduler_no_trade", category="scheduler", symbol=self.symbol)

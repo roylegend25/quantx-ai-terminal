@@ -51,21 +51,45 @@ type ChartPoint = {
   label: string;
 };
 
-const TIMEFRAME_CONFIG: Record<string, { label: string; ms: number; bars: number; horizon: string }> = {
-  "1h": { label: "1H", ms: 3_600_000, bars: 12, horizon: "12 Hours" },
-  "4h": { label: "4H", ms: 4 * 3_600_000, bars: 6, horizon: "24 Hours" },
-  "1d": { label: "1D", ms: 86_400_000, bars: 7, horizon: "7 Days" },
-  "1w": { label: "1W", ms: 7 * 86_400_000, bars: 4, horizon: "4 Weeks" },
+const TIMEFRAME_CONFIG: Record<string, { label: string; ms: number }> = {
+  "1h": { label: "1H", ms: 3_600_000 },
+  "4h": { label: "4H", ms: 4 * 3_600_000 },
+  "1d": { label: "1D", ms: 86_400_000 },
+  "1w": { label: "1W", ms: 7 * 86_400_000 },
 };
 const TIMEFRAME_ORDER = ["1h", "4h", "1d", "1w"];
 
+// Forecast bar count is fixed (not tied to timeframe or screen size) so the
+// projection always reads as a long, clearly visible cone rather than a
+// sliver next to months of history - and so it stays just as long on
+// mobile, where only the *historical* window gets thinned for density.
+const FORECAST_BARS = 32;
+// How much trailing history to plot behind the forecast. Kept proportional
+// to FORECAST_BARS (not the full 220-candle fetch) so the forecast segment
+// occupies a substantial, readable fraction of the time axis instead of
+// being dwarfed by weeks/months of history rendered at the same scale.
+const HISTORY_BARS = 60;
+
 const dateFmt = new Intl.DateTimeFormat([], { day: "numeric", month: "short" });
+// Intraday timeframes (1H/4H) pack several ticks into the same calendar
+// day, so date-only labels look like accidental repeats ("Jul 3 … Jul 3
+// … Jul 4") - include the hour for those, and fall back to a bare date
+// once a bar covers a full day or more (1D/1W).
+const dateHourFmt = new Intl.DateTimeFormat([], { day: "numeric", month: "short", hour: "2-digit" });
 const dateTimeFmt = new Intl.DateTimeFormat([], {
   month: "short",
   day: "numeric",
   hour: "2-digit",
   minute: "2-digit",
 });
+
+function formatHorizon(totalMs: number): string {
+  const hours = totalMs / 3_600_000;
+  if (hours < 48) return `${Math.round(hours)} Hours`;
+  const days = hours / 24;
+  if (days < 14) return `${Math.round(days)} Days`;
+  return `${Math.round(days / 7)} Weeks`;
+}
 
 function fmtSignedPct(n: number): string {
   if (!Number.isFinite(n)) return "—";
@@ -200,8 +224,11 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
     : 400;
 
   const { chartData, nowIndex, nowTime, lastClose, isNoTrade } = useMemo(() => {
-    const maxHistPoints = isMobile ? 40 : isTabletPortrait ? 70 : 140;
-    const sampled = sampleCandles(candles, maxHistPoints);
+    const windowed = candles.length > HISTORY_BARS ? candles.slice(-HISTORY_BARS) : candles;
+    const maxHistPoints = isMobile ? 30 : isTabletPortrait ? 45 : HISTORY_BARS;
+    const sampled = sampleCandles(windowed, maxHistPoints);
+    const isIntraday = tfConfig.ms < 24 * 3_600_000;
+    const tickFmt = isIntraday ? dateHourFmt : dateFmt;
 
     const hist: ChartPoint[] = sampled.map((c, i) => ({
       idx: i,
@@ -211,7 +238,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
       upper: null,
       lower: null,
       band: null,
-      label: dateFmt.format(new Date(c.time)),
+      label: tickFmt.format(new Date(c.time)),
     }));
 
     const lastCandle = sampled[sampled.length - 1];
@@ -252,7 +279,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
       };
     }
 
-    const forecastBars = tfConfig.bars;
+    const forecastBars = FORECAST_BARS;
     const forecast: ChartPoint[] = [];
     for (let i = 1; i <= forecastBars; i++) {
       const t = i / forecastBars;
@@ -269,7 +296,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
         upper,
         lower,
         band: [lower, upper],
-        label: dateFmt.format(new Date(time)),
+        label: tickFmt.format(new Date(time)),
       });
     }
 
@@ -305,6 +332,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
     : "Weak Signal";
 
   const confidenceLabel = confidence >= 80 ? "High Confidence" : confidence >= 60 ? "Medium Confidence" : "Low Confidence";
+  const horizonText = formatHorizon(FORECAST_BARS * tfConfig.ms);
 
   const targetPct = lastClose && typeof target === "number" ? ((target - lastClose) / lastClose) * 100 : NaN;
   const stopPct = lastClose && typeof stop === "number" ? ((stop - lastClose) / lastClose) * 100 : NaN;
@@ -424,8 +452,8 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
           <ComposedChart data={chartData} margin={{ top: 16, right: isMobile ? 36 : 54, left: 0, bottom: 4 }}>
             <defs>
               <linearGradient id="pcForecastZone" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#00a8ff" stopOpacity={0.28} />
-                <stop offset="100%" stopColor="#00a8ff" stopOpacity={0.03} />
+                <stop offset="0%" stopColor="#00a8ff" stopOpacity={0.38} />
+                <stop offset="100%" stopColor="#00a8ff" stopOpacity={0.05} />
               </linearGradient>
             </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
@@ -460,38 +488,40 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
             <Line
               dataKey="upper"
               stroke="var(--c-green)"
-              strokeWidth={1.5}
-              strokeDasharray="6 4"
+              strokeWidth={2.25}
+              strokeDasharray="9 5"
               dot={false}
               isAnimationActive={false}
               connectNulls
+              style={{ filter: "drop-shadow(0 0 4px rgba(0,245,160,.5))" }}
             />
             <Line
               dataKey="lower"
               stroke="var(--c-red)"
-              strokeWidth={1.5}
-              strokeDasharray="6 4"
+              strokeWidth={2.25}
+              strokeDasharray="9 5"
               dot={false}
               isAnimationActive={false}
               connectNulls
+              style={{ filter: "drop-shadow(0 0 4px rgba(255,93,115,.5))" }}
             />
             <Line
               dataKey="predicted"
-              stroke="var(--c-cyan)"
-              strokeWidth={2.25}
+              stroke="#19e7ff"
+              strokeWidth={3.25}
               dot={false}
               isAnimationActive={false}
               connectNulls
-              style={{ filter: "drop-shadow(0 0 5px rgba(0,245,212,.65))" }}
+              style={{ filter: "drop-shadow(0 0 7px rgba(25,231,255,.75))" }}
             />
             <Line
               dataKey="actual"
               stroke="var(--c-purple)"
-              strokeWidth={2.25}
+              strokeWidth={2.75}
               dot={false}
               isAnimationActive={false}
               connectNulls={false}
-              style={{ filter: "drop-shadow(0 0 5px rgba(124,92,255,.55))" }}
+              style={{ filter: "drop-shadow(0 0 6px rgba(124,92,255,.6))" }}
             />
 
             <ReferenceLine x={nowTime} stroke="rgba(255,255,255,0.28)" strokeDasharray="4 4" />
@@ -534,7 +564,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
 
         <div className="pc-tile">
           <span className="tile-label">Prediction Horizon</span>
-          <b className="tile-value">{tfConfig.horizon}</b>
+          <b className="tile-value">{horizonText}</b>
           <span className="pc-tile-sub">{updatedAgo ? `Updated ${updatedAgo}` : "—"}</span>
         </div>
       </div>

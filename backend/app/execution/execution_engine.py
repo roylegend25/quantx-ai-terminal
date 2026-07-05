@@ -172,7 +172,7 @@ class ExecutionEngine:
                 execution_quality=None, latency_ms=latency_ms, retries=0, reason=reason,
             )
             metrics.record(result)
-            log_event(logger, message="order_rejected", event="execution", symbol=symbol, error=reason, latency_ms=latency_ms)
+            log_event(logger, message="order_rejected", event="execution", category="risk", symbol=symbol, error=reason, latency_ms=latency_ms)
             return result
 
         # --- safety gates (cheap, no network) --------------------------------
@@ -289,7 +289,7 @@ class ExecutionEngine:
         )
         metrics.record(result)
         log_event(
-            logger, message="order_executed", event="execution", symbol=symbol,
+            logger, message="order_executed", event="execution", category="trading", symbol=symbol,
             latency_ms=latency_ms, error=None,
         )
         return result

@@ -7,6 +7,7 @@ settings.auto_retrain.
 """
 
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 
 from app.core.config import settings
@@ -21,9 +22,11 @@ from app.mlops.model_registry import (
     registry,
 )
 from app.mlops.retrainer import ALGORITHMS
+from app.monitoring.logging import get_logger, log_event
 
 RUNNING = False
 _last_retrain_check: datetime | None = None
+logger = get_logger("quantx.mlops_scheduler")
 
 SCHEDULE_INTERVALS = {
     "daily": timedelta(days=1),
@@ -100,10 +103,13 @@ async def _run_cycle():
                 try:
                     retrainer.retrain(algorithm, algorithm=algorithm, reason="schedule", db=db)
                 except Exception as e:
-                    print(f"MLOps scheduler retrain error ({algorithm}):", repr(e))
+                    log_event(
+                        logger, message="mlops_retrain_error", level=logging.ERROR,
+                        category="scheduler", strategy=algorithm, error=repr(e),
+                    )
             _last_retrain_check = datetime.now(timezone.utc)
     except Exception as e:
-        print("MLOps scheduler cycle error:", repr(e))
+        log_event(logger, message="mlops_scheduler_cycle_error", level=logging.ERROR, category="scheduler", error=repr(e))
     finally:
         db.close()
 
