@@ -11,6 +11,7 @@ from app.ml.feature_store import store as feature_store
 from app.monitoring.logging import get_logger, log_event
 from app.monitoring.metrics import PREDICTION_LATENCY
 from app.monitoring.tracing import span
+from app.risk import settings_repository
 
 router = APIRouter(prefix="/api/prediction", tags=["prediction"])
 
@@ -62,6 +63,33 @@ def make_prediction(features: dict, market_context: dict | None = None, consensu
         decision["direction"],
     )
 
+    # Lightweight, dashboard-editable gate (see app/risk/settings_repository.py):
+    # reflects whether this specific direction/confidence would currently
+    # clear the risk desk, using the same live-configurable limits the
+    # auto-trading scheduler reads. It intentionally doesn't factor in
+    # portfolio-level state (daily/weekly loss, drawdown, cooldown) since
+    # this endpoint has no portfolio context - that fuller picture is what
+    # app.trading.risk_manager.evaluate_risk() computes before the scheduler
+    # actually routes an order.
+    risk_settings = settings_repository.get_settings()
+    required_confidence = round(risk_settings["min_confidence_to_trade"] * 100, 1)
+    direction = decision["direction"]
+    direction_allowed = (
+        (direction == "LONG" and risk_settings["allow_long"])
+        or (direction == "SHORT" and risk_settings["allow_short"])
+    )
+
+    if not risk_settings["paper_trading_enabled"]:
+        risk_allowed, risk_reason = False, "Paper trading is disabled in risk settings"
+    elif direction == "NO_TRADE":
+        risk_allowed, risk_reason = False, "No qualifying trade signal"
+    elif not direction_allowed:
+        risk_allowed, risk_reason = False, f"{direction.title()} trades disabled by risk settings"
+    elif confidence < required_confidence:
+        risk_allowed, risk_reason = False, f"Confidence {confidence:.1f}% below required {required_confidence:.1f}%"
+    else:
+        risk_allowed, risk_reason = True, "Risk checks passed"
+
     return {
         "direction": decision["direction"],
         "probability_up": decision["probability_up"],
@@ -82,9 +110,10 @@ def make_prediction(features: dict, market_context: dict | None = None, consensu
         "multi_timeframe_consensus": consensus,
         "multi_timeframe_adjustment": consensus_adjustment,
         "risk": {
-            "allowed": decision["direction"] != "NO_TRADE" and confidence >= 70,
-            "reason": "Risk checks passed" if confidence >= 70 else "Confidence below threshold",
-            "max_risk_per_trade_pct": 0.5,
+            "allowed": risk_allowed,
+            "reason": risk_reason,
+            "required_confidence": required_confidence,
+            "max_risk_per_trade_pct": risk_settings["max_risk_per_trade_pct"],
         },
         "features": features,
     }

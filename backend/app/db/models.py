@@ -339,3 +339,33 @@ class Portfolio(Base):
     total_pnl = Column(Float, default=0.0)
     wins = Column(Integer, default=0)
     losses = Column(Integer, default=0)
+
+
+class RiskSettings(Base):
+    """Editable paper-trading risk limits (see app/risk/settings_repository.py).
+
+    Singleton row (id=1). Both the /api/prediction risk gate and the
+    auto-trading scheduler (app/engine/trading_engine.py) read this
+    dynamically, so a PUT from the Risk Management page changes behavior on
+    the very next prediction/cycle - no redeploy. paper_trading_enabled only
+    ever gates this process's own paper-ledger writes; it has no bearing on
+    live trading, which this codebase has no order-placement path for at all.
+    """
+    __tablename__ = "risk_settings"
+
+    id = Column(Integer, primary_key=True, default=1)
+    min_confidence_to_trade = Column(Float, default=0.70)
+    max_risk_per_trade_pct = Column(Float, default=1.0)
+    max_daily_loss_pct = Column(Float, default=2.0)
+    max_weekly_loss_pct = Column(Float, default=6.0)
+    max_drawdown_pct = Column(Float, default=10.0)
+    max_consecutive_losses = Column(Integer, default=5)
+    max_open_positions = Column(Integer, default=1)
+    max_position_size_usd = Column(Float, default=1000.0)
+    allow_long = Column(Boolean, default=True)
+    allow_short = Column(Boolean, default=True)
+    cooldown_minutes = Column(Integer, default=0)
+    paper_trading_enabled = Column(Boolean, default=True)
+    updated_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )

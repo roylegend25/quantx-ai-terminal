@@ -20,7 +20,6 @@ from datetime import datetime, timezone
 
 import httpx
 
-from app.core.config import settings
 from app.core.security import create_internal_service_token
 from app.execution import execution_metrics as metrics
 from app.execution.order_router import (
@@ -33,6 +32,7 @@ from app.execution.order_router import (
 from app.execution.retry import RetryConfig, with_retry
 from app.execution.slippage import actual_slippage_bps, execution_quality
 from app.monitoring.logging import get_logger, log_event
+from app.risk import settings_repository
 
 logger = get_logger("quantx.execution")
 
@@ -127,6 +127,7 @@ class ExecutionEngine:
         return False
 
     def status(self) -> dict:
+        risk = settings_repository.get_settings()
         return {
             "engine": "operational",
             "mode": "paper",
@@ -134,8 +135,8 @@ class ExecutionEngine:
             "safety": {
                 "max_signal_age_seconds": MAX_SIGNAL_AGE_SECONDS,
                 "duplicate_window_seconds": DUPLICATE_WINDOW_SECONDS,
-                "max_open_positions": settings.max_open_positions,
-                "max_risk_per_trade_pct": settings.max_risk_per_trade_pct,
+                "max_open_positions": risk["max_open_positions"],
+                "max_risk_per_trade_pct": risk["max_risk_per_trade_pct"],
             },
             "tracked_signatures": len(self._recent_signatures),
         }
@@ -188,8 +189,28 @@ class ExecutionEngine:
         if self._is_duplicate(signature):
             return reject("duplicate order rejected (same signal submitted within dedupe window)")
 
-        if open_positions >= settings.max_open_positions:
+        # Re-reads the dashboard-editable limits rather than the static env
+        # config, so this final gate can never fall out of sync with what
+        # the risk_manager.evaluate_risk() pre-check just approved.
+        risk = settings_repository.get_settings()
+
+        if not risk["paper_trading_enabled"]:
+            return reject("paper trading is disabled in risk settings")
+
+        if side == "LONG" and not risk["allow_long"]:
+            return reject("long trades disabled by risk settings")
+
+        if side == "SHORT" and not risk["allow_short"]:
+            return reject("short trades disabled by risk settings")
+
+        if open_positions >= risk["max_open_positions"]:
             return reject("max open positions reached - risk limit")
+
+        if usdt_size > risk["max_position_size_usd"]:
+            return reject(
+                f"order size ${usdt_size:.2f} exceeds configured max position size "
+                f"${risk['max_position_size_usd']:.2f}"
+            )
 
         # --- fetch reference price, validate, and route ----------------------
         try:
@@ -203,11 +224,11 @@ class ExecutionEngine:
 
                 if sl is not None and equity:
                     risk_amount = abs(market_price - sl) * qty
-                    max_risk_amount = equity * (settings.max_risk_per_trade_pct / 100)
+                    max_risk_amount = equity * (risk["max_risk_per_trade_pct"] / 100)
                     if risk_amount > max_risk_amount:
                         raise OrderRejected(
                             f"order risk ${risk_amount:.2f} exceeds configured max "
-                            f"{settings.max_risk_per_trade_pct}% of equity (${max_risk_amount:.2f})"
+                            f"{risk['max_risk_per_trade_pct']}% of equity (${max_risk_amount:.2f})"
                         )
 
                 order_price = price

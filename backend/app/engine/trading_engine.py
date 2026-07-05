@@ -6,6 +6,7 @@ from app.core.security import create_internal_service_token
 from app.execution.execution_engine import engine as execution_engine
 from app.execution.order_router import OrderType
 from app.monitoring.logging import get_logger, log_event
+from app.trading import risk_manager
 
 logger = get_logger("quantx.trading_engine")
 
@@ -38,7 +39,21 @@ class TradingEngine:
                 )
             ).json()["positions"]
 
+            trade_history = (
+                await client.get(
+                    "http://127.0.0.1:8000/api/paper/history"
+                )
+            ).json().get("trades", [])
+
             signal_time = datetime.now(timezone.utc)
+
+            decision = risk_manager.evaluate_risk(
+                confidence=prediction["confidence"],
+                direction=prediction["direction"],
+                open_positions=len(positions),
+                portfolio=portfolio,
+                trade_history=trade_history,
+            )
 
             log_event(
                 logger,
@@ -47,18 +62,15 @@ class TradingEngine:
                 symbol=self.symbol,
                 direction=prediction["direction"],
                 confidence=prediction["confidence"],
+                reason=decision["reason"],
             )
 
-            if (
-                prediction["direction"] in ["LONG", "SHORT"]
-                and prediction["confidence"] >= settings.confidence_threshold
-                and len(positions) < settings.max_open_positions
-            ):
+            if decision["allowed"]:
 
                 result = await execution_engine.submit_order(
                     symbol=self.symbol,
                     side=prediction["direction"],
-                    usdt_size=1000,
+                    usdt_size=decision["settings"]["max_position_size_usd"],
                     order_type=OrderType.IOC,
                     sl=prediction["stop"],
                     tp=prediction["target"],
@@ -79,4 +91,7 @@ class TradingEngine:
                 )
 
             else:
-                log_event(logger, message="scheduler_no_trade", category="scheduler", symbol=self.symbol)
+                log_event(
+                    logger, message="scheduler_no_trade", category="scheduler",
+                    symbol=self.symbol, reason=decision["reason"],
+                )

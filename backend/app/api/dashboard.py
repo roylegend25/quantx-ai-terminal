@@ -1,6 +1,8 @@
 from fastapi import APIRouter
 import httpx
 
+from app.risk import settings_repository
+
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
 BINANCE_FAPI = "https://fapi.binance.com"
@@ -27,6 +29,8 @@ async def dashboard():
         btc = await symbol_snapshot(client, "BTCUSDT")
         eth = await symbol_snapshot(client, "ETHUSDT")
 
+    risk = settings_repository.get_settings()
+
     return {
         "mode": "paper",
         "symbols": {
@@ -36,11 +40,11 @@ async def dashboard():
         "bot": {
             "status": "running",
             "live_trading": False,
-            "paper_trading": True,
+            "paper_trading": risk["paper_trading_enabled"],
         },
         "risk": {
-            "max_risk_per_trade_pct": 0.5,
-            "daily_loss_limit_pct": 2.0,
+            "max_risk_per_trade_pct": risk["max_risk_per_trade_pct"],
+            "daily_loss_limit_pct": risk["max_daily_loss_pct"],
             "live_mode_locked": True,
         },
     }

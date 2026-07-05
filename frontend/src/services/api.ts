@@ -16,6 +16,19 @@ async function postJson<T = any>(url: string, options: RequestInit = {}): Promis
   return data;
 }
 
+async function putJson<T = any>(url: string, body: Record<string, unknown>): Promise<T> {
+  const res = await authFetch(`${API}${url}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.detail || data?.message || `Request failed (${res.status})`);
+  }
+  return data;
+}
+
 export const api = {
   dashboard: () => getJson("/api/dashboard"),
   prediction: (symbol: string, interval: string) =>
@@ -121,4 +134,7 @@ export const api = {
     params.set("limit", String(opts.limit ?? 200));
     return getJson(`/api/logs/recent?${params.toString()}`);
   },
+  riskSettingsGet: () => getJson("/api/risk/settings"),
+  riskSettingsUpdate: (patch: Record<string, unknown>) => putJson("/api/risk/settings", patch),
+  riskSettingsReset: () => postJson("/api/risk/settings/reset"),
 };
