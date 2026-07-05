@@ -89,22 +89,36 @@ export function useAppData(authed: boolean | null) {
 
     setLoading(true);
     try {
+      // Each fetched independently with its own fallback - previously a
+      // transient failure (timeout, 5xx, non-JSON error body) in ANY one of
+      // these blocked the other two from updating at all via Promise.all,
+      // since only this trio (unlike every other call below) had no
+      // per-call .catch(). Prediction is the heaviest of the three (it fans
+      // out into a multi-timeframe consensus fetch + market-intelligence
+      // context), so it's the most likely to time out - when it did, real
+      // freshly-fetched candles were being thrown away along with it,
+      // leaving the chart showing nothing for the affected symbol until a
+      // later poll happened to succeed. Candles/dashboard/prediction now
+      // update independently; a failed leg just keeps its last known value
+      // instead of blanking the other two.
       const [dash, predRes, candleRows] = await Promise.all([
-        api.dashboard(),
-        api.prediction(symbol, interval),
-        api.candles(symbol, interval, 220),
+        api.dashboard().catch(() => null),
+        api.prediction(symbol, interval).catch(() => null),
+        api.candles(symbol, interval, 220).catch(() => null),
       ]);
 
       if (isStale()) return;
 
-      setDashboard(dash);
-      setPrediction(predRes.prediction);
-      setCandles(
-        (candleRows || []).map((x: Candle) => ({
-          ...x,
-          label: new Date(x.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        }))
-      );
+      if (dash) setDashboard(dash);
+      if (predRes) setPrediction(predRes.prediction);
+      if (candleRows) {
+        setCandles(
+          candleRows.map((x: Candle) => ({
+            ...x,
+            label: new Date(x.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          }))
+        );
+      }
 
       const [ob, tr, pf, pos, hist, ctx, tf, weights, bot, sys, stress, exStatus, exRisk, execStatus, execMetrics, mlModels, mlChampion, mlExperiments, mlDrift] =
         await Promise.all([
@@ -338,6 +352,17 @@ export function useAppData(authed: boolean | null) {
       showToast(e?.message || `Failed to ${action} bot`, "error");
     }
   }, [showToast, setBotStatus]);
+
+  // Drop the previous symbol/timeframe's prediction the instant either
+  // changes, before load() has a chance to refetch - otherwise, for the
+  // one round-trip it takes to fetch the new combo, every consumer
+  // (chart tiles, dashboard, positions' "Bot Trading Status" card) would
+  // keep rendering the old symbol's direction/confidence/target under the
+  // newly-selected symbol/timeframe's label.
+  useEffect(() => {
+    setPrediction(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symbol, interval]);
 
   useEffect(() => {
     if (!authed) return;

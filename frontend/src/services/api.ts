@@ -4,7 +4,11 @@ const API = "";
 
 async function getJson<T = any>(url: string): Promise<T> {
   const res = await authFetch(`${API}${url}`);
-  return res.json();
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.detail || data?.message || `Request failed (${res.status})`);
+  }
+  return data;
 }
 
 async function postJson<T = any>(url: string, options: RequestInit = {}): Promise<T> {

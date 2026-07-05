@@ -144,6 +144,15 @@ function fmtSignedPct(n: number): string {
   return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
 }
 
+/** Buckets the backend's specific outcome values down to the three states
+ *  the Past AI Prediction UI actually distinguishes visually (green/red/
+ *  grey-yellow dots): correct, wrong, or not yet resolved. */
+function outcomeBucket(outcome: string | null | undefined): "correct" | "wrong" | "unresolved" {
+  if (outcome === "CORRECT" || outcome === "WIN") return "correct";
+  if (outcome === "INCORRECT" || outcome === "LOSS") return "wrong";
+  return "unresolved"; // PENDING, NO_TRADE
+}
+
 /** Candle interval sanity check: the prop candles may briefly belong to the
  *  previous timeframe while a switch is in flight - detect by bar spacing. */
 function candlesMatchTimeframe(candles: Candle[], tfMs: number): boolean {
@@ -226,6 +235,11 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
   // ---- prediction history (stored, real predictions only)
   useEffect(() => {
     let cancelled = false;
+    // Clear immediately on switch, synchronously with the symbol/interval
+    // change, rather than waiting for the fetch below to resolve - a BTC 1h
+    // history point must never render, even briefly, once the user has
+    // already switched to ETH or to 15m.
+    setHistoryData({ points: [], summary: null });
     const fetchHistory = async () => {
       try {
         const res = await api.predictionHistory(symbol, interval, 500);
@@ -353,9 +367,13 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
       .map(([name]) => name.replace(/_/g, " "));
   }, [prediction?.strategies]);
 
+  // Short display symbol for the NO_TRADE message ("BTC" not "BTCUSDT"),
+  // matching the required phrasing: "No BTC 1h forecast: <reason>".
+  const shortSymbol = symbol.replace(/USDT$/, "");
+
   const directionSub = isNoTrade
     ? [
-        `No qualifying ${symbol} signal`,
+        `No ${shortSymbol} ${interval} forecast: ${prediction?.risk?.reason || "no qualifying signal"}`,
         typeof requiredConfidence === "number"
           ? `${confidence.toFixed(0)}% confidence (needs ${requiredConfidence.toFixed(0)}%)`
           : null,
@@ -364,7 +382,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
           : null,
       ]
         .filter(Boolean)
-        .join(" · ") || prediction?.risk?.reason || "No active setup"
+        .join(" · ")
     : confidence >= 80
     ? `Strong ${direction === "LONG" ? "Buy" : "Sell"} Signal`
     : confidence >= 60
@@ -398,10 +416,14 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
     : null;
 
   useEffect(() => {
+    // Dev-only: import.meta.env.DEV is stripped to `false` (and this whole
+    // block dead-code-eliminated) in a production Vite build, so nothing
+    // logs in prod regardless of the showDebug panel toggle below.
+    if (!import.meta.env.DEV) return;
     // eslint-disable-next-line no-console
     console.debug("[QuantX chart debug]", {
       selectedSymbol: symbol,
-      interval,
+      selectedTimeframe: interval,
       direction: prediction?.direction ?? null,
       confidence: prediction?.confidence ?? null,
       requiredConfidence: prediction?.risk?.required_confidence ?? null,
@@ -433,6 +455,37 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
 
   const summary = historyData.summary;
   const hitRate = summary?.direction_hit_rate_pct;
+
+  // Past AI Prediction stat row - derived straight from the same history
+  // points the chart plots as dots, so the numbers always match what's on
+  // screen (rather than trusting the backend summary's own bucketing).
+  const pastPredictionStats = useMemo(() => {
+    const points = historyData.points as any[];
+    let correct = 0;
+    let wrong = 0;
+    let unresolved = 0;
+    let errorSum = 0;
+    let errorCount = 0;
+    for (const p of points) {
+      const bucket = outcomeBucket(p.outcome);
+      if (bucket === "correct") correct += 1;
+      else if (bucket === "wrong") wrong += 1;
+      else unresolved += 1;
+      if (typeof p.error_pct === "number") {
+        errorSum += p.error_pct;
+        errorCount += 1;
+      }
+    }
+    const resolved = correct + wrong;
+    return {
+      total: points.length,
+      correct,
+      wrong,
+      unresolved,
+      hitRatePct: resolved ? (correct / resolved) * 100 : null,
+      avgErrorPct: errorCount ? errorSum / errorCount : null,
+    };
+  }, [historyData.points]);
 
   const toolButtons: Array<{
     key: string;
@@ -592,20 +645,39 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
 
       <div className="pc-legend-row">
         <div className="pc-legend">
-          <span className="pc-legend-item">
+          <span className="pc-legend-item" title="Live market candles / price line">
             <i className="pc-swatch solid purple" /> Actual Price
           </span>
-          <span className="pc-legend-item">
-            <i className="pc-swatch solid cyan" /> AI Forecast
+          <span
+            className={`pc-legend-item${isNoTrade ? " pc-legend-off" : ""}`}
+            title={isNoTrade ? `No forecast while ${shortSymbol} ${interval} is NO_TRADE - nothing is fabricated` : "AI forecast line over the prediction horizon"}
+          >
+            <i className="pc-swatch solid cyan" /> AI Forecast{isNoTrade ? " (no signal)" : ""}
           </span>
-          <span className="pc-legend-item">
+          <span
+            className={`pc-legend-item${!prefs.history || !historyData.points.length ? " pc-legend-off" : ""}`}
+            title={
+              !prefs.history
+                ? "Hidden - re-enable with the history toolbar button below"
+                : !historyData.points.length
+                ? `No stored predictions yet for ${shortSymbol} ${interval}`
+                : "Stored past AI predictions vs what price actually did"
+            }
+          >
             <i className="pc-swatch dash orange" /> Past AI Predictions
+            {!prefs.history ? " (off)" : !historyData.points.length ? " (none yet)" : ""}
           </span>
-          <span className="pc-legend-item">
-            <i className="pc-swatch dash green" /> Upper Band
+          <span
+            className={`pc-legend-item${isNoTrade || !prefs.bands ? " pc-legend-off" : ""}`}
+            title={isNoTrade ? "No band without a directional signal" : !prefs.bands ? "Hidden - re-enable with the bands toolbar button below" : "Upper confidence band"}
+          >
+            <i className="pc-swatch dash green" /> Upper Band{isNoTrade ? " (no signal)" : !prefs.bands ? " (off)" : ""}
           </span>
-          <span className="pc-legend-item">
-            <i className="pc-swatch dash red" /> Lower Band
+          <span
+            className={`pc-legend-item${isNoTrade || !prefs.bands ? " pc-legend-off" : ""}`}
+            title={isNoTrade ? "No band without a directional signal" : !prefs.bands ? "Hidden - re-enable with the bands toolbar button below" : "Lower confidence band"}
+          >
+            <i className="pc-swatch dash red" /> Lower Band{isNoTrade ? " (no signal)" : !prefs.bands ? " (off)" : ""}
           </span>
           {typeof hitRate === "number" && (
             <span className="pc-legend-item pcx-hitrate" title={`Direction hit rate over the last ${summary?.resolved ?? 0} resolved predictions on this timeframe`}>
@@ -623,6 +695,37 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
           </span>
         </div>
       </div>
+
+      {pastPredictionStats.total > 0 && (
+        <div className="pc-past-stat-row" title="Computed from this symbol/timeframe's stored prediction history only">
+          <div className="pc-past-stat">
+            <span>Past AI Hit Rate</span>
+            <b className={pastPredictionStats.hitRatePct != null && pastPredictionStats.hitRatePct >= 50 ? "green" : "red"}>
+              {pastPredictionStats.hitRatePct != null ? `${pastPredictionStats.hitRatePct.toFixed(1)}%` : "—"}
+            </b>
+          </div>
+          <div className="pc-past-stat">
+            <span>Avg Error %</span>
+            <b>{pastPredictionStats.avgErrorPct != null ? `${pastPredictionStats.avgErrorPct.toFixed(2)}%` : "—"}</b>
+          </div>
+          <div className="pc-past-stat">
+            <span>Total Predictions</span>
+            <b>{pastPredictionStats.total}</b>
+          </div>
+          <div className="pc-past-stat">
+            <span>Correct</span>
+            <b className="green">{pastPredictionStats.correct}</b>
+          </div>
+          <div className="pc-past-stat">
+            <span>Wrong</span>
+            <b className="red">{pastPredictionStats.wrong}</b>
+          </div>
+          <div className="pc-past-stat">
+            <span>Unresolved</span>
+            <b className="yellow">{pastPredictionStats.unresolved}</b>
+          </div>
+        </div>
+      )}
 
       <div className="pcx-toolrow">
         {toolButtons.map((b) => (

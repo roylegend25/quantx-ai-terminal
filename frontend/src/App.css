@@ -1256,6 +1256,14 @@ button, select, input {
   white-space: nowrap;
 }
 
+/* Legend entry whose overlay isn't currently drawable (NO_TRADE, toggle
+   off, no stored history) - dimmed instead of removed so users see the
+   overlay exists and the suffix/tooltip explains why it's absent. */
+.pc-legend-item.pc-legend-off {
+  opacity: 0.45;
+  font-style: italic;
+}
+
 .pc-swatch {
   width: 16px;
   height: 0;
@@ -1277,6 +1285,43 @@ button, select, input {
 
 .pc-price-row b {
   font-size: 16px;
+}
+
+.pc-past-stat-row {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 10px;
+  margin: 10px 0 4px;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 12px;
+}
+
+.pc-past-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pc-past-stat span {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #8b90a8;
+  white-space: nowrap;
+}
+
+.pc-past-stat b {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+@media (max-width: 720px) {
+  .pc-past-stat-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 
 .pc-chart-wrap {

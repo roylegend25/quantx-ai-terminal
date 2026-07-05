@@ -57,6 +57,7 @@ export type IndicatorId =
 export type HistoryPoint = {
   id: number;
   timestamp: number;
+  timeframe?: string | null;
   direction: string | null;
   confidence: number | null;
   regime: string | null;
@@ -68,7 +69,18 @@ export type HistoryPoint = {
   actual_price: number | null;
   outcome: string;
   accuracy_pct: number | null;
+  error_pct?: number | null;
 };
+
+/** Buckets the backend's specific outcome values down to the three states
+ *  this overlay actually distinguishes visually: correct (green), wrong
+ *  (red), or not yet resolved (grey/yellow). Kept local to this module so
+ *  both the dot color and the tooltip label always agree. */
+function outcomeBucket(outcome: string | null | undefined): "correct" | "wrong" | "unresolved" {
+  if (outcome === "CORRECT" || outcome === "WIN") return "correct";
+  if (outcome === "INCORRECT" || outcome === "LOSS") return "wrong";
+  return "unresolved";
+}
 
 export type LiquidityCluster = {
   price: number;
@@ -169,6 +181,21 @@ function buildCone(candlesArr: Candle[], prediction: any): Cone {
     lower.push(lastClose + (lo - lastClose) * e);
   }
   return { predicted, upper, lower };
+}
+
+const TF_LABELS: Record<number, string> = {
+  60_000: "1m",
+  300_000: "5m",
+  900_000: "15m",
+  1_800_000: "30m",
+  3_600_000: "1H",
+  14_400_000: "4H",
+  86_400_000: "1D",
+  604_800_000: "1W",
+};
+
+function tfLabel(ms: number): string {
+  return TF_LABELS[ms] ?? `${Math.round(ms / 60_000)}m`;
 }
 
 function niceStep(range: number, targetTicks: number): number {
@@ -325,6 +352,15 @@ function ProChartCanvas(props: Props) {
       viewInitialized.current = candles.length > 0;
       prevDatasetKey.current = datasetKey;
       animRef.current.initialized = false;
+      // Invalidate the smoothed y-domain along with the view: a locked
+      // (auto-scale off) domain is only meaningful within the dataset it
+      // was captured on. Without this, the first draw after a symbol
+      // switch re-locks to the PREVIOUS symbol's finite anim.yMin/yMax -
+      // e.g. BTC's ~60k range - and the new symbol's candles (ETH at
+      // ~2k) land far outside the visible band: a blank price chart with
+      // every stat still rendering.
+      animRef.current.yMin = NaN;
+      animRef.current.yMax = NaN;
     } else {
       // keep right edge pinned if the user was already at the right edge
       const v = viewRef.current;
@@ -453,7 +489,7 @@ function ProChartCanvas(props: Props) {
       if (cs.length === 0) {
         g.fillStyle = T.textDim;
         g.textAlign = "center";
-        g.fillText("Loading market data…", W / 2, H / 2);
+        g.fillText(`No ${p.symbol} ${tfLabel(p.timeframeMs)} candle data loaded yet — waiting for market data…`, W / 2, H / 2);
         return false;
       }
 
@@ -539,7 +575,15 @@ function ProChartCanvas(props: Props) {
         }
         view.lockedY = null;
       }
-      const [yMin, yMax] = view.lockedY ?? [anim.yMin, anim.yMax];
+      let [yMin, yMax] = view.lockedY ?? [anim.yMin, anim.yMax];
+      // Last-resort guard: whatever the source (locked or animated), a
+      // non-finite or collapsed domain would map every price to ±Infinity
+      // and silently draw nothing - fall back to the domain computed from
+      // the actual visible candles this frame.
+      if (!Number.isFinite(yMin) || !Number.isFinite(yMax) || yMax <= yMin) {
+        yMin = yMinT;
+        yMax = yMaxT;
+      }
       const volTop = p.indicators.includes("volume") ? mainBottom - Math.min(70, mainBottom * 0.16) : mainBottom;
       const priceBottom = volTop - 2;
       const yAt = (v: number) => 8 + ((yMax - v) / (yMax - yMin)) * (priceBottom - 16);
@@ -891,14 +935,18 @@ function ProChartCanvas(props: Props) {
         g.setLineDash([]);
         g.restore();
 
-        // dots colored by outcome + hover detection
+        // dots colored by outcome + hover detection. Unresolved splits into
+        // two shades - NO_TRADE (grey) vs still-PENDING (yellow) - since
+        // those mean different things even though both bucket to
+        // "unresolved" for the stat row.
         const ptr = pointerRef.current;
         for (const d of drawable) {
           const oc = d.pt.outcome;
+          const bucket = outcomeBucket(oc);
           const color =
-            oc === "CORRECT" || oc === "WIN"
+            bucket === "correct"
               ? T.green
-              : oc === "INCORRECT" || oc === "LOSS"
+              : bucket === "wrong"
               ? T.red
               : oc === "NO_TRADE"
               ? T.textDim
@@ -1558,26 +1606,28 @@ function drawHistoryTooltip(
   T: Theme
 ) {
   const pt = hovered.pt;
-  const diff =
-    typeof pt.predicted_price === "number" && typeof pt.actual_price === "number"
-      ? pt.actual_price - pt.predicted_price
+  const errorPct =
+    typeof pt.error_pct === "number"
+      ? pt.error_pct
+      : typeof pt.predicted_price === "number" && typeof pt.actual_price === "number" && pt.actual_price
+      ? Math.abs((pt.actual_price - pt.predicted_price) / pt.actual_price) * 100
       : null;
+  const bucket = outcomeBucket(pt.outcome);
+  const bucketLabel = bucket === "correct" ? "Correct" : bucket === "wrong" ? "Wrong" : "Unresolved";
+  const bucketColor = bucket === "correct" ? T.green : bucket === "wrong" ? T.red : pt.outcome === "NO_TRADE" ? T.textDim : T.yellow;
+
   const rows: Array<[string, string, string]> = [
     ["Time", timeFmtFull.format(new Date(pt.timestamp)), T.text],
-    ["Predicted", pt.predicted_price != null ? fmtPrice(pt.predicted_price) : "—", HISTORY_ORANGE],
-    ["Actual", pt.actual_price != null ? fmtPrice(pt.actual_price) : "pending", T.text],
   ];
-  if (diff !== null) rows.push(["Difference", `${diff >= 0 ? "+" : ""}${fmtPrice(diff)}`, diff >= 0 ? T.green : T.red]);
-  if (pt.confidence != null) rows.push(["Confidence", `${pt.confidence.toFixed(0)}%`, T.text]);
+  if (pt.timeframe) rows.push(["Timeframe", pt.timeframe, T.text]);
   if (pt.direction) rows.push(["Direction", pt.direction, pt.direction === "LONG" ? T.green : pt.direction === "SHORT" ? T.red : T.textDim]);
+  if (pt.confidence != null) rows.push(["Confidence", `${pt.confidence.toFixed(0)}%`, T.text]);
+  rows.push(["Predicted", pt.predicted_price != null ? fmtPrice(pt.predicted_price) : "—", HISTORY_ORANGE]);
+  rows.push(["Actual", pt.actual_price != null ? fmtPrice(pt.actual_price) : "pending", T.text]);
+  if (errorPct !== null) rows.push(["Error %", `${errorPct.toFixed(2)}%`, errorPct <= 1 ? T.green : errorPct <= 5 ? T.yellow : T.red]);
   if (pt.strategy) rows.push(["Strategy", pt.strategy.replace(/_/g, " "), T.cyan]);
   if (pt.regime) rows.push(["Regime", pt.regime.replace(/_/g, " "), T.text]);
-  rows.push([
-    "Outcome",
-    pt.outcome,
-    pt.outcome === "CORRECT" || pt.outcome === "WIN" ? T.green : pt.outcome === "INCORRECT" || pt.outcome === "LOSS" ? T.red : T.yellow,
-  ]);
-  if (pt.accuracy_pct != null) rows.push(["Accuracy", `${pt.accuracy_pct.toFixed(2)}%`, pt.accuracy_pct >= 99 ? T.green : T.text]);
+  rows.push(["Outcome", bucketLabel, bucketColor]);
 
   g.font = `600 10px ${FONT}`;
   let wMax = 96;
