@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode
 import {
   ArrowDownRight,
   ArrowUpRight,
+  Bug,
   Camera,
   ChevronDown,
   Crosshair,
@@ -158,6 +159,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
   const isTabletLandscape = useMediaQuery("(min-width: 1025px) and (max-width: 1366px)");
 
   const [showIndicators, setShowIndicators] = useState(false);
+  const [showDebug, setShowDebug] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [prefs, setPrefs] = useState<ChartPrefs>(loadPrefs);
   const [resetSignal, setResetSignal] = useState(0);
@@ -337,8 +339,32 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
   const directionText = direction === "LONG" ? "BULLISH" : direction === "SHORT" ? "BEARISH" : "NO TRADE";
   const directionTone = direction === "LONG" ? "green" : direction === "SHORT" ? "red" : "yellow";
   const DirectionIcon = direction === "LONG" ? ArrowUpRight : direction === "SHORT" ? ArrowDownRight : Minus;
+
+  // Strategies that voted NO_TRADE - only meaningful when the ensemble
+  // itself landed on NO_TRADE (not a directional signal that's merely
+  // below the risk-gate threshold, which already gets a specific reason
+  // string from the backend).
+  const requiredConfidence = prediction?.risk?.required_confidence;
+  const blockedStrategies = useMemo(() => {
+    const strategies = prediction?.strategies;
+    if (!strategies) return [] as string[];
+    return Object.entries(strategies)
+      .filter(([, v]: [string, any]) => v?.direction === "NO_TRADE")
+      .map(([name]) => name.replace(/_/g, " "));
+  }, [prediction?.strategies]);
+
   const directionSub = isNoTrade
-    ? prediction?.risk?.reason || "No active setup"
+    ? [
+        `No qualifying ${symbol} signal`,
+        typeof requiredConfidence === "number"
+          ? `${confidence.toFixed(0)}% confidence (needs ${requiredConfidence.toFixed(0)}%)`
+          : null,
+        direction === "NO_TRADE" && blockedStrategies.length
+          ? `blocked by ${blockedStrategies.join(", ")}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" · ") || prediction?.risk?.reason || "No active setup"
     : confidence >= 80
     ? `Strong ${direction === "LONG" ? "Buy" : "Sell"} Signal`
     : confidence >= 60
@@ -359,6 +385,34 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
     if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
     return `${Math.floor(diffSec / 3600)}h ago`;
   }, [prediction?.computed_at]);
+
+  // Debug info: mirrors ProChartCanvas's buildCone() gate exactly (a forecast
+  // is only ever drawn for a directional, non-NO_TRADE prediction with at
+  // least one real candle) so "why is there no forecast line" is answerable
+  // without reading canvas internals.
+  const forecastPointCount = !isNoTrade && displayCandles.length ? FORECAST_BARS : 0;
+  const forecastHiddenReason = !displayCandles.length
+    ? "no candle data loaded yet"
+    : isNoTrade
+    ? `direction is ${direction ?? "unknown"} (no qualifying signal)`
+    : null;
+
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.debug("[QuantX chart debug]", {
+      selectedSymbol: symbol,
+      interval,
+      direction: prediction?.direction ?? null,
+      confidence: prediction?.confidence ?? null,
+      requiredConfidence: prediction?.risk?.required_confidence ?? null,
+      riskAllowed: prediction?.risk?.allowed ?? null,
+      riskReason: prediction?.risk?.reason ?? null,
+      candleCount: displayCandles.length,
+      historyPointCount: historyData.points.length,
+      forecastPointCount,
+      forecastHiddenReason,
+    });
+  }, [symbol, interval, prediction, displayCandles.length, historyData.points.length, forecastPointCount, forecastHiddenReason]);
 
   const toggleIndicator = useCallback((id: IndicatorId) => {
     setPrefs((prev) => ({
@@ -455,6 +509,13 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
       title: "Export chart as PNG",
       icon: <Camera size={15} />,
       onClick: () => exportFnRef.current?.(),
+    },
+    {
+      key: "debug",
+      title: "Debug panel (symbol/prediction/data-pipeline diagnostics)",
+      icon: <Bug size={15} />,
+      active: showDebug,
+      onClick: () => setShowDebug((v) => !v),
     },
   ];
 
@@ -643,6 +704,21 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
           <span className="pc-tile-sub">{updatedAgo ? `Updated ${updatedAgo}` : "—"}</span>
         </div>
       </div>
+
+      {showDebug && (
+        <div className="pc-debug-panel">
+          <div className="pc-debug-row"><span>selectedSymbol</span><b>{symbol}</b></div>
+          <div className="pc-debug-row"><span>interval</span><b>{interval}</b></div>
+          <div className="pc-debug-row"><span>prediction.direction</span><b>{prediction?.direction ?? "—"}</b></div>
+          <div className="pc-debug-row"><span>prediction.confidence</span><b>{prediction?.confidence ?? "—"}</b></div>
+          <div className="pc-debug-row"><span>required confidence</span><b>{prediction?.risk?.required_confidence ?? "—"}</b></div>
+          <div className="pc-debug-row"><span>risk.allowed</span><b>{String(prediction?.risk?.allowed ?? "—")}</b></div>
+          <div className="pc-debug-row"><span>candle count</span><b>{displayCandles.length}</b></div>
+          <div className="pc-debug-row"><span>history points</span><b>{historyData.points.length}</b></div>
+          <div className="pc-debug-row"><span>forecast points</span><b>{forecastPointCount}</b></div>
+          <div className="pc-debug-row"><span>forecast hidden reason</span><b>{forecastHiddenReason ?? "n/a - forecast is showing"}</b></div>
+        </div>
+      )}
     </div>
   );
 }

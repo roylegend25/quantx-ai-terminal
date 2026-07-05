@@ -1496,10 +1496,22 @@ function drawAiCard(g: CanvasRenderingContext2D, prediction: any, x: number, y: 
     ["Signal", directional ? dir : "NO TRADE", directional ? (dir === "LONG" ? T.green : T.red) : T.yellow],
     ["Confidence", `${confidence.toFixed(0)}%`, confidence >= 70 ? T.green : confidence >= 50 ? T.yellow : T.red],
   ];
+  if (!directional && typeof prediction.risk?.required_confidence === "number") {
+    rows.push(["Required", `${prediction.risk.required_confidence.toFixed(0)}%`, T.textDim]);
+  }
   if (expectedMove !== null) rows.push(["Exp. move", `${expectedMove >= 0 ? "+" : ""}${expectedMove.toFixed(2)}%`, expectedMove >= 0 ? T.green : T.red]);
   if (rr !== null) rows.push(["R : R", `1 : ${rr.toFixed(2)}`, T.text]);
   if (prediction.regime) rows.push(["Regime", String(prediction.regime).replace(/_/g, " "), T.text]);
   if (strategy) rows.push(["Strategy", strategy.replace(/_/g, " "), T.cyan]);
+  if (!directional && dir === "NO_TRADE" && prediction.strategies) {
+    const blocked = Object.entries(prediction.strategies as Record<string, any>)
+      .filter(([, v]) => v?.direction === "NO_TRADE")
+      .map(([name]) => name.replace(/_/g, " "));
+    if (blocked.length) {
+      const text = blocked.join(", ");
+      rows.push(["Blocked by", text.length > 42 ? `${text.slice(0, 41)}…` : text, T.textDim]);
+    }
+  }
   if (!directional && prediction.risk?.reason) {
     const reason = String(prediction.risk.reason);
     rows.push(["Reason", reason.length > 42 ? `${reason.slice(0, 41)}…` : reason, T.textDim]);
