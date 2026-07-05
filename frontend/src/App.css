@@ -1560,9 +1560,9 @@ button, select, input {
   margin-left: 4px;
 }
 
-.pc-swatch.dash.cyan {
+.pc-swatch.dash.orange {
   border-top-style: dashed;
-  border-color: var(--c-cyan);
+  border-color: #ff9f43;
 }
 
 @media (max-width: 767px) {

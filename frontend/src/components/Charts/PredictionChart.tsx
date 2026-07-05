@@ -538,7 +538,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
             <i className="pc-swatch solid cyan" /> AI Forecast
           </span>
           <span className="pc-legend-item">
-            <i className="pc-swatch dash cyan" /> Past AI Predictions
+            <i className="pc-swatch dash orange" /> Past AI Predictions
           </span>
           <span className="pc-legend-item">
             <i className="pc-swatch dash green" /> Upper Band

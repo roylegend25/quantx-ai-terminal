@@ -100,6 +100,10 @@ const FORECAST_BARS = 40;
 const AXIS_W = 68;
 const AXIS_H = 24;
 const FONT = "Inter, ui-sans-serif, system-ui, sans-serif";
+// Past-AI-prediction line color - fixed orange so it stays distinct from the
+// theme-driven cyan forecast line in every theme.
+const HISTORY_ORANGE = "#ff9f43";
+const HISTORY_ORANGE_RGB = "255, 159, 67";
 
 type View = { end: number; bars: number; lockedY: [number, number] | null };
 
@@ -864,10 +868,10 @@ function ProChartCanvas(props: Props) {
       if (p.showHistory && p.history.length) {
         g.save();
         if (p.neon) {
-          g.shadowColor = `rgba(${T.cyanRgb}, 0.5)`;
+          g.shadowColor = `rgba(${HISTORY_ORANGE_RGB}, 0.5)`;
           g.shadowBlur = 6;
         }
-        g.strokeStyle = `rgba(${T.cyanRgb}, 0.75)`;
+        g.strokeStyle = `rgba(${HISTORY_ORANGE_RGB}, 0.85)`;
         g.lineWidth = 1.5;
         g.setLineDash([2, 3]);
         g.beginPath();
@@ -1546,7 +1550,7 @@ function drawHistoryTooltip(
       : null;
   const rows: Array<[string, string, string]> = [
     ["Time", timeFmtFull.format(new Date(pt.timestamp)), T.text],
-    ["Predicted", pt.predicted_price != null ? fmtPrice(pt.predicted_price) : "—", T.cyan],
+    ["Predicted", pt.predicted_price != null ? fmtPrice(pt.predicted_price) : "—", HISTORY_ORANGE],
     ["Actual", pt.actual_price != null ? fmtPrice(pt.actual_price) : "pending", T.text],
   ];
   if (diff !== null) rows.push(["Difference", `${diff >= 0 ? "+" : ""}${fmtPrice(diff)}`, diff >= 0 ? T.green : T.red]);
@@ -1575,7 +1579,7 @@ function drawHistoryTooltip(
   cy = Math.max(8, Math.min(cy, mainBottom - cardH - 8));
 
   g.fillStyle = "rgba(13, 16, 33, 0.94)";
-  g.strokeStyle = `rgba(${T.cyanRgb}, 0.4)`;
+  g.strokeStyle = `rgba(${HISTORY_ORANGE_RGB}, 0.45)`;
   g.lineWidth = 1;
   g.beginPath();
   g.roundRect(cx, cy, cardW, cardH, 8);
