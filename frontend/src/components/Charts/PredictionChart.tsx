@@ -148,7 +148,7 @@ function CurrentPriceLabel({ viewBox, value }: any) {
   const ty = cy - 24;
   return (
     <g>
-      <rect x={cx - w / 2} y={ty - 12} width={w} height={24} rx={12} fill="#7c5cff" />
+      <rect x={cx - w / 2} y={ty - 12} width={w} height={24} rx={12} fill="var(--c-purple)" />
       <text x={cx} y={ty + 4} textAnchor="middle" fontSize={11} fontWeight={700} fill="#ffffff">
         {text}
       </text>
@@ -452,8 +452,8 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
           <ComposedChart data={chartData} margin={{ top: 16, right: isMobile ? 36 : 54, left: 0, bottom: 4 }}>
             <defs>
               <linearGradient id="pcForecastZone" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#00a8ff" stopOpacity={0.38} />
-                <stop offset="100%" stopColor="#00a8ff" stopOpacity={0.05} />
+                <stop offset="0%" stopColor="var(--c-blue)" stopOpacity={0.38} />
+                <stop offset="100%" stopColor="var(--c-blue)" stopOpacity={0.05} />
               </linearGradient>
             </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
@@ -507,12 +507,12 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
             />
             <Line
               dataKey="predicted"
-              stroke="#19e7ff"
+              stroke="var(--c-cyan)"
               strokeWidth={3.25}
               dot={false}
               isAnimationActive={false}
               connectNulls
-              style={{ filter: "drop-shadow(0 0 7px rgba(25,231,255,.75))" }}
+              style={{ filter: "drop-shadow(0 0 7px rgba(var(--c-cyan-rgb),.75))" }}
             />
             <Line
               dataKey="actual"
@@ -525,7 +525,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
             />
 
             <ReferenceLine x={nowTime} stroke="rgba(255,255,255,0.28)" strokeDasharray="4 4" />
-            <ReferenceDot x={nowTime} y={lastClose} r={5} fill="#fff" stroke="#7c5cff" strokeWidth={2}>
+            <ReferenceDot x={nowTime} y={lastClose} r={5} fill="#fff" stroke="var(--c-purple)" strokeWidth={2}>
               <Label content={(p: any) => <CurrentPriceLabel {...p} value={lastClose} />} />
             </ReferenceDot>
           </ComposedChart>

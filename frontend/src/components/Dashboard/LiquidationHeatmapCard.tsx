@@ -135,6 +135,7 @@ function LiquidationHeatmapCard({ symbol }: Props) {
   const pulsePhaseRef = useRef(0);
   const rafRef = useRef<number | null>(null);
   const needsRegenRef = useRef(false);
+  const cyanRgbRef = useRef("0, 245, 212");
 
   useEffect(() => {
     let cancelled = false;
@@ -201,6 +202,21 @@ function LiquidationHeatmapCard({ symbol }: Props) {
       needsRegenRef.current = true;
     });
     observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
+
+  // Canvas colors can't read CSS custom properties directly, so mirror the
+  // active theme's --c-cyan-rgb into a ref whenever [data-theme] changes.
+  useEffect(() => {
+    const root = document.documentElement;
+    function syncThemeColor() {
+      const v = getComputedStyle(root).getPropertyValue("--c-cyan-rgb").trim();
+      if (v) cyanRgbRef.current = v;
+      needsRegenRef.current = true;
+    }
+    syncThemeColor();
+    const observer = new MutationObserver(syncThemeColor);
+    observer.observe(root, { attributes: true, attributeFilter: ["data-theme"] });
     return () => observer.disconnect();
   }, []);
 
@@ -325,11 +341,12 @@ function LiquidationHeatmapCard({ symbol }: Props) {
             const y = Math.max(0, Math.min(h, t * h));
             const dash = 6 + 2 * Math.sin(pulsePhaseRef.current * 0.8);
 
+            const cyan = `rgb(${cyanRgbRef.current})`;
             ctx.save();
-            ctx.strokeStyle = "#00f5d4";
+            ctx.strokeStyle = cyan;
             ctx.lineWidth = 1.5;
             ctx.setLineDash([dash, 4]);
-            ctx.shadowColor = "rgba(0,245,212,0.8)";
+            ctx.shadowColor = `rgba(${cyanRgbRef.current}, 0.8)`;
             ctx.shadowBlur = 6;
             ctx.beginPath();
             ctx.moveTo(0, y);
@@ -337,7 +354,7 @@ function LiquidationHeatmapCard({ symbol }: Props) {
             ctx.stroke();
             ctx.restore();
 
-            ctx.fillStyle = "#00f5d4";
+            ctx.fillStyle = cyan;
             ctx.font = "bold 10px Inter, sans-serif";
             ctx.textAlign = "left";
             ctx.fillText(

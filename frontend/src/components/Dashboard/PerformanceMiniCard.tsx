@@ -34,14 +34,14 @@ function PerformanceMiniCard({ portfolio, history }: Props) {
         <AreaChart data={equityCurve}>
           <defs>
             <linearGradient id="perfMini" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="#7c5cff" stopOpacity={0.55} />
-              <stop offset="95%" stopColor="#7c5cff" stopOpacity={0} />
+              <stop offset="5%" stopColor="var(--c-purple)" stopOpacity={0.55} />
+              <stop offset="95%" stopColor="var(--c-purple)" stopOpacity={0} />
             </linearGradient>
           </defs>
           <Area
             type="monotone"
             dataKey="equity"
-            stroke="#7c5cff"
+            stroke="var(--c-purple)"
             fill="url(#perfMini)"
             strokeWidth={2}
             isAnimationActive={false}

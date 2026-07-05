@@ -104,8 +104,8 @@ function PortfolioAnalytics({ portfolio, positions, history }: Props) {
             <AreaChart data={equityCurve}>
               <defs>
                 <linearGradient id="equityFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#00f5d4" stopOpacity={0.5} />
-                  <stop offset="95%" stopColor="#00f5d4" stopOpacity={0} />
+                  <stop offset="5%" stopColor="var(--c-cyan)" stopOpacity={0.5} />
+                  <stop offset="95%" stopColor="var(--c-cyan)" stopOpacity={0} />
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
@@ -121,7 +121,7 @@ function PortfolioAnalytics({ portfolio, positions, history }: Props) {
               <Area
                 type="monotone"
                 dataKey="equity"
-                stroke="#00f5d4"
+                stroke="var(--c-cyan)"
                 fill="url(#equityFill)"
                 strokeWidth={2}
                 isAnimationActive={false}

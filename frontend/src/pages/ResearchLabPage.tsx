@@ -319,7 +319,7 @@ export default function ResearchLabPage({
                   <XAxis dataKey="i" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} width={64} />
                   <Tooltip />
-                  <Line type="monotone" dataKey="equity" stroke="#00f5d4" strokeWidth={2.5} dot={false} />
+                  <Line type="monotone" dataKey="equity" stroke="var(--c-cyan)" strokeWidth={2.5} dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             </div>

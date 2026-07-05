@@ -6,6 +6,7 @@ import LoginPage from "./components/Auth/LoginPage";
 import DashboardPage from "./pages/DashboardPage";
 import { useAppData } from "./hooks/useAppData";
 import { useAuth } from "./hooks/useAuth";
+import { useTheme } from "./hooks/useTheme";
 import type { NavKey } from "./lib/nav";
 
 const PredictionsPage = lazy(() => import("./pages/PredictionsPage"));
@@ -30,6 +31,7 @@ function App() {
   const { authed, login: onLoginSuccess, logout } = useAuth();
   const [active, setActive] = useState<NavKey>("dashboard");
   const data = useAppData(authed);
+  const theme = useTheme();
 
   const handleStopBot = useCallback(() => {
     data.botAction("stop");
@@ -37,10 +39,6 @@ function App() {
 
   const handleBellClick = useCallback(() => {
     data.showToast("Notifications are coming soon");
-  }, [data.showToast]);
-
-  const handleThemeClick = useCallback(() => {
-    data.showToast("Theme switcher is coming soon");
   }, [data.showToast]);
 
   if (authed === null) {
@@ -98,9 +96,9 @@ function App() {
       />
 
       <main className="main">
-        <Topbar dashboard={data.dashboard} onBellClick={handleBellClick} onThemeClick={handleThemeClick} />
+        <Topbar dashboard={data.dashboard} onBellClick={handleBellClick} theme={theme} />
 
-        {data.toast && <div className="toast">{data.toast}</div>}
+        {data.toast && <div className={`toast ${data.toastTone === "error" ? "toast-error" : ""}`}>{data.toast}</div>}
 
         <Suspense fallback={<PageFallback />}>{renderPage()}</Suspense>
 

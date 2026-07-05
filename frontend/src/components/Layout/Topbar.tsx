@@ -1,10 +1,12 @@
 import { memo, useEffect, useState } from "react";
-import { Bell, Sun, UserRound } from "lucide-react";
+import { Bell, UserRound } from "lucide-react";
+import ThemeSwitcher from "./ThemeSwitcher";
+import type { UseThemeReturn } from "../../hooks/useTheme";
 
 type Props = {
   dashboard: any;
   onBellClick: () => void;
-  onThemeClick: () => void;
+  theme: UseThemeReturn;
 };
 
 function tickerRow(label: string, value: string, tone?: "green" | "red") {
@@ -16,7 +18,7 @@ function tickerRow(label: string, value: string, tone?: "green" | "red") {
   );
 }
 
-function Topbar({ dashboard, onBellClick, onThemeClick }: Props) {
+function Topbar({ dashboard, onBellClick, theme }: Props) {
   const [now, setNow] = useState(new Date());
 
   useEffect(() => {
@@ -59,9 +61,7 @@ function Topbar({ dashboard, onBellClick, onThemeClick }: Props) {
         <button className="icon-btn" onClick={onBellClick} title="Notifications (coming soon)">
           <Bell size={18} />
         </button>
-        <button className="icon-btn" onClick={onThemeClick} title="Theme (coming soon)">
-          <Sun size={18} />
-        </button>
+        <ThemeSwitcher theme={theme} />
         <div className="avatar">
           <UserRound size={18} />
         </div>
