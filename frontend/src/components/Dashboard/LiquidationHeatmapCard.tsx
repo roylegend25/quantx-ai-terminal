@@ -437,37 +437,39 @@ function LiquidationHeatmapCard({ symbol }: Props) {
         </div>
       </div>
 
-      <div
-        className="liq-heatmap-canvas-wrap"
-        onMouseMove={(e) => handlePointer(e.clientX, e.clientY)}
-        onMouseLeave={() => setHover(null)}
-        onTouchStart={(e) => e.touches[0] && handlePointer(e.touches[0].clientX, e.touches[0].clientY)}
-        onTouchMove={(e) => e.touches[0] && handlePointer(e.touches[0].clientX, e.touches[0].clientY)}
-      >
-        <canvas ref={canvasRef} className="liq-heatmap-canvas" />
-        {!snapshot?.clusters?.length && (
-          <div className="liq-heatmap-empty">
-            <Flame size={22} />
-            <span>Building live liquidation clusters…</span>
-          </div>
-        )}
-        {hover && (
-          <div className="liq-heatmap-tooltip" style={{ left: Math.min(hover.x + 12, Math.max(tooltipMaxLeft, 0)), top: Math.max(hover.y - 8, 0) }}>
-            <b>{fmtNum(hover.cluster.price, 2)}</b>
-            <span>
-              Est. Liquidation Value <b>{fmtUsdCompact(hover.cluster.long_notional + hover.cluster.short_notional)}</b>
-            </span>
-            <span>
-              Leverage Zone <b>{hover.cluster.leverage_zone || "—"}</b>
-            </span>
-            <span>
-              Strength <b className={strengthClass(hover.cluster.strength)}>{hover.cluster.strength}</b>
-            </span>
-            <span>
-              Distance <b className={hover.distancePct >= 0 ? "green" : "red"}>{fmtPct(hover.distancePct, 2)}</b>
-            </span>
-          </div>
-        )}
+      <div className="liq-heatmap-frame">
+        <div
+          className="liq-heatmap-canvas-wrap"
+          onMouseMove={(e) => handlePointer(e.clientX, e.clientY)}
+          onMouseLeave={() => setHover(null)}
+          onTouchStart={(e) => e.touches[0] && handlePointer(e.touches[0].clientX, e.touches[0].clientY)}
+          onTouchMove={(e) => e.touches[0] && handlePointer(e.touches[0].clientX, e.touches[0].clientY)}
+        >
+          <canvas ref={canvasRef} className="liq-heatmap-canvas" />
+          {!snapshot?.clusters?.length && (
+            <div className="liq-heatmap-empty">
+              <Flame size={22} />
+              <span>Building live liquidation clusters…</span>
+            </div>
+          )}
+          {hover && (
+            <div className="liq-heatmap-tooltip" style={{ left: Math.min(hover.x + 12, Math.max(tooltipMaxLeft, 0)), top: Math.max(hover.y - 8, 0) }}>
+              <b>{fmtNum(hover.cluster.price, 2)}</b>
+              <span>
+                Est. Liquidation Value <b>{fmtUsdCompact(hover.cluster.long_notional + hover.cluster.short_notional)}</b>
+              </span>
+              <span>
+                Leverage Zone <b>{hover.cluster.leverage_zone || "—"}</b>
+              </span>
+              <span>
+                Strength <b className={strengthClass(hover.cluster.strength)}>{hover.cluster.strength}</b>
+              </span>
+              <span>
+                Distance <b className={hover.distancePct >= 0 ? "green" : "red"}>{fmtPct(hover.distancePct, 2)}</b>
+              </span>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="liq-heatmap-legend">

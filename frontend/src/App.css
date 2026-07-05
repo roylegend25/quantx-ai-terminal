@@ -1690,17 +1690,26 @@ progress.disabled::-webkit-progress-value {
   color: #c8cbe0;
 }
 
+/* auto-fit (not a fixed column count) because this card's actual width
+   varies a lot by context - a third of the dashboard row on desktop, up to
+   the full card on mobile - and only auto-fit responds to that container
+   width directly instead of guessing from the viewport. */
 .liq-heatmap-stats-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 10px;
 }
 
 .liq-stat {
-  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 10px 12px;
   border-radius: 12px;
   background: rgba(255,255,255,.05);
   border: 1px solid rgba(255,255,255,.08);
+  min-height: 56px;
+  min-width: 0;
 }
 
 .liq-stat .tile-label {
@@ -1715,20 +1724,35 @@ progress.disabled::-webkit-progress-value {
   margin-top: 2px;
 }
 
-.liq-heatmap-canvas-wrap {
-  position: relative;
+/* Outer frame supplies the card chrome (border, glass gradient, padding);
+   the inner box is exactly what the canvas fills 1:1, so hover/tooltip
+   coordinates (computed from the canvas's own bounding rect) never need an
+   offset correction for the padding. Sized by aspect-ratio, not a fixed px
+   height, so it scales cleanly with the card's actual width instead of
+   ever needing horizontal scroll. */
+.liq-heatmap-frame {
+  padding: 10px;
   border-radius: 16px;
-  overflow-x: auto;
-  overflow-y: hidden;
   border: 1px solid rgba(255,255,255,.08);
   background: linear-gradient(180deg, #0d1224, #05060a);
-  touch-action: pan-x pinch-zoom;
+  box-sizing: border-box;
+  contain: layout paint;
+}
+
+.liq-heatmap-canvas-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 2.2 / 1;
+  max-height: 260px;
+  border-radius: 10px;
+  overflow: hidden;
+  touch-action: pan-y;
 }
 
 .liq-heatmap-canvas {
   display: block;
-  width: max(100%, 480px);
-  height: 240px;
+  width: 100%;
+  height: 100%;
 }
 
 .liq-heatmap-empty {
@@ -1770,7 +1794,8 @@ progress.disabled::-webkit-progress-value {
 .liq-heatmap-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  justify-content: center;
+  gap: 8px 16px;
   font-size: 11px;
   color: #8b90a8;
 }
@@ -1779,13 +1804,15 @@ progress.disabled::-webkit-progress-value {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  white-space: nowrap;
 }
 
 .liq-legend-item i {
-  width: 10px;
-  height: 10px;
-  border-radius: 3px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
   display: inline-block;
+  flex-shrink: 0;
 }
 
 .liq-heatmap-insights {
@@ -1799,6 +1826,7 @@ progress.disabled::-webkit-progress-value {
   border-radius: 14px;
   background: rgba(255,255,255,.05);
   border: 1px solid rgba(255,255,255,.08);
+  min-width: 0;
   contain: layout paint;
 }
 
@@ -1815,8 +1843,12 @@ progress.disabled::-webkit-progress-value {
 }
 
 @media (max-width: 640px) {
-  .liq-heatmap-canvas {
-    height: 200px;
+  .liq-heatmap-stats-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .liq-heatmap-canvas-wrap {
+    aspect-ratio: 16 / 11;
   }
 }
 
