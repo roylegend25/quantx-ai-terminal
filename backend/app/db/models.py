@@ -42,6 +42,8 @@ class PredictionFeature(Base):
     technical_features = Column(JSON, nullable=True)
     decision_reason = Column(Text, nullable=True)
     entry_price = Column(Float, nullable=True)
+    target = Column(Float, nullable=True)
+    stop = Column(Float, nullable=True)
     exit_price = Column(Float, nullable=True)
     pnl = Column(Float, nullable=True)
     outcome = Column(String, nullable=True)  # WIN / LOSS

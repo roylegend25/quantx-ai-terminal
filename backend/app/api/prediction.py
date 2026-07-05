@@ -1,7 +1,10 @@
 import time
+from datetime import timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 import httpx
+from app.db.models import PredictionFeature
+from app.db.session import SessionLocal
 from app.quant.indicators import compute_features
 from app.trading import risk_manager
 from app.trading.risk_manager import calculate_levels
@@ -149,6 +152,115 @@ def make_prediction(features: dict, market_context: dict | None = None, consensu
         },
         "features": features,
     }
+
+def _dominant_strategy(weights: dict | None) -> str | None:
+    if not weights:
+        return None
+    return max(weights, key=weights.get)
+
+
+def _to_epoch_ms(dt) -> int | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
+
+
+def serialize_history_rows(rows: list[PredictionFeature]) -> list[dict]:
+    """Turn stored PredictionFeature rows (ascending by time, one
+    symbol+timeframe) into chart-ready history points.
+
+    Every value comes from data the system actually recorded: a prediction's
+    realized price is the exit price of the paper trade that acted on it if
+    one did, otherwise the entry price observed when the *next* prediction in
+    the same series was computed. Rows with neither stay PENDING - nothing is
+    interpolated or invented.
+    """
+    out: list[dict] = []
+    for i, row in enumerate(rows):
+        directional = row.direction in ("LONG", "SHORT")
+        predicted_price = row.target if (directional and row.target) else row.entry_price
+
+        actual_price = row.exit_price
+        if actual_price is None and i + 1 < len(rows):
+            actual_price = rows[i + 1].entry_price
+
+        if row.outcome in ("WIN", "LOSS"):
+            outcome = row.outcome
+        elif not directional:
+            outcome = "NO_TRADE"
+        elif actual_price is None or row.entry_price is None:
+            outcome = "PENDING"
+        else:
+            moved_up = actual_price > row.entry_price
+            outcome = "CORRECT" if (moved_up == (row.direction == "LONG")) else "INCORRECT"
+
+        accuracy_pct = None
+        if predicted_price and actual_price:
+            accuracy_pct = round(max(0.0, 100.0 - abs(actual_price - predicted_price) / actual_price * 100.0), 2)
+
+        out.append(
+            {
+                "id": row.id,
+                "timestamp": _to_epoch_ms(row.timestamp),
+                "symbol": row.symbol,
+                "timeframe": row.timeframe,
+                "direction": row.direction,
+                "confidence": row.confidence,
+                "regime": row.regime,
+                "strategy": _dominant_strategy(row.adaptive_strategy_weights),
+                "entry_price": row.entry_price,
+                "predicted_price": predicted_price,
+                "target": row.target,
+                "stop": row.stop,
+                "actual_price": actual_price,
+                "outcome": outcome,
+                "accuracy_pct": accuracy_pct,
+                "pnl": row.pnl,
+            }
+        )
+    return out
+
+
+# registered before /{symbol} so "history" isn't swallowed as a symbol
+@router.get("/history")
+def prediction_history(
+    symbol: str = "BTCUSDT",
+    timeframe: str | None = None,
+    limit: int = Query(default=500, ge=1, le=2000),
+):
+    symbol = symbol.upper()
+    db = SessionLocal()
+    try:
+        query = db.query(PredictionFeature).filter(PredictionFeature.symbol == symbol)
+        if timeframe:
+            query = query.filter(PredictionFeature.timeframe == timeframe)
+        rows = query.order_by(PredictionFeature.timestamp.desc()).limit(limit).all()
+    finally:
+        db.close()
+
+    rows.reverse()  # chart wants ascending time
+    points = serialize_history_rows(rows)
+
+    resolved = [p for p in points if p["outcome"] in ("CORRECT", "INCORRECT", "WIN", "LOSS")]
+    hits = [p for p in resolved if p["outcome"] in ("CORRECT", "WIN")]
+    accuracies = [p["accuracy_pct"] for p in points if p["accuracy_pct"] is not None]
+    confidences = [p["confidence"] for p in points if p["confidence"] is not None]
+
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "count": len(points),
+        "history": points,
+        "summary": {
+            "resolved": len(resolved),
+            "direction_hit_rate_pct": round(len(hits) / len(resolved) * 100, 1) if resolved else None,
+            "avg_accuracy_pct": round(sum(accuracies) / len(accuracies), 2) if accuracies else None,
+            "avg_confidence": round(sum(confidences) / len(confidences), 1) if confidences else None,
+        },
+    }
+
 
 @router.get("/{symbol}")
 async def prediction(symbol: str, interval: str = "5m", limit: int = 220):

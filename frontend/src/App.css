@@ -1435,6 +1435,154 @@ button, select, input {
   }
 }
 
+/* ---------- Pro chart engine (canvas) ---------- */
+
+.pcx-canvas-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 14px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 85% 0%, rgba(var(--c-purple-rgb), 0.06), transparent 45%),
+    rgba(0, 0, 0, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.pcx-canvas {
+  /* absolute so the canvas's own pixel size can never feed back into the
+     wrap's layout size (border-included rect -> resize loop) */
+  position: absolute;
+  inset: 0;
+  display: block;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.pcx-tf-group {
+  overflow-x: auto;
+  scrollbar-width: none;
+  max-width: 100%;
+}
+
+.pcx-tf-group::-webkit-scrollbar {
+  display: none;
+}
+
+.pcx-toolrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.pcx-tool-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: #9095ac;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.pcx-tool-btn:hover {
+  color: white;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.pcx-tool-btn.active {
+  color: white;
+  background: linear-gradient(135deg, rgba(var(--c-purple-rgb), 0.5), rgba(var(--c-blue-rgb), 0.4));
+  border-color: rgba(var(--c-purple-rgb), 0.55);
+  box-shadow: 0 0 10px rgba(var(--c-purple-rgb), 0.25);
+}
+
+.pcx-tool-btn.disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.pcx-indicators-panel {
+  min-width: 300px;
+  max-height: 380px;
+  overflow-y: auto;
+}
+
+.pcx-ind-group + .pcx-ind-group {
+  margin-top: 12px;
+}
+
+.pcx-ind-group-title {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #8b90a8;
+  margin-bottom: 8px;
+}
+
+.pcx-ind-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+}
+
+.pcx-ind-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #c7c9d9;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 8px;
+}
+
+.pcx-ind-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.pcx-ind-item input {
+  accent-color: var(--c-purple);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+.pcx-hitrate b {
+  margin-left: 4px;
+}
+
+.pc-swatch.dash.cyan {
+  border-top-style: dashed;
+  border-color: var(--c-cyan);
+}
+
+@media (max-width: 767px) {
+  .pcx-toolrow {
+    gap: 4px;
+  }
+
+  .pcx-tool-btn {
+    width: 34px;
+    height: 34px;
+  }
+
+  .pcx-indicators-panel {
+    right: auto;
+    left: 50%;
+    transform: translateX(-50%);
+    min-width: 270px;
+  }
+}
+
 /* ---------- Prediction gauge ---------- */
 
 .prediction-card {

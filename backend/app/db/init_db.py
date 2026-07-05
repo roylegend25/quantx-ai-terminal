@@ -20,9 +20,25 @@ def _migrate_trade_columns():
         if "feature_id" not in existing:
             conn.execute(text("ALTER TABLE trades ADD COLUMN feature_id INTEGER"))
 
+def _migrate_prediction_feature_columns():
+    """Add columns introduced after the prediction_features table already
+    existed on disk (target/stop, persisted since the AI chart's prediction
+    history needs them - older rows keep NULL rather than fabricated values)."""
+    inspector = inspect(engine)
+    if "prediction_features" not in inspector.get_table_names():
+        return
+
+    existing = {col["name"] for col in inspector.get_columns("prediction_features")}
+    with engine.begin() as conn:
+        if "target" not in existing:
+            conn.execute(text("ALTER TABLE prediction_features ADD COLUMN target FLOAT"))
+        if "stop" not in existing:
+            conn.execute(text("ALTER TABLE prediction_features ADD COLUMN stop FLOAT"))
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_trade_columns()
+    _migrate_prediction_feature_columns()
 
     db: Session = SessionLocal()
     try:

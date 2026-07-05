@@ -47,6 +47,8 @@ class FeatureStore:
                 technical_features=prediction.get("features"),
                 decision_reason=_build_decision_reason(prediction),
                 entry_price=prediction.get("price"),
+                target=prediction.get("target"),
+                stop=prediction.get("stop"),
             )
             db.add(row)
             db.commit()

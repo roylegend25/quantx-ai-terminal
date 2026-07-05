@@ -33,6 +33,11 @@ export const api = {
   dashboard: () => getJson("/api/dashboard"),
   prediction: (symbol: string, interval: string) =>
     getJson(`/api/prediction/${symbol}?interval=${interval}`),
+  predictionHistory: (symbol: string, timeframe?: string, limit = 500) => {
+    const params = new URLSearchParams({ symbol, limit: String(limit) });
+    if (timeframe) params.set("timeframe", timeframe);
+    return getJson(`/api/prediction/history?${params.toString()}`);
+  },
   candles: (symbol: string, interval: string, limit = 220) =>
     getJson(`/api/market/${symbol}/candles?interval=${interval}&limit=${limit}`),
   orderbook: (symbol: string, limit = 10) => getJson(`/api/orderbook/${symbol}?limit=${limit}`),
