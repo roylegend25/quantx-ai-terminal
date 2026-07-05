@@ -45,6 +45,45 @@ def basic_trade_allowed(confidence: float, open_positions: int):
     return True, "Risk checks passed"
 
 
+# Real execution against a >1%-wide book would fill far worse than the
+# modeled entry price, so a spread this wide vetoes a new trade outright
+# rather than just discounting confidence.
+MAX_SPREAD_PCT = 1.0
+
+# A candle trading below 5% of its own 20-bar average volume reads as a
+# halted or fully illiquid market - a "confident" signal there is really
+# just noise with nobody on the other side of the trade.
+MIN_VOLUME_RATIO = 0.05
+
+
+def spread_allowed(spread_pct: float | None) -> tuple[bool, str | None]:
+    """spread_pct is unknown (None) whenever the caller has no live order
+    book to hand (e.g. the lightweight per-request prediction gate, which
+    only ever sees candles) - fail open there rather than blocking on data
+    that was never available, and only veto when a spread was actually
+    measured and is unsafe."""
+    if spread_pct is None:
+        return True, None
+    if spread_pct >= MAX_SPREAD_PCT:
+        return False, f"Bid/ask spread {spread_pct:.2f}% exceeds the {MAX_SPREAD_PCT}% safety limit"
+    return True, None
+
+
+def volume_allowed(volume: float | None, volume_sma20: float | None) -> tuple[bool, str | None]:
+    """Same fail-open-on-unknown-data policy as spread_allowed() - only
+    vetoes when the latest candle's volume is actually known and clearly
+    indicates a halted/illiquid market."""
+    if volume is None:
+        return True, None
+    if volume <= 0:
+        return False, "Zero trading volume on the latest candle (halted/illiquid market)"
+    if volume_sma20 and volume_sma20 > 0:
+        ratio = volume / volume_sma20
+        if ratio < MIN_VOLUME_RATIO:
+            return False, f"Volume is {ratio * 100:.1f}% of its 20-bar average (halted/illiquid market)"
+    return True, None
+
+
 def _parse_iso(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -121,6 +160,9 @@ def evaluate_risk(
     open_positions: int,
     portfolio: dict | None = None,
     trade_history: list[dict] | None = None,
+    spread_pct: float | None = None,
+    volume: float | None = None,
+    volume_sma20: float | None = None,
 ) -> dict:
     """The single authoritative paper-trading risk gate. Reads the editable
     limits fresh from settings_repository (dashboard-configurable) rather
@@ -172,6 +214,16 @@ def evaluate_risk(
 
     if open_positions >= risk["max_open_positions"]:
         result["reason"] = f"Maximum open positions reached ({risk['max_open_positions']})"
+        return result
+
+    spread_ok, spread_reason = spread_allowed(spread_pct)
+    if not spread_ok:
+        result["reason"] = spread_reason
+        return result
+
+    volume_ok, volume_reason = volume_allowed(volume, volume_sma20)
+    if not volume_ok:
+        result["reason"] = volume_reason
         return result
 
     if balance > 0 and daily_pnl < 0:

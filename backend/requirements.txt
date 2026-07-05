@@ -28,3 +28,4 @@ tensorflow
 matplotlib
 plotly
 scipy
+pytest

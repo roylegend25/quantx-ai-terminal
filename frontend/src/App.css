@@ -1952,6 +1952,53 @@ progress.disabled::-webkit-progress-value {
   font-variant-numeric: tabular-nums;
 }
 
+/* ---------- Stress test expandable detail panel ---------- */
+
+.stress-detail-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px 16px;
+  margin: 0 0 4px;
+  background: rgba(255,255,255,0.03);
+  border-left: 2px solid rgba(124,92,255,0.4);
+}
+
+.stress-detail-row {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 12px;
+  white-space: normal;
+}
+
+.stress-detail-component {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.stress-detail-copy p {
+  margin: 0 0 8px;
+  color: #c7c9d9;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.stress-detail-copy p:last-child {
+  margin-bottom: 0;
+}
+
+.stress-detail-copy .tile-label {
+  margin-bottom: 3px;
+}
+
+@media (max-width: 640px) {
+  .stress-detail-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 .mini-btn, .link-btn {
   border: 0;
   border-radius: 10px;

@@ -3,6 +3,7 @@ import time
 from fastapi import APIRouter
 import httpx
 from app.quant.indicators import compute_features
+from app.trading import risk_manager
 from app.trading.risk_manager import calculate_levels
 from app.strategy.ensemble import evaluate as ensemble_evaluate
 from app.intelligence import market_intelligence
@@ -31,6 +32,12 @@ MTF_NO_TRADE_PENALTY = 10.0
 PREDICTION_CACHE_TTL_SECONDS = 60
 _prediction_cache: dict[tuple[str, str], dict] = {}
 
+# Below this many candles, EMA/RSI/ATR/Bollinger haven't seen enough data to
+# mean anything (a cold-started symbol, a gap in history) - the ensemble
+# still runs (useful for observability/debugging) but its direction is
+# overridden to NO_TRADE rather than acted on.
+MIN_CANDLES_FOR_PREDICTION = 50
+
 
 def _consensus_adjustment(consensus: dict | None, direction: str) -> float:
     if not consensus:
@@ -50,6 +57,16 @@ def _consensus_adjustment(consensus: dict | None, direction: str) -> float:
 def make_prediction(features: dict, market_context: dict | None = None, consensus: dict | None = None):
     ens = ensemble_evaluate(features, market_context)
     decision = ens["ensemble"]
+
+    # candle_count is only present when features came from compute_features()
+    # (the real pipeline) - a hand-built features dict (unit tests exercising
+    # the ensemble directly) omits it, and is treated as "unknown", not
+    # "insufficient", so this never fires for those.
+    candle_count = features.get("candle_count")
+    insufficient_history = candle_count is not None and candle_count < MIN_CANDLES_FOR_PREDICTION
+    stale_feed = bool(features.get("stale"))
+    if insufficient_history or stale_feed:
+        decision = {**decision, "direction": "NO_TRADE", "confidence": 0.0}
 
     consensus_adjustment = _consensus_adjustment(consensus, decision["direction"])
     confidence = round(max(0.0, min(100.0, decision["confidence"] + consensus_adjustment)), 1)
@@ -79,14 +96,29 @@ def make_prediction(features: dict, market_context: dict | None = None, consensu
         or (direction == "SHORT" and risk_settings["allow_short"])
     )
 
+    volume_ok, volume_reason = risk_manager.volume_allowed(features.get("volume"), features.get("volume_sma20"))
+
     if not risk_settings["paper_trading_enabled"]:
         risk_allowed, risk_reason = False, "Paper trading is disabled in risk settings"
+    elif insufficient_history:
+        risk_allowed, risk_reason = (
+            False,
+            f"Insufficient candle history ({candle_count} < {MIN_CANDLES_FOR_PREDICTION}) for a reliable prediction",
+        )
+    elif stale_feed:
+        risk_allowed, risk_reason = (
+            False,
+            f"Price feed is stale ({features.get('candle_age_seconds', 0):.0f}s since the last candle) - "
+            "waiting for fresh data",
+        )
     elif direction == "NO_TRADE":
         risk_allowed, risk_reason = False, "No qualifying trade signal"
     elif not direction_allowed:
         risk_allowed, risk_reason = False, f"{direction.title()} trades disabled by risk settings"
     elif confidence < required_confidence:
         risk_allowed, risk_reason = False, f"Confidence {confidence:.1f}% below required {required_confidence:.1f}%"
+    elif not volume_ok:
+        risk_allowed, risk_reason = False, volume_reason
     else:
         risk_allowed, risk_reason = True, "Risk checks passed"
 

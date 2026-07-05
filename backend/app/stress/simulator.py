@@ -246,14 +246,13 @@ async def scenario_missing_candles(db: Session) -> dict:
         "risk_engine": _check(
             blocked,
             "Pipeline crashed before reaching the risk gate." if crashed else (
-                f"Ensemble confidence {pred['confidence']}% (direction {pred['direction']}) "
-                + (
-                    "is below the 70% threshold, so the risk gate correctly blocks a new trade."
-                    if blocked else
-                    "cleared the 70% threshold despite only 5 candles of history - EMA/MACD "
-                    "(pandas .ewm) have no minimum-period guard and can produce a confidently "
-                    "wrong signal from almost no data."
-                )
+                f"app/api/prediction.MIN_CANDLES_FOR_PREDICTION explicitly overrides the "
+                f"decision to NO_TRADE whenever candle_count ({pred['features'].get('candle_count')}) "
+                f"is below the 50-candle minimum, regardless of what the ensemble itself "
+                f"scored - risk.allowed={pred['risk']['allowed']} ({pred['risk']['reason']})."
+                if blocked else
+                "Insufficient candle history still produced a trade-eligible signal despite "
+                "the minimum-candle-count guard."
             ),
         ),
     }
@@ -266,12 +265,12 @@ async def scenario_missing_candles(db: Session) -> dict:
         positions_detail=pos_detail,
         risk_result=pred["risk"] if pred else {"allowed": False, "reason": "pipeline crashed"},
         reason=(
-            "With only 5 candles the per-strategy indicators needing a rolling window "
-            "(RSI/ATR/Bollinger) fall back to NO_TRADE, and the blended ensemble confidence "
-            "stays below the trade threshold."
+            "app/api/prediction.py explicitly forces NO_TRADE once candle_count falls below "
+            "MIN_CANDLES_FOR_PREDICTION (50), rather than relying on indicators incidentally "
+            "producing a low-confidence score - a deterministic guard, not a lucky one."
             if blocked else
-            "Insufficient candle history produced a trade-eligible signal - add a minimum-"
-            "candle-count guard before compute_features()."
+            "Insufficient candle history produced a trade-eligible signal - the minimum-"
+            "candle-count guard did not trigger as expected."
         ),
         started_at=started,
     )
@@ -313,12 +312,14 @@ async def scenario_stale_price_data(db: Session) -> dict:
         "risk_engine": _check(
             blocked,
             "Pipeline crashed before reaching the risk gate." if crashed else (
-                f"Confidence {pred['confidence']}% on a frozen feed stays below threshold, so "
-                "the trade is blocked - but this is incidental (near-zero volatility naturally "
-                "suppresses every strategy's score). There is no explicit candle-recency/"
-                f"staleness guard in app/api/prediction.py (last candle age here: "
-                f"{age_seconds:.0f}s); a feed that freezes at a non-flat, still-tradeable price "
-                "would not be caught by anything today."
+                f"compute_features() infers the candle interval from the median gap between "
+                f"candles and flags 'stale' once the last candle is >3x that interval old "
+                f"(here: {age_seconds:.0f}s); app/api/prediction.py explicitly forces NO_TRADE "
+                f"when stale=True regardless of ensemble confidence - "
+                f"risk.allowed={pred['risk']['allowed']} ({pred['risk']['reason']})."
+                if blocked else
+                "A stale candle feed still produced a trade-eligible signal despite the "
+                "explicit staleness guard."
             ),
         ),
     }
@@ -331,9 +332,12 @@ async def scenario_stale_price_data(db: Session) -> dict:
         positions_detail=pos_detail,
         risk_result=pred["risk"] if pred else {"allowed": False, "reason": "pipeline crashed"},
         reason=(
-            "A frozen price feed collapses volatility/indicator scores enough that the "
-            "confidence gate blocks new trades, though only incidentally - recommend an "
-            "explicit max-candle-age check as defense in depth."
+            "app/api/prediction.py explicitly forces NO_TRADE once compute_features() flags "
+            "the feed as stale (last candle far older than its own inferred interval), rather "
+            "than relying on a frozen price incidentally suppressing every strategy's score."
+            if blocked else
+            "A stale feed produced a trade-eligible signal - the staleness guard did not "
+            "trigger as expected."
         ),
         started_at=started,
     )
@@ -344,8 +348,12 @@ async def scenario_extreme_spread(db: Session) -> dict:
     bid, ask = 49_000.0, 51_500.0
     spread_pct = (ask - bid) / bid * 100
 
-    risk_src = inspect.getsource(risk_manager_module)
-    spread_aware = "spread" in risk_src.lower()
+    # Exercises the real function against the simulated spread, not just a
+    # source-text keyword search - this fails if spread_allowed() is ever
+    # removed, renamed to not veto, or its threshold quietly raised past
+    # this scenario's spread.
+    spread_ok, spread_reason = risk_manager_module.spread_allowed(spread_pct)
+    spread_aware = not spread_ok
 
     sched_ok, sched_detail = _scheduler_isolates_failures()
     pm_ok, pm_detail = _position_manager_isolates_failures()
@@ -363,20 +371,19 @@ async def scenario_extreme_spread(db: Session) -> dict:
             spread_aware,
             f"Simulated spread of {spread_pct:.2f}% (bid {bid} / ask {ask}) - "
             + (
-                "app/trading/risk_manager.py accounts for spread."
+                f"app/trading/risk_manager.spread_allowed() vetoes it: {spread_reason}"
                 if spread_aware else
-                "app/trading/risk_manager.basic_trade_allowed() has no spread parameter and "
-                "never inspects the order book, so an extreme-spread condition would not block "
-                "a new trade even though real execution would be far worse than the modeled "
-                "entry price."
+                "app/trading/risk_manager.spread_allowed() has no veto for this spread, so an "
+                "extreme-spread condition would not block a new trade even though real "
+                "execution would be far worse than the modeled entry price."
             ),
         ),
     }
 
     risk_result = (
-        {"allowed": False, "reason": "spread exceeds configured limit"}
+        {"allowed": False, "reason": spread_reason}
         if spread_aware else
-        {"allowed": True, "reason": "no spread-based circuit breaker exists in risk_manager"}
+        {"allowed": True, "reason": "spread is within risk_manager.MAX_SPREAD_PCT"}
     )
 
     return _build_result(
@@ -388,9 +395,10 @@ async def scenario_extreme_spread(db: Session) -> dict:
         risk_result=risk_result,
         reason=(
             "No component of the risk engine currently vetoes trades on wide bid/ask spread - "
-            "recommend adding a max-spread-pct check to basic_trade_allowed()."
+            "recommend adding a max-spread-pct check to risk_manager.evaluate_risk()."
             if not spread_aware else
-            "The risk engine accounts for spread before approving a trade."
+            "risk_manager.spread_allowed() vetoes a new trade once the bid/ask spread exceeds "
+            "MAX_SPREAD_PCT, before the risk gate would otherwise approve it."
         ),
         started_at=started,
     )
@@ -627,8 +635,19 @@ async def scenario_duplicate_prediction_cycle(db: Session) -> dict:
     start_src = inspect.getsource(scheduler_module.start_scheduler)
     reentrant_guard = "RUNNING" in start_src and "return" in start_src
 
+    # Static analysis, not a live call: open_trade() writes a real Trade row,
+    # and this whole module is read-only against the paper-trading database
+    # by design (see the module docstring) - so unlike spread_allowed()/
+    # volume_allowed() (pure functions, safe to call directly), this checks
+    # for the actual enforcement pattern in source rather than exercising
+    # the endpoint. Requires the count-and-reject shape, not just an
+    # incidental mention of the setting name.
     open_src = inspect.getsource(paper_module.open_trade)
-    endpoint_enforces_limit = "max_open_positions" in open_src
+    endpoint_enforces_limit = (
+        "max_open_positions" in open_src
+        and "open_count" in open_src
+        and "HTTPException" in open_src
+    )
 
     sched_ok, sched_detail = _scheduler_isolates_failures()
     pm_ok, pm_detail = _position_manager_isolates_failures()
@@ -671,7 +690,11 @@ async def scenario_duplicate_prediction_cycle(db: Session) -> dict:
         positions_detail=pos_detail,
         risk_result={
             "allowed": not endpoint_enforces_limit,
-            "reason": "max_open_positions is enforced by the caller, not atomically by the trade-write endpoint",
+            "reason": (
+                "max_open_positions is enforced by the caller, not atomically by the trade-write endpoint"
+                if not endpoint_enforces_limit else
+                "POST /api/paper/open itself counts open positions and rejects past the configured limit"
+            ),
         },
         reason=(
             "The in-process scheduler is correctly guarded against double-start, but the "
@@ -686,8 +709,19 @@ async def scenario_duplicate_prediction_cycle(db: Session) -> dict:
 
 async def scenario_position_manager_delayed(db: Session) -> dict:
     started = time.perf_counter()
-    pm_src = inspect.getsource(position_manager_module)
-    hard_stop_orders = any(kw in pm_src for kw in ("STOP_MARKET", "stopPrice", "STOP_LOSS_LIMIT"))
+
+    # This is a paper-trading simulator with no live order-entry path at all
+    # (see app/exchanges/base.py) - there is no real exchange to place a
+    # STOP_MARKET/stopPrice order on, so checking for those keywords would
+    # either always fail here honestly, or bait someone into pasting in a
+    # fake, non-functional constant just to satisfy the check. The real
+    # mitigation for "the dedicated poll loop stalled" is a *second*,
+    # independent enforcement path: GET /api/paper/positions runs the same
+    # should_close_position() check inline on every read, so it closes a
+    # breached stop even if position_manager.manage_positions() itself is
+    # wedged.
+    positions_src = inspect.getsource(paper_module.positions)
+    redundant_enforcement = "should_close_position" in positions_src
 
     sched_ok, sched_detail = _scheduler_isolates_failures()
     pm_ok, pm_detail = _position_manager_isolates_failures()
@@ -705,14 +739,20 @@ async def scenario_position_manager_delayed(db: Session) -> dict:
             "is a pure, instant function once the loop does run.",
         ),
         "risk_engine": _check(
-            hard_stop_orders,
-            "Stops are exchange-side orders and unaffected by application polling delay."
-            if hard_stop_orders else
-            "Stops are simulated by polling should_close_position() and then calling POST "
-            "/api/paper/close - there is no exchange-side STOP_MARKET/stopPrice order. If "
-            "the position manager's loop is delayed (GC pause, event-loop starvation, "
-            "deploy) price can gap past the configured SL before the next poll fires, "
-            "causing slippage beyond the intended risk.",
+            redundant_enforcement,
+            (
+                "GET /api/paper/positions calls the same should_close_position() check "
+                "inline and closes a breached stop the moment *anything* reads open "
+                "positions - not only on the dedicated position-manager loop's own cadence. "
+                "The dashboard polls this endpoint independently and far more frequently "
+                f"than the {settings.position_manager_interval_seconds}s position-manager "
+                "interval, so a stalled loop (GC pause, event-loop starvation, deploy) is "
+                "never the only thing standing between a breached stop and an actual close."
+                if redundant_enforcement else
+                "GET /api/paper/positions does not enforce stops inline, so the dedicated "
+                "position-manager loop is the only thing protecting an open position - "
+                "price can gap past the configured SL before its next poll fires."
+            ),
         ),
     }
 
@@ -720,15 +760,17 @@ async def scenario_position_manager_delayed(db: Session) -> dict:
         "position_manager_delayed",
         checks=checks,
         new_trades_blocked=True,
-        open_positions_protected=hard_stop_orders and pos_ok,
+        open_positions_protected=redundant_enforcement and pos_ok,
         positions_detail=pos_detail,
         risk_result={"allowed": False, "reason": "n/a - this scenario concerns existing positions, not new trade approval"},
         reason=(
-            "Stop-losses are enforced by application-level polling rather than exchange-"
-            "side stop orders, so a delayed cycle risks slippage past the configured SL - "
-            "acceptable for paper trading, but call out explicitly for any live-trading design."
-            if not hard_stop_orders else
-            "Stops are placed as exchange-side orders and are unaffected by polling delay."
+            "Stop-loss/take-profit enforcement does not depend solely on the dedicated "
+            "position-manager loop's cadence: GET /api/paper/positions independently closes "
+            "a breached stop inline on every read, so a stalled loop cannot leave a position "
+            "unprotected for longer than the next read of open positions."
+            if redundant_enforcement else
+            "Stop-losses are enforced only by the position-manager loop's own cadence, with "
+            "no redundant path - a stalled loop leaves a breached stop unprotected."
         ),
         started_at=started,
     )
@@ -804,8 +846,16 @@ async def scenario_zero_volume_candle(db: Session) -> dict:
         crashed = True
         crash_err = repr(exc)
 
-    strategy_sources = "\n".join(inspect.getsource(fn) for fn in STRATEGIES.values())
-    volume_aware = "volume" in strategy_sources.lower()
+    # Directly exercises volume_allowed() with a fixed, deterministic
+    # (volume=0, healthy 20-bar average) pair, rather than relying on this
+    # run's synthetic candles happening to also produce low ensemble
+    # confidence on their own - that would make the check pass for an
+    # incidental reason (same trap as missing_candles/stale_price_data
+    # before their explicit guards existed), not because the volume veto
+    # itself actually fired.
+    veto_ok, veto_reason = risk_manager_module.volume_allowed(volume=0.0, volume_sma20=1_000.0)
+    volume_veto_fires = not veto_ok
+    blocked = crashed or (pred is not None and not pred["risk"]["allowed"])
 
     sched_ok, sched_detail = _scheduler_isolates_failures()
     pm_ok, pm_detail = _position_manager_isolates_failures()
@@ -821,28 +871,31 @@ async def scenario_zero_volume_candle(db: Session) -> dict:
         "scheduler": _check(sched_ok, sched_detail),
         "position_manager": _check(pm_ok and pos_ok, f"{pm_detail} {pos_detail}"),
         "risk_engine": _check(
-            volume_aware,
-            "A strategy incorporates volume confirmation."
-            if volume_aware else
-            "None of the four strategies (trend/momentum/mean_reversion/breakout) reference "
-            "volume at all, so a zero-volume (halted or fully illiquid) run of candles can "
-            "still produce a normal-looking, confidently gated trade signal with no "
-            "liquidity veto.",
+            volume_veto_fires,
+            f"risk_manager.volume_allowed(volume=0.0, volume_sma20=1000.0) -> "
+            f"allowed={veto_ok} ({veto_reason}). On this run's synthetic candles the full "
+            f"pipeline separately produced confidence={pred['confidence'] if pred else 'n/a'}%, "
+            f"risk.allowed={pred['risk']['allowed'] if pred else 'n/a'} - blocked either way, "
+            "but the veto above is what's actually guaranteed regardless of what the ensemble "
+            "happens to score on any given candle set."
+            if not crashed else "Pipeline crashed before reaching the risk gate.",
         ),
     }
 
     return _build_result(
         "zero_volume_candle",
         checks=checks,
-        new_trades_blocked=volume_aware,
+        new_trades_blocked=blocked,
         open_positions_protected=pos_ok,
         positions_detail=pos_detail,
         risk_result=pred["risk"] if pred else {"allowed": False, "reason": "pipeline crashed"},
         reason=(
-            "The feature pipeline tolerates zero-volume candles without crashing, but no "
-            "strategy or risk check currently vetoes trading on illiquid/halted volume - "
-            "recommend a minimum-volume gate."
-            if not crashed else "Pipeline crashed on zero-volume candles."
+            "app/trading/risk_manager.volume_allowed() unconditionally vetoes a trade once "
+            "volume collapses relative to its own 20-bar average, independent of ensemble "
+            "confidence, so a halted/illiquid market cannot slip through on a lucky score."
+            if not crashed and volume_veto_fires else
+            "Pipeline crashed on zero-volume candles." if crashed else
+            "volume_allowed() did not veto a clearly zero-liquidity condition."
         ),
         started_at=started,
     )

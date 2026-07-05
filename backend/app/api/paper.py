@@ -14,6 +14,8 @@ from app.strategy import weight_calculator
 from app.ml.feature_store import store as feature_store
 from app.monitoring.metrics import PAPER_TRADES_CLOSED, PAPER_TRADES_OPENED
 from app.monitoring.logging import get_logger, log_event
+from app.risk import settings_repository
+from app.trading.position_manager import should_close_position
 
 router = APIRouter(prefix="/api/paper", tags=["paper"])
 
@@ -101,6 +103,22 @@ async def open_trade(
     if side not in ["LONG", "SHORT"]:
         raise HTTPException(status_code=400, detail="side must be LONG or SHORT")
 
+    # The authoritative, atomic max_open_positions gate: TradingEngine.run_cycle()
+    # and ExecutionEngine.submit_order() both pre-check this before ever
+    # reaching here, but neither can make that check atomic with the trade
+    # write - a second concurrent caller (a duplicate scheduler instance, a
+    # multi-worker deployment, or a manual API call racing the engine) could
+    # otherwise pass the same pre-check and open past the configured limit.
+    # This is the one place that actually writes the row, so it's the one
+    # place that can enforce the limit for real.
+    risk_settings = settings_repository.get_settings()
+    open_count = db.query(Trade).filter(Trade.status == "OPEN").count()
+    if open_count >= risk_settings["max_open_positions"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Maximum open positions reached ({risk_settings['max_open_positions']})",
+        )
+
     # entry_price lets a caller that already simulated the fill (see
     # app/execution) book the trade at that price instead of a fresh last-
     # trade lookup, so its slippage/quality accounting stays consistent
@@ -152,17 +170,13 @@ async def open_trade(
         },
     }
 
-@router.post("/close/{trade_id}")
-async def close_trade(trade_id: int, db: Session = Depends(get_db)):
-    trade = db.get(Trade, trade_id)
-    if not trade:
-        raise HTTPException(status_code=404, detail="Trade not found")
-
-    if trade.status != "OPEN":
-        raise HTTPException(status_code=400, detail="Trade is already closed")
-
-    exit_price = await get_price(trade.symbol)
-
+def _close_trade_core(trade: Trade, exit_price: float, db: Session, reason: str | None = None) -> dict:
+    """Shared close logic used by both POST /api/paper/close/{id} (a manual
+    or scheduler-initiated close) and the inline stop-loss/take-profit
+    enforcement in GET /api/paper/positions below - so a position is
+    protected the moment *anything* reads it, not only on the dedicated
+    position-manager loop's own cadence. See scenario_position_manager_delayed
+    in app/stress/simulator.py for the failure mode this guards against."""
     if trade.side == "LONG":
         pnl = (exit_price - trade.entry) * trade.qty
         price_diff = exit_price - trade.entry
@@ -247,22 +261,49 @@ async def close_trade(trade_id: int, db: Session = Depends(get_db)):
         side=trade.side,
         exit_price=round(exit_price, 2),
         pnl=round(pnl, 2),
+        reason=reason,
     )
+
+    return {"exit": round(exit_price, 2), "pnl": round(pnl, 2)}
+
+
+@router.post("/close/{trade_id}")
+async def close_trade(trade_id: int, db: Session = Depends(get_db)):
+    trade = db.get(Trade, trade_id)
+    if not trade:
+        raise HTTPException(status_code=404, detail="Trade not found")
+
+    if trade.status != "OPEN":
+        raise HTTPException(status_code=400, detail="Trade is already closed")
+
+    exit_price = await get_price(trade.symbol)
+    result = _close_trade_core(trade, exit_price, db, reason="manual_close")
 
     return {
         "ok": True,
         "message": f"Trade {trade_id} closed",
-        "exit": round(exit_price, 2),
-        "pnl": round(pnl, 2),
+        **result,
     }
 
 @router.get("/positions")
 async def positions(db: Session = Depends(get_db)):
     trades = db.query(Trade).filter(Trade.status == "OPEN").order_by(Trade.id.desc()).all()
 
+    # Enforces SL/TP on every read of open positions, not only on the
+    # dedicated position-manager loop's own poll cadence - GET /positions is
+    # hit independently and far more often (every dashboard refresh), so a
+    # stalled background loop (GC pause, event-loop starvation, deploy) is
+    # never the *only* thing standing between a breached stop and an actual
+    # close. should_close_position() is the same pure check
+    # app.trading.position_manager uses.
     result = []
     for t in trades:
         price = await get_price(t.symbol)
+        should_close, close_reason = should_close_position(t.side, price, t.sl, t.tp)
+        if should_close:
+            _close_trade_core(t, price, db, reason=f"auto_close: {close_reason}")
+            continue
+
         pnl = (price - t.entry) * t.qty if t.side == "LONG" else (t.entry - price) * t.qty
         result.append({
             "id": t.id,

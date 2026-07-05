@@ -1,3 +1,5 @@
+import time
+
 import pandas as pd
 import numpy as np
 
@@ -61,6 +63,7 @@ def compute_features(candles):
     df["bb_width"] = bb_width
     df["return_1"] = close.pct_change()
     df["realized_volatility"] = df["return_1"].rolling(20).std() * np.sqrt(288)
+    df["volume_sma20"] = df["volume"].rolling(20).mean()
 
     last = df.iloc[-1].replace({np.nan: None})
 
@@ -79,6 +82,24 @@ def compute_features(candles):
     else:
         regime = "sideways"
 
+    # Self-calibrating staleness check: infers the candle interval from the
+    # *median* gap between consecutive candles (not just the last pair),
+    # rather than assuming a fixed 5m/15m cadence - median so a single
+    # anomalous gap (a delayed final candle, a feed glitch) can't itself
+    # throw off the inferred interval it's being measured against. Works
+    # the same whether the caller requested 1m or 1d bars. Flags "stale"
+    # once the last candle is more than 3x that interval old - generous
+    # slack for normal network/processing delay while still catching a
+    # genuinely frozen feed.
+    candle_count = len(df)
+    interval_diffs = df["time"].diff().dropna()
+    inferred_interval_ms = float(interval_diffs.median()) if len(interval_diffs) else None
+    candle_age_seconds = max(0.0, (time.time() * 1000 - float(last["time"])) / 1000)
+    stale = bool(
+        inferred_interval_ms and inferred_interval_ms > 0
+        and candle_age_seconds * 1000 > inferred_interval_ms * 3
+    )
+
     return {
         "symbol_features": {
             "price": float(last["close"]),
@@ -92,7 +113,12 @@ def compute_features(candles):
             "atr": None if last["atr"] is None else float(last["atr"]),
             "bb_width": None if last["bb_width"] is None else float(last["bb_width"]),
             "realized_volatility": None if last["realized_volatility"] is None else float(last["realized_volatility"]),
+            "volume": None if last["volume"] is None else float(last["volume"]),
+            "volume_sma20": None if last["volume_sma20"] is None else float(last["volume_sma20"]),
             "trend_score": trend_score,
             "regime": regime,
+            "candle_count": candle_count,
+            "candle_age_seconds": round(candle_age_seconds, 1),
+            "stale": stale,
         }
     }

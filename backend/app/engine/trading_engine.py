@@ -45,6 +45,22 @@ class TradingEngine:
                 )
             ).json().get("trades", [])
 
+            # Best-effort: a malformed/empty order book (see the
+            # bad_orderbook_response stress scenario) must never block a
+            # cycle - spread_pct just stays None and evaluate_risk() fails
+            # open on that one check, same as any other unavailable input.
+            spread_pct = None
+            try:
+                book = (
+                    await client.get(f"http://127.0.0.1:8000/api/orderbook/{self.symbol}")
+                ).json()
+                bids, asks = book.get("bids"), book.get("asks")
+                if bids and asks and bids[0]["price"] > 0:
+                    spread_pct = (asks[0]["price"] - bids[0]["price"]) / bids[0]["price"] * 100
+            except Exception:
+                spread_pct = None
+
+            features = prediction.get("features") or {}
             signal_time = datetime.now(timezone.utc)
 
             decision = risk_manager.evaluate_risk(
@@ -53,6 +69,9 @@ class TradingEngine:
                 open_positions=len(positions),
                 portfolio=portfolio,
                 trade_history=trade_history,
+                spread_pct=spread_pct,
+                volume=features.get("volume"),
+                volume_sma20=features.get("volume_sma20"),
             )
 
             log_event(
