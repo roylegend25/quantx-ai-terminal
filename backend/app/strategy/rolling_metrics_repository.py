@@ -130,5 +130,32 @@ class StrategyRollingMetricsRepository:
             if owns_session:
                 db.close()
 
+    def reset_all(self, db: Session | None = None) -> None:
+        """Companion to StrategyPerformanceRepository.reset_all() - clears
+        this shadow rolling-window table the same way, for the same reason
+        (POST /api/paper/reset)."""
+        owns_session = db is None
+        db = db or SessionLocal()
+        try:
+            for name in STRATEGY_NAMES:
+                row = self._get_or_create(db, name)
+                row.trades = 0
+                row.wins = 0
+                row.losses = 0
+                row.rolling_win_rate = 0.0
+                row.average_r_multiple = 0.0
+                row.profit_factor = 0.0
+                row.sharpe_ratio = 0.0
+                row.max_drawdown = 0.0
+                row.average_confidence = 0.0
+                row.current_weight = round(1.0 / len(STRATEGY_NAMES), 6)
+                row.trades_json = "[]"
+                row.regime_performance_json = "{}"
+                row.updated_at = datetime.now(timezone.utc)
+            db.commit()
+        finally:
+            if owns_session:
+                db.close()
+
 
 repository = StrategyRollingMetricsRepository()

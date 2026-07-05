@@ -145,24 +145,22 @@ function buildCone(candlesArr: Candle[], prediction: any): Cone {
 
   const direction = prediction?.direction;
   const noTrade = !prediction || !direction || direction === "NO_TRADE";
-  const target = typeof prediction?.target === "number" ? prediction.target : lastClose;
-  const stop = typeof prediction?.stop === "number" ? prediction.stop : lastClose;
+  // NO_TRADE means the model has no qualifying signal - a flat forecast
+  // line and a symmetric confidence band would both be fabricated (there is
+  // no target/stop to project), so draw nothing rather than imply a
+  // prediction exists. Candles themselves are drawn independently of this
+  // cone and are unaffected.
+  if (noTrade) return { predicted, upper, lower };
+
+  const target = typeof prediction.target === "number" ? prediction.target : lastClose;
+  const stop = typeof prediction.stop === "number" ? prediction.stop : lastClose;
   const confidence = Math.max(0, Math.min(100, prediction?.confidence ?? 50));
   const atrVal = prediction?.features?.atr;
   const spread = typeof atrVal === "number" && atrVal > 0 ? atrVal : lastClose * 0.006;
 
-  let hi: number;
-  let lo: number;
-  let end: number;
-  if (noTrade) {
-    hi = lastClose + spread * 3;
-    lo = lastClose - spread * 3;
-    end = lastClose;
-  } else {
-    hi = Math.max(target, stop, lastClose) + spread * 2 * (1.5 - confidence / 100);
-    lo = Math.min(target, stop, lastClose) - spread * 2 * (1.5 - confidence / 100);
-    end = target;
-  }
+  const hi = Math.max(target, stop, lastClose) + spread * 2 * (1.5 - confidence / 100);
+  const lo = Math.min(target, stop, lastClose) - spread * 2 * (1.5 - confidence / 100);
+  const end = target;
 
   for (let i = 1; i <= FORECAST_BARS; i++) {
     const e = easeOut(i / FORECAST_BARS);
@@ -508,7 +506,7 @@ function ProChartCanvas(props: Props) {
           if (idx >= viewStart && idx <= view.end) scan(anim.cone.predicted[i]);
         }
       }
-      if (p.showAiOverlay && p.prediction) {
+      if (p.showAiOverlay && p.prediction && p.prediction.direction && p.prediction.direction !== "NO_TRADE") {
         scan(p.prediction.target);
         scan(p.prediction.stop);
       }
@@ -1502,6 +1500,10 @@ function drawAiCard(g: CanvasRenderingContext2D, prediction: any, x: number, y: 
   if (rr !== null) rows.push(["R : R", `1 : ${rr.toFixed(2)}`, T.text]);
   if (prediction.regime) rows.push(["Regime", String(prediction.regime).replace(/_/g, " "), T.text]);
   if (strategy) rows.push(["Strategy", strategy.replace(/_/g, " "), T.cyan]);
+  if (!directional && prediction.risk?.reason) {
+    const reason = String(prediction.risk.reason);
+    rows.push(["Reason", reason.length > 42 ? `${reason.slice(0, 41)}…` : reason, T.textDim]);
+  }
 
   g.font = `600 10px ${FONT}`;
   let wMax = 0;

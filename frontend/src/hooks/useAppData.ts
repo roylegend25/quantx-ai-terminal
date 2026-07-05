@@ -219,6 +219,19 @@ export function useAppData(authed: boolean | null) {
     [showToast, load]
   );
 
+  const resetPaperTrading = useCallback(async () => {
+    try {
+      const res = await api.resetPaperTrading();
+      showToast(res?.message || "Paper trading reset successfully", "success");
+      return res;
+    } catch (e: any) {
+      showToast(e?.message || "Failed to reset paper trading", "error");
+      throw e;
+    } finally {
+      await load();
+    }
+  }, [showToast, load]);
+
   const runStressTest = useCallback(async (scenarioId?: string) => {
     const res = await api.runStressTest(scenarioId);
     const rep = await api.stressReport().catch(() => null);
@@ -376,6 +389,7 @@ export function useAppData(authed: boolean | null) {
     runBacktest,
     openPaperTrade,
     closePaperTrade,
+    resetPaperTrading,
     botAction,
     runStressTest,
     trainModel,

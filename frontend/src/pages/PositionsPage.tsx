@@ -1,13 +1,68 @@
+import { useState } from "react";
 import Card from "../components/Layout/Card";
 import OpenPositionsCard from "../components/Dashboard/OpenPositionsCard";
-import { fmtUsd, toneClass, toneOf } from "../lib/format";
+import { fmtLocalDateTime, fmtTradeDuration, fmtUsd, toneClass, toneOf } from "../lib/format";
 import type { AppData } from "../hooks/useAppData";
 import type { NavKey } from "../lib/nav";
 
 type Props = AppData & { navigate: (key: NavKey) => void };
 
+const SYMBOL_FILTERS = ["ALL", "BTCUSDT", "ETHUSDT"] as const;
+type SymbolFilter = (typeof SYMBOL_FILTERS)[number];
+
+const RESET_CONFIRM_TEXT =
+  "This will delete all paper trades, close paper positions, and reset balance to $10,000. This does NOT affect live funds.";
+
+type RiskGate = { allowed: boolean; reason: string };
+
+function computeRiskGate(prediction: any, openCount: number, executionStatus: any): RiskGate {
+  const predRisk = prediction?.risk;
+
+  if (predRisk && predRisk.allowed === false) {
+    return { allowed: false, reason: predRisk.reason || "Risk checks blocked" };
+  }
+
+  const maxOpen = executionStatus?.safety?.max_open_positions;
+  if (typeof maxOpen === "number" && openCount >= maxOpen) {
+    return { allowed: false, reason: "Maximum open positions reached" };
+  }
+
+  if (executionStatus?.circuit_breaker?.open) {
+    return { allowed: false, reason: "Circuit breaker open - too many recent execution failures" };
+  }
+
+  if (predRisk) {
+    return { allowed: !!predRisk.allowed, reason: predRisk.reason || "Risk checks passed" };
+  }
+
+  return { allowed: false, reason: "Waiting for prediction data" };
+}
+
 export default function PositionsPage(props: Props) {
-  const { positions, history, symbol } = props;
+  const { positions, history, symbol, prediction, botStatus, executionStatus } = props;
+
+  const [symbolFilter, setSymbolFilter] = useState<SymbolFilter>("ALL");
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [resetting, setResetting] = useState(false);
+
+  const filteredPositions =
+    symbolFilter === "ALL" ? positions : positions.filter((p) => p.symbol === symbolFilter);
+  const filteredHistory =
+    symbolFilter === "ALL" ? history : history.filter((t) => t.symbol === symbolFilter);
+
+  const botStatusLabel = (botStatus?.status || "loading").toUpperCase();
+  const botRunning = botStatusLabel === "RUNNING";
+  const riskGate = computeRiskGate(prediction, positions.length, executionStatus);
+
+  const handleConfirmReset = async () => {
+    setResetting(true);
+    try {
+      await props.resetPaperTrading();
+    } finally {
+      setResetting(false);
+      setShowResetModal(false);
+    }
+  };
 
   return (
     <div className="page-grid">
@@ -21,6 +76,9 @@ export default function PositionsPage(props: Props) {
           </button>
           <button className="btn-short" onClick={() => props.openPaperTrade("SHORT")}>
             Open Short
+          </button>
+          <button className="btn-danger" onClick={() => setShowResetModal(true)}>
+            Reset Paper Trading
           </button>
         </div>
       </Card>
@@ -36,11 +94,95 @@ export default function PositionsPage(props: Props) {
             <b className="tile-value">{history.filter((t) => t.status === "CLOSED").length}</b>
           </div>
         </div>
+        <div className="controls" style={{ marginTop: 14 }}>
+          <label className="filter-select-wrap">
+            <span className="tile-label">Symbol</span>
+            <select
+              className="filter-select"
+              value={symbolFilter}
+              onChange={(e) => setSymbolFilter(e.target.value as SymbolFilter)}
+            >
+              {SYMBOL_FILTERS.map((s) => (
+                <option key={s} value={s}>
+                  {s === "ALL" ? "All Symbols" : s}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </Card>
+
+      {showResetModal && (
+        <div className="modal-overlay" onClick={() => !resetting && setShowResetModal(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <h3>Reset Paper Trading</h3>
+            <p>{RESET_CONFIRM_TEXT}</p>
+            <div className="modal-actions">
+              <button className="mini-btn" onClick={() => setShowResetModal(false)} disabled={resetting}>
+                Cancel
+              </button>
+              <button className="btn-danger" onClick={handleConfirmReset} disabled={resetting}>
+                {resetting ? "Resetting…" : "Confirm Reset"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <Card title="Bot Trading Status" full>
+        <div className="kv-grid">
+          <div>
+            <span className="tile-label">Bot</span>
+            <b className={`tile-value ${botRunning ? "green" : botStatusLabel === "PAUSED" ? "yellow" : "red"}`}>
+              {botStatusLabel}
+            </b>
+          </div>
+          <div className="align-right">
+            <span className="tile-label">Open Positions</span>
+            <b className="tile-value">{positions.length}</b>
+          </div>
+          <div>
+            <span className="tile-label">Prediction Direction</span>
+            <b
+              className={`tile-value ${
+                prediction?.direction === "LONG" ? "green" : prediction?.direction === "SHORT" ? "red" : ""
+              }`}
+            >
+              {prediction?.direction ?? "—"}
+            </b>
+          </div>
+          <div className="align-right">
+            <span className="tile-label">Confidence</span>
+            <b className="tile-value">{typeof prediction?.confidence === "number" ? `${prediction.confidence}%` : "—"}</b>
+          </div>
+          <div>
+            <span className="tile-label">Risk</span>
+            <b className={`tile-value ${riskGate.allowed ? "green" : "red"}`}>
+              {riskGate.allowed ? "ALLOWED" : "BLOCKED"}
+            </b>
+          </div>
+          <div className="align-right">
+            <span className="tile-label">Last Prediction</span>
+            <b className="tile-value">{fmtLocalDateTime(prediction?.computed_at)}</b>
+          </div>
+          <div>
+            <span className="tile-label">Risk Reason</span>
+            <b className="tile-value">{riskGate.reason}</b>
+          </div>
+        </div>
+
+        {!riskGate.allowed && (
+          <p className={`status-note ${botRunning ? "status-note-warn" : ""}`}>
+            {botRunning
+              ? `Bot is running but waiting because: ${riskGate.reason}`
+              : `Bot is ${botStatusLabel.toLowerCase()} — no trades will be taken until it is started.`}
+          </p>
+        )}
       </Card>
 
       <Card title="Open Positions" full>
         <OpenPositionsCard
-          positions={positions}
+          positions={filteredPositions}
           onClose={props.closePaperTrade}
           onViewAll={props.navigate}
           compact={false}
@@ -48,8 +190,8 @@ export default function PositionsPage(props: Props) {
       </Card>
 
       <Card title="Trade Journal" full>
-        {history.length === 0 && <p className="analytics-empty">No trade history yet.</p>}
-        {history.length > 0 && (
+        {filteredHistory.length === 0 && <p className="analytics-empty">No trade history yet.</p>}
+        {filteredHistory.length > 0 && (
           <div className="table-wrap">
             <table className="data-table">
               <thead>
@@ -60,10 +202,13 @@ export default function PositionsPage(props: Props) {
                   <th>Entry</th>
                   <th>Exit</th>
                   <th>PnL</th>
+                  <th>Opened Time</th>
+                  <th>Closed Time</th>
+                  <th>Duration</th>
                 </tr>
               </thead>
               <tbody>
-                {history.slice(0, 30).map((t) => (
+                {filteredHistory.slice(0, 30).map((t) => (
                   <tr key={t.id}>
                     <td>
                       <b>{t.symbol}</b>
@@ -73,6 +218,9 @@ export default function PositionsPage(props: Props) {
                     <td>{t.entry ?? "—"}</td>
                     <td>{t.exit ?? "—"}</td>
                     <td className={toneClass(toneOf(t.pnl))}>{fmtUsd(t.pnl)}</td>
+                    <td>{fmtLocalDateTime(t.opened_at)}</td>
+                    <td>{t.closed_at ? fmtLocalDateTime(t.closed_at) : "Open"}</td>
+                    <td>{fmtTradeDuration(t.opened_at, t.closed_at)}</td>
                   </tr>
                 ))}
               </tbody>

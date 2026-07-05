@@ -1,13 +1,30 @@
-from pydantic_settings import BaseSettings
+from typing_extensions import Annotated
+from pydantic_settings import BaseSettings, NoDecode
+from pydantic import Field, field_validator
 
 class Settings(BaseSettings):
     app_name: str = "QuantX AI Terminal"
     app_env: str = "production"
 
     trading_mode: str = "paper"
-    symbols: list[str] = ["BTCUSDT", "ETHUSDT"]
+    # Symbols the scheduler evaluates every cycle. Also settable as
+    # ENABLED_SYMBOLS=BTCUSDT,ETHUSDT (comma-separated) - both env vars map
+    # to the same field, ENABLED_SYMBOLS is just the more discoverable name.
+    # NoDecode skips pydantic-settings' default JSON-decode-then-validate
+    # path for complex (list) fields, so the comma-separated string reaches
+    # the validator below untouched instead of failing json.loads().
+    symbols: Annotated[list[str], NoDecode] = Field(
+        default=["BTCUSDT", "ETHUSDT"], validation_alias="enabled_symbols"
+    )
     default_symbol: str = "BTCUSDT"
     default_interval: str = "5m"
+
+    @field_validator("symbols", mode="before")
+    @classmethod
+    def _split_symbols(cls, v):
+        if isinstance(v, str):
+            return [s.strip().upper() for s in v.split(",") if s.strip()]
+        return v
 
     confidence_threshold: float = 70.0
     max_risk_per_trade_pct: float = 0.5

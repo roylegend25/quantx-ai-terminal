@@ -267,5 +267,33 @@ class StrategyPerformanceRepository:
             if owns_session:
                 db.close()
 
+    def reset_all(self, db: Session | None = None) -> None:
+        """Wipe every strategy's rolling trade window back to a fresh,
+        equal-weight state. Used by POST /api/paper/reset - these stats are
+        derived entirely from closed paper trades, so they'd otherwise keep
+        scoring strategies against trades that no longer exist."""
+        owns_session = db is None
+        db = db or SessionLocal()
+        try:
+            for name in STRATEGY_NAMES:
+                row = self._get_or_create(db, name)
+                row.trades = 0
+                row.wins = 0
+                row.losses = 0
+                row.rolling_win_rate = 0.0
+                row.average_r_multiple = 0.0
+                row.profit_factor = 0.0
+                row.sharpe_ratio = 0.0
+                row.max_drawdown = 0.0
+                row.average_confidence = 0.0
+                row.current_weight = DEFAULT_WEIGHT
+                row.trades_json = "[]"
+                row.regime_performance_json = "{}"
+                row.updated_at = datetime.now(timezone.utc)
+            db.commit()
+        finally:
+            if owns_session:
+                db.close()
+
 
 repository = StrategyPerformanceRepository()

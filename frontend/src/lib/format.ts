@@ -56,6 +56,32 @@ export function fmtDuration(seconds?: number | null): string {
   return `${total}s`;
 }
 
+const localDateTimeFormatter = new Intl.DateTimeFormat([], {
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+/** Compact date + time in the viewer's local timezone, e.g. "Jul 4, 2:30 PM". */
+export function fmtLocalDateTime(iso?: string | number | null): string {
+  if (iso === null || iso === undefined) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return localDateTimeFormatter.format(d);
+}
+
+/** Duration between two ISO timestamps, in the same clean minutes/hours
+ *  format as fmtDuration. A null `closedIso` means the trade is still open. */
+export function fmtTradeDuration(openedIso?: string | null, closedIso?: string | null): string {
+  if (!openedIso) return "—";
+  if (!closedIso) return "Open";
+  const start = new Date(openedIso).getTime();
+  const end = new Date(closedIso).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end)) return "—";
+  return fmtDuration(Math.max(0, (end - start) / 1000));
+}
+
 export function fmtRelativeTime(iso?: string | null): string {
   if (!iso) return "—";
   const then = new Date(iso).getTime();

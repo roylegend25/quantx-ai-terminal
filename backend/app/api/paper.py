@@ -320,6 +320,48 @@ async def positions(db: Session = Depends(get_db)):
 
     return {"positions": result}
 
+@router.post("/reset")
+async def reset_paper_trading(db: Session = Depends(get_db)):
+    """Wipes the paper-trading ledger back to a clean $10,000 start: every
+    Trade row (open and closed), the singleton Portfolio row, and the
+    adaptive strategy-weight stats derived from closed paper trades.
+
+    Paper-only by construction - this touches nothing under app/exchanges
+    (the real-money read path) and there is no order-placement code path
+    anywhere in this codebase for reset to have to worry about disturbing.
+    """
+    open_count = db.query(Trade).filter(Trade.status == "OPEN").count()
+    closed_count = db.query(Trade).filter(Trade.status == "CLOSED").count()
+
+    db.query(Trade).delete()
+
+    portfolio = get_portfolio(db)
+    portfolio.balance = 10000.0
+    portfolio.equity = 10000.0
+    portfolio.daily_pnl = 0.0
+    portfolio.total_pnl = 0.0
+    portfolio.wins = 0
+    portfolio.losses = 0
+    db.commit()
+
+    performance_repository.reset_all(db=db)
+    rolling_metrics_repository.reset_all(db=db)
+
+    log_event(
+        logger,
+        message="paper_trading_reset",
+        category="trading",
+        positions_closed=open_count,
+        history_cleared=closed_count,
+    )
+
+    return {
+        "ok": True,
+        "message": "Paper trading reset successfully",
+        "balance": 10000,
+    }
+
+
 @router.get("/history")
 async def history(db: Session = Depends(get_db)):
     trades = db.query(Trade).order_by(Trade.id.desc()).limit(100).all()

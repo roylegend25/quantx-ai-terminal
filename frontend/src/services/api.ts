@@ -54,6 +54,7 @@ export const api = {
   openPaperTrade: (symbol: string, side: "LONG" | "SHORT", usdtSize = 1000) =>
     postJson(`/api/paper/open?symbol=${symbol}&side=${side}&usdt_size=${usdtSize}`),
   closePaperTrade: (id: number) => postJson(`/api/paper/close/${id}`),
+  resetPaperTrading: () => postJson(`/api/paper/reset`),
   runBacktest: (symbol: string, interval = "5m") =>
     getJson(`/api/backtest/run?symbol=${symbol}&interval=${interval}`),
   downloadHistory: (symbol: string, interval = "5m", limit = 1000) =>
