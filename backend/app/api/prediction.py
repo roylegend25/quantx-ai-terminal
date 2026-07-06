@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 import httpx
 from app.db.models import PredictionFeature
 from app.db.session import SessionLocal
+from app.quant.forecast import build_forecast
 from app.quant.indicators import compute_features
 from app.trading import risk_manager
 from app.trading.risk_manager import calculate_levels
@@ -54,12 +55,8 @@ SUPPORTED_INTERVALS_MS = {
     "1h": 3_600_000,
     "4h": 4 * 3_600_000,
     "1d": 86_400_000,
+    "1w": 7 * 86_400_000,
 }
-
-# How many bars ahead the AI forecast cone projects - must match the
-# frontend's FORECAST_BARS (ProChartCanvas.tsx/PredictionChart.tsx) since
-# prediction_horizon below describes the same cone the chart draws.
-FORECAST_BARS = 40
 
 
 def _consensus_adjustment(consensus: dict | None, direction: str) -> float:
@@ -379,6 +376,32 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
         error=None,
     )
 
+    # Server-side forecast + confidence-band points, anchored to the last
+    # closed candle. The chart draws exactly these; a NO_TRADE prediction
+    # gets empty arrays plus the reason - nothing fabricated. Also mirrored
+    # into `prediction` so consumers reading either level see them.
+    forecast = build_forecast(
+        interval=interval,
+        interval_ms=SUPPORTED_INTERVALS_MS[interval],
+        last_candle_time=candles[-1]["time"] if candles else 0,
+        price=pred["price"],
+        direction=pred["direction"],
+        confidence=pred["confidence"],
+        target=pred["target"],
+        stop=pred["stop"],
+        atr=features.get("atr"),
+        realized_volatility=features.get("realized_volatility"),
+    )
+    pred["forecast_points"] = forecast["forecast_points"]
+    pred["upper_band_points"] = forecast["upper_band_points"]
+    pred["lower_band_points"] = forecast["lower_band_points"]
+    pred["forecast"] = {
+        "bars": forecast["bars"],
+        "horizon_ms": forecast["horizon_ms"],
+        "band_basis": forecast["band_basis"],
+        "reason": forecast["reason"],
+    }
+
     response = {
         "symbol": symbol,
         "interval": interval,
@@ -389,10 +412,22 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
         # live under `prediction`.
         "timeframe": interval,
         "reason": pred["risk"]["reason"],
+        "direction": pred["direction"],
+        "confidence": pred["confidence"],
+        "probability_up": pred["probability_up"],
+        "probability_down": pred["probability_down"],
+        "current_price": pred["price"],
+        "target": pred["target"],
+        "stop": pred["stop"],
+        "forecast_points": forecast["forecast_points"],
+        "upper_band_points": forecast["upper_band_points"],
+        "lower_band_points": forecast["lower_band_points"],
         "prediction_horizon": {
-            "bars": FORECAST_BARS,
+            "bars": forecast["bars"],
             "interval": interval,
-            "horizon_ms": FORECAST_BARS * SUPPORTED_INTERVALS_MS[interval],
+            "horizon_ms": forecast["horizon_ms"],
+            "band_basis": forecast["band_basis"],
+            "reason": forecast["reason"],
         },
         "prediction": pred,
     }

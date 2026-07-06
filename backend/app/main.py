@@ -33,6 +33,9 @@ from app.api.models import router as models_router
 from app.api.research_lab import router as research_lab_router
 from app.api.logs import router as logs_router
 from app.api.risk import router as risk_router
+from app.api.data import router as data_router
+from app.api.learning import router as learning_router
+from app.data_sources.scheduler import start_data_scheduler
 
 app = FastAPI(title="QuantX AI Terminal API", version="2.0.0")
 
@@ -41,6 +44,7 @@ async def delayed_background_start():
     start_scheduler()
     start_position_manager()
     start_mlops_scheduler()
+    start_data_scheduler()
 
 @app.on_event("startup")
 async def startup_event():
@@ -82,6 +86,8 @@ app.include_router(models_router, dependencies=protected)
 app.include_router(research_lab_router, dependencies=protected)
 app.include_router(logs_router, dependencies=protected)
 app.include_router(risk_router, dependencies=protected)
+app.include_router(data_router, dependencies=protected)
+app.include_router(learning_router, dependencies=protected)
 app.include_router(health_router)
 
 @app.get("/api/health")

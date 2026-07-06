@@ -96,9 +96,16 @@ type Props = {
   history: HistoryPoint[];
   liquidityClusters: LiquidityCluster[];
   indicators: IndicatorId[];
+  /** Bars the forecast cone projects ahead - timeframe-aware, matches the
+   *  backend's prediction_horizon.bars for the selected interval. */
+  forecastBars: number;
   showAiOverlay: boolean;
   showHistory: boolean;
-  showBands: boolean;
+  showPrice: boolean;
+  showForecast: boolean;
+  showUpperBand: boolean;
+  showLowerBand: boolean;
+  showCone: boolean;
   showCrosshair: boolean;
   autoScale: boolean;
   neon: boolean;
@@ -107,8 +114,6 @@ type Props = {
   resetSignal: number;
   onExportRef?: (fn: () => void) => void;
 };
-
-const FORECAST_BARS = 40;
 const AXIS_W = 68;
 const AXIS_H = 24;
 const FONT = "Inter, ui-sans-serif, system-ui, sans-serif";
@@ -147,7 +152,25 @@ function easeOut(t: number): number {
   return 1 - Math.pow(1 - t, 2);
 }
 
-function buildCone(candlesArr: Candle[], prediction: any): Cone {
+/** Backend point series -> plain price array, accepting only finite,
+ *  positive prices on strictly-increasing timestamps. One bad point
+ *  invalidates the series (never plot a partially-garbled cone). */
+function sanitizeSeries(points: any): number[] | null {
+  if (!Array.isArray(points) || points.length === 0) return null;
+  const out: number[] = [];
+  let prevT = -Infinity;
+  for (const p of points) {
+    const t = p?.time;
+    const v = p?.price;
+    if (typeof t !== "number" || !Number.isFinite(t) || t <= 0 || t <= prevT) return null;
+    if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return null;
+    prevT = t;
+    out.push(v);
+  }
+  return out;
+}
+
+function buildCone(candlesArr: Candle[], prediction: any, bars: number): Cone {
   const predicted: number[] = [];
   const upper: number[] = [];
   const lower: number[] = [];
@@ -164,6 +187,16 @@ function buildCone(candlesArr: Candle[], prediction: any): Cone {
   // cone and are unaffected.
   if (noTrade) return { predicted, upper, lower };
 
+  // Preferred source: the exact server-computed points (validated). All
+  // three series must be individually valid and equally long - a partial
+  // set falls back to local generation rather than mixing sources.
+  const sf = sanitizeSeries(prediction?.forecast_points);
+  const su = sanitizeSeries(prediction?.upper_band_points);
+  const sl = sanitizeSeries(prediction?.lower_band_points);
+  if (sf && su && sl && sf.length === su.length && su.length === sl.length) {
+    return { predicted: sf, upper: su, lower: sl };
+  }
+
   const target = typeof prediction.target === "number" ? prediction.target : lastClose;
   const stop = typeof prediction.stop === "number" ? prediction.stop : lastClose;
   const confidence = Math.max(0, Math.min(100, prediction?.confidence ?? 50));
@@ -174,8 +207,8 @@ function buildCone(candlesArr: Candle[], prediction: any): Cone {
   const lo = Math.min(target, stop, lastClose) - spread * 2 * (1.5 - confidence / 100);
   const end = target;
 
-  for (let i = 1; i <= FORECAST_BARS; i++) {
-    const e = easeOut(i / FORECAST_BARS);
+  for (let i = 1; i <= bars; i++) {
+    const e = easeOut(i / bars);
     predicted.push(lastClose + (end - lastClose) * e);
     upper.push(lastClose + (hi - lastClose) * e);
     lower.push(lastClose + (lo - lastClose) * e);
@@ -328,7 +361,10 @@ function ProChartCanvas(props: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [candles, indicatorKey]);
 
-  const coneTarget = useMemo(() => buildCone(candles, props.prediction), [candles, props.prediction]);
+  const coneTarget = useMemo(
+    () => buildCone(candles, props.prediction, props.forecastBars),
+    [candles, props.prediction, props.forecastBars]
+  );
 
   const calcRef = useRef(calc);
   calcRef.current = calc;
@@ -346,7 +382,7 @@ function ProChartCanvas(props: Props) {
   const datasetKey = `${props.symbol}|${timeframeMs}`;
   const prevDatasetKey = useRef("");
   useEffect(() => {
-    const total = candles.length + FORECAST_BARS;
+    const total = candles.length + props.forecastBars;
     if (!viewInitialized.current || prevDatasetKey.current !== datasetKey) {
       viewRef.current = { end: total, bars: Math.min(total, 160), lockedY: null };
       viewInitialized.current = candles.length > 0;
@@ -371,7 +407,7 @@ function ProChartCanvas(props: Props) {
   }, [datasetKey, candles.length]);
 
   useEffect(() => {
-    viewRef.current = { end: candles.length + FORECAST_BARS, bars: Math.min(candles.length + FORECAST_BARS, 160), lockedY: null };
+    viewRef.current = { end: candles.length + props.forecastBars, bars: Math.min(candles.length + props.forecastBars, 160), lockedY: null };
     animRef.current.initialized = false;
     dirtyRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -504,7 +540,7 @@ function ProChartCanvas(props: Props) {
       const plotW = plotR - plotL;
 
       const view = viewRef.current;
-      const total = cs.length + FORECAST_BARS;
+      const total = cs.length + p.forecastBars;
       view.bars = Math.max(20, Math.min(view.bars, Math.max(40, total * 1.2)));
       view.end = Math.max(Math.min(view.end, total + view.bars * 0.25), 10);
       const barW = plotW / view.bars;
@@ -528,18 +564,16 @@ function ProChartCanvas(props: Props) {
         scan(cs[i].low);
         scan(cs[i].high);
       }
-      if (anim.cone && p.showBands) {
-        for (let i = 0; i < anim.cone.upper.length; i++) {
-          const idx = cs.length + i;
-          if (idx >= viewStart && idx <= view.end) {
-            scan(anim.cone.upper[i]);
-            scan(anim.cone.lower[i]);
-          }
-        }
-      } else if (anim.cone) {
+      // y-domain includes only the overlays actually being drawn, and only
+      // finite values (scan() filters) - a hidden or invalid series can
+      // never distort the axis
+      if (anim.cone) {
         for (let i = 0; i < anim.cone.predicted.length; i++) {
           const idx = cs.length + i;
-          if (idx >= viewStart && idx <= view.end) scan(anim.cone.predicted[i]);
+          if (idx < viewStart || idx > view.end) continue;
+          if (p.showUpperBand || p.showCone) scan(anim.cone.upper[i]);
+          if (p.showLowerBand || p.showCone) scan(anim.cone.lower[i]);
+          if (p.showForecast) scan(anim.cone.predicted[i]);
         }
       }
       if (p.showAiOverlay && p.prediction && p.prediction.direction && p.prediction.direction !== "NO_TRADE") {
@@ -972,7 +1006,7 @@ function ProChartCanvas(props: Props) {
       if (anim.cone && anim.cone.predicted.length) {
         const cone = anim.cone;
         const coneX = (i: number) => xAt(cs.length - 1 + (i + 1));
-        if (p.showBands) {
+        if (p.showCone) {
           g.beginPath();
           g.moveTo(nowX, yAt(liveClose));
           for (let i = 0; i < cone.upper.length; i++) g.lineTo(coneX(i), yAt(cone.upper[i]));
@@ -983,7 +1017,9 @@ function ProChartCanvas(props: Props) {
           grad.addColorStop(1, `rgba(${T.blueRgb}, 0.04)`);
           g.fillStyle = grad;
           g.fill();
+        }
 
+        if (p.showUpperBand) {
           g.strokeStyle = T.green;
           g.lineWidth = 1.5;
           g.setLineDash([7, 5]);
@@ -991,7 +1027,12 @@ function ProChartCanvas(props: Props) {
           g.moveTo(nowX, yAt(liveClose));
           for (let i = 0; i < cone.upper.length; i++) g.lineTo(coneX(i), yAt(cone.upper[i]));
           g.stroke();
+          g.setLineDash([]);
+        }
+        if (p.showLowerBand) {
           g.strokeStyle = T.red;
+          g.lineWidth = 1.5;
+          g.setLineDash([7, 5]);
           g.beginPath();
           g.moveTo(nowX, yAt(liveClose));
           for (let i = 0; i < cone.lower.length; i++) g.lineTo(coneX(i), yAt(cone.lower[i]));
@@ -999,25 +1040,27 @@ function ProChartCanvas(props: Props) {
           g.setLineDash([]);
         }
 
-        g.save();
-        if (p.neon) {
-          g.shadowColor = `rgba(${T.cyanRgb}, 0.75)`;
-          g.shadowBlur = 9;
+        if (p.showForecast) {
+          g.save();
+          if (p.neon) {
+            g.shadowColor = `rgba(${T.cyanRgb}, 0.75)`;
+            g.shadowBlur = 9;
+          }
+          g.strokeStyle = T.cyan;
+          g.lineWidth = 2.5;
+          g.beginPath();
+          g.moveTo(nowX, yAt(liveClose));
+          for (let i = 0; i < cone.predicted.length; i++) g.lineTo(coneX(i), yAt(cone.predicted[i]));
+          g.stroke();
+          g.restore();
         }
-        g.strokeStyle = T.cyan;
-        g.lineWidth = 2.5;
-        g.beginPath();
-        g.moveTo(nowX, yAt(liveClose));
-        for (let i = 0; i < cone.predicted.length; i++) g.lineTo(coneX(i), yAt(cone.predicted[i]));
-        g.stroke();
-        g.restore();
       }
 
       // ---- AI overlay: entry / target / stop + info card
       if (p.showAiOverlay && p.prediction && p.prediction.direction && p.prediction.direction !== "NO_TRADE") {
         const pr = p.prediction;
         const entry = typeof pr.price === "number" ? pr.price : liveClose;
-        const coneEndX = Math.min(plotR, xAt(cs.length - 1 + FORECAST_BARS));
+        const coneEndX = Math.min(plotR, xAt(cs.length - 1 + p.forecastBars));
         const zoneL = Math.max(plotL, nowX);
         if (typeof pr.target === "number" && typeof pr.stop === "number") {
           // risk / reward shading
@@ -1304,7 +1347,7 @@ function ProChartCanvas(props: Props) {
 
     const onDblClick = () => {
       const p = propsRef.current;
-      const total = p.candles.length + FORECAST_BARS;
+      const total = p.candles.length + p.forecastBars;
       viewRef.current = { end: total, bars: Math.min(total, 160), lockedY: null };
       markDirty();
     };

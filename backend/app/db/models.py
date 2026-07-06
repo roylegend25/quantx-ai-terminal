@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, JSON, Boolean
+from sqlalchemy import Column, Integer, BigInteger, String, Float, DateTime, Text, JSON, Boolean, Index, UniqueConstraint
 from datetime import datetime, timezone
 from app.db.session import Base
 
@@ -404,6 +404,266 @@ class MLOpsRetrainRun(Base):
     result_model_id = Column(String, nullable=True)
     error = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
+
+
+# --------------------------------------------------------------------------
+# Phase 20 - Real-World Data Engine (app/data_sources/). All timestamps for
+# market data are epoch milliseconds (matching the "time" convention the
+# chart/backtest CSVs already use); created_at is a wall-clock audit column.
+# Every row carries provider + quality_score so a consumer can always tell
+# where a datapoint came from and how trustworthy its dataset was.
+# --------------------------------------------------------------------------
+
+class MarketCandle(Base):
+    __tablename__ = "market_candles"
+    __table_args__ = (
+        UniqueConstraint("symbol", "timeframe", "timestamp", "provider", name="uq_market_candles_key"),
+        Index("ix_market_candles_lookup", "symbol", "timeframe", "timestamp"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, index=True, nullable=False)
+    timeframe = Column(String, index=True, nullable=False)
+    timestamp = Column(BigInteger, index=True, nullable=False)  # candle open time, epoch ms
+    open = Column(Float, nullable=False)
+    high = Column(Float, nullable=False)
+    low = Column(Float, nullable=False)
+    close = Column(Float, nullable=False)
+    volume = Column(Float, nullable=False)
+    quote_volume = Column(Float, nullable=True)
+    trades_count = Column(Integer, nullable=True)
+    interpolated = Column(Boolean, default=False)  # filled by app/data_sources/interpolator.py, never by a provider
+    provider = Column(String, default="binance_futures")
+    quality_score = Column(Float, nullable=True)  # dataset-level score stamped at download time
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class FundingRateRow(Base):
+    __tablename__ = "funding_rates"
+    __table_args__ = (
+        UniqueConstraint("symbol", "timestamp", "provider", name="uq_funding_rates_key"),
+        Index("ix_funding_rates_lookup", "symbol", "timestamp"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, index=True, nullable=False)
+    timeframe = Column(String, default="8h")  # funding period
+    timestamp = Column(BigInteger, index=True, nullable=False)  # funding time, epoch ms
+    funding_rate = Column(Float, nullable=False)
+    mark_price = Column(Float, nullable=True)
+    provider = Column(String, default="binance_futures")
+    quality_score = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class OpenInterestRow(Base):
+    __tablename__ = "open_interest_history"
+    __table_args__ = (
+        UniqueConstraint("symbol", "timeframe", "timestamp", "provider", name="uq_open_interest_key"),
+        Index("ix_open_interest_lookup", "symbol", "timeframe", "timestamp"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, index=True, nullable=False)
+    timeframe = Column(String, index=True, nullable=False)  # sampling period (5m/15m/...)
+    timestamp = Column(BigInteger, index=True, nullable=False)
+    open_interest = Column(Float, nullable=False)  # contracts
+    open_interest_value = Column(Float, nullable=True)  # USD notional
+    provider = Column(String, default="binance_futures")
+    quality_score = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class OrderbookSnapshotRow(Base):
+    __tablename__ = "orderbook_snapshots"
+    __table_args__ = (Index("ix_orderbook_snapshots_lookup", "symbol", "timestamp"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, index=True, nullable=False)
+    timeframe = Column(String, default="tick")  # snapshots are point-in-time, not bar-aligned
+    timestamp = Column(BigInteger, index=True, nullable=False)
+    best_bid = Column(Float, nullable=True)
+    best_ask = Column(Float, nullable=True)
+    spread_bps = Column(Float, nullable=True)
+    bid_depth_usd = Column(Float, nullable=True)
+    ask_depth_usd = Column(Float, nullable=True)
+    imbalance = Column(Float, nullable=True)  # (bid-ask)/(bid+ask) depth, [-1, 1]
+    levels = Column(JSON, nullable=True)  # top-of-book ladder actually fetched
+    provider = Column(String, default="binance_futures")
+    quality_score = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class TradeTick(Base):
+    __tablename__ = "trade_ticks"
+    __table_args__ = (
+        UniqueConstraint("symbol", "provider", "trade_id", name="uq_trade_ticks_key"),
+        Index("ix_trade_ticks_lookup", "symbol", "timestamp"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, index=True, nullable=False)
+    timeframe = Column(String, default="tick")
+    timestamp = Column(BigInteger, index=True, nullable=False)
+    trade_id = Column(BigInteger, nullable=True)  # provider aggTrade id, for dedup
+    price = Column(Float, nullable=False)
+    qty = Column(Float, nullable=False)
+    side = Column(String, nullable=True)  # BUY / SELL (taker side)
+    provider = Column(String, default="binance_futures")
+    quality_score = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class LiquidationEstimateRow(Base):
+    __tablename__ = "liquidation_estimates"
+    __table_args__ = (Index("ix_liquidation_estimates_lookup", "symbol", "timeframe", "timestamp"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, index=True, nullable=False)
+    timeframe = Column(String, index=True, nullable=False)
+    timestamp = Column(BigInteger, index=True, nullable=False)
+    side = Column(String, nullable=True)  # LONG / SHORT liquidations
+    price_level = Column(Float, nullable=True)
+    strength = Column(Float, nullable=True)  # 0-100 relative cluster strength
+    notional_usd = Column(Float, nullable=True)
+    method = Column(String, nullable=True)  # "coinglass" (measured) | "oi_wick_estimate" (derived)
+    provider = Column(String, default="derived")
+    quality_score = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class SentimentRow(Base):
+    __tablename__ = "sentiment_history"
+    __table_args__ = (
+        UniqueConstraint("metric", "timestamp", "provider", name="uq_sentiment_key"),
+        Index("ix_sentiment_lookup", "metric", "timestamp"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, nullable=True, index=True)  # market-wide metrics leave this NULL
+    timeframe = Column(String, default="1d")
+    timestamp = Column(BigInteger, index=True, nullable=False)
+    metric = Column(String, index=True, nullable=False)  # fear_greed | btc_dominance | stablecoin_dominance
+    value = Column(Float, nullable=False)
+    label = Column(String, nullable=True)  # e.g. "Extreme Fear"
+    provider = Column(String, default="alternative.me")
+    quality_score = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class DataDownloadJob(Base):
+    __tablename__ = "data_download_jobs"
+    __table_args__ = (Index("ix_data_jobs_lookup", "symbol", "timeframe", "created_at"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(String, unique=True, index=True)
+    data_type = Column(String, index=True)  # candles | funding | open_interest | orderbook | trades | sentiment | liquidations
+    symbol = Column(String, index=True, nullable=True)
+    timeframe = Column(String, index=True, nullable=True)
+    provider = Column(String, nullable=True)
+    status = Column(String, default="queued", index=True)  # queued | running | succeeded | failed
+    requested_start = Column(BigInteger, nullable=True)
+    requested_end = Column(BigInteger, nullable=True)
+    rows_fetched = Column(Integer, default=0)
+    rows_stored = Column(Integer, default=0)
+    rows_interpolated = Column(Integer, default=0)
+    rows_rejected = Column(Integer, default=0)
+    quality_score = Column(Float, nullable=True)
+    error = Column(Text, nullable=True)
+    detail = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+
+class DataQualityReport(Base):
+    __tablename__ = "data_quality_reports"
+    __table_args__ = (Index("ix_data_quality_lookup", "symbol", "timeframe", "timestamp"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, index=True, nullable=False)
+    timeframe = Column(String, index=True, nullable=False)
+    data_type = Column(String, default="candles")
+    timestamp = Column(BigInteger, index=True, nullable=False)  # when the check ran, epoch ms
+    range_start = Column(BigInteger, nullable=True)
+    range_end = Column(BigInteger, nullable=True)
+    rows = Column(Integer, default=0)
+    expected_rows = Column(Integer, nullable=True)
+    missing_candles = Column(Integer, default=0)
+    duplicates = Column(Integer, default=0)
+    zero_volume = Column(Integer, default=0)
+    broken_ohlc = Column(Integer, default=0)
+    outliers = Column(Integer, default=0)
+    interpolated = Column(Integer, default=0)
+    rejected_gaps = Column(Integer, default=0)
+    largest_gap_bars = Column(Integer, default=0)
+    stale = Column(Boolean, default=False)
+    quality_score = Column(Float, nullable=True)  # 0-100
+    gaps = Column(JSON, nullable=True)  # [{"start": ms, "end": ms, "bars": n, "action": "interpolated"|"rejected"}]
+    details = Column(JSON, nullable=True)
+    provider = Column(String, default="binance_futures")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class FeatureSnapshotRow(Base):
+    __tablename__ = "feature_snapshots"
+    __table_args__ = (
+        UniqueConstraint("symbol", "timeframe", "timestamp", "feature_version", name="uq_feature_snapshots_key"),
+        Index("ix_feature_snapshots_lookup", "symbol", "timeframe", "timestamp"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, index=True, nullable=False)
+    timeframe = Column(String, index=True, nullable=False)
+    timestamp = Column(BigInteger, index=True, nullable=False)  # candle open time the features describe
+    feature_version = Column(String, default="v1")
+    features = Column(JSON, nullable=False)
+    provider = Column(String, default="binance_futures")
+    quality_score = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class AdvancedBacktestRun(Base):
+    """One POST /api/backtest/run-advanced execution: possibly multi-symbol,
+    multi-timeframe, with optional out-of-sample split, walk-forward and
+    Monte Carlo stages. The full request + per-combination results are stored
+    as JSON so GET /api/backtest/results/{id}, /walkforward/{id} and
+    /montecarlo/{id} can replay it later without recomputing."""
+    __tablename__ = "advanced_backtest_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(String, unique=True, index=True)
+    strategy = Column(String, index=True)
+    symbols = Column(JSON, nullable=True)
+    timeframes = Column(JSON, nullable=True)
+    preset = Column(String, nullable=True)
+    status = Column(String, default="succeeded")
+    request = Column(JSON, nullable=True)
+    results = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class LearningEvaluation(Base):
+    """One POST /api/learning/evaluate aggregate snapshot: how accurate stored
+    predictions turned out against real recorded outcomes (paper-trade exits
+    where a trade acted; otherwise the actual later close from
+    market_candles). Read-only research output - nothing here mutates live
+    strategy weights or the prediction path."""
+    __tablename__ = "learning_evaluations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    evaluated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    symbol = Column(String, nullable=True, index=True)
+    predictions_considered = Column(Integer, default=0)
+    predictions_resolved = Column(Integer, default=0)
+    direction_hit_rate_pct = Column(Float, nullable=True)
+    avg_error_pct = Column(Float, nullable=True)
+    avg_confidence = Column(Float, nullable=True)
+    confidence_reliability = Column(JSON, nullable=True)  # calibration buckets
+    by_timeframe = Column(JSON, nullable=True)
+    by_regime = Column(JSON, nullable=True)
+    by_direction = Column(JSON, nullable=True)
+    details = Column(JSON, nullable=True)
 
 
 class Portfolio(Base):

@@ -192,6 +192,55 @@ export const api = {
     params.set("limit", String(opts.limit ?? 200));
     return getJson(`/api/logs/recent?${params.toString()}`);
   },
+  // ---- Phase 20: data engine (/api/data) ----
+  dataSources: () => getJson("/api/data/sources"),
+  dataDownload: (body: Record<string, unknown>) =>
+    postJson("/api/data/download", { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+  dataJobs: (limit = 20) => getJson(`/api/data/jobs?limit=${limit}`),
+  dataQuality: (symbol?: string, timeframe?: string) => {
+    const params = new URLSearchParams();
+    if (symbol) params.set("symbol", symbol);
+    if (timeframe) params.set("timeframe", timeframe);
+    const qs = params.toString();
+    return getJson(`/api/data/quality${qs ? `?${qs}` : ""}`);
+  },
+  dataGaps: (symbol: string, timeframe: string) =>
+    getJson(`/api/data/gaps?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`),
+  dataCandles: (symbol: string, timeframe: string, limit = 500) =>
+    getJson(`/api/data/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${limit}`),
+  dataFeatures: (symbol: string, timeframe: string, refresh = true) =>
+    getJson(`/api/data/features?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&refresh=${refresh}`),
+  // ---- Phase 20: advanced backtesting (/api/backtest) ----
+  backtestPresets: () => getJson("/api/backtest/presets"),
+  backtestRunAdvanced: (body: Record<string, unknown>) =>
+    postJson("/api/backtest/run-advanced", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  backtestRuns: (limit = 20) => getJson(`/api/backtest/results?limit=${limit}`),
+  backtestResult: (runId: string) => getJson(`/api/backtest/results/${encodeURIComponent(runId)}`),
+  backtestCompareAdvanced: (symbol: string, timeframe: string) =>
+    getJson(`/api/backtest/compare?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`),
+  backtestWalkforwardAdvanced: (runId: string, trainBars = 500, validateBars = 150) =>
+    getJson(
+      `/api/backtest/walkforward/${encodeURIComponent(runId)}?train_bars=${trainBars}&validate_bars=${validateBars}`
+    ),
+  backtestMontecarloAdvanced: (runId: string, simulations = 1000) =>
+    getJson(`/api/backtest/montecarlo/${encodeURIComponent(runId)}?simulations=${simulations}`),
+  // ---- Phase 20: learning loop (/api/learning) ----
+  learningEvaluate: (symbol?: string) =>
+    postJson("/api/learning/evaluate", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(symbol ? { symbol } : {}),
+    }),
+  learningPerformance: () => getJson("/api/learning/performance"),
+  learningStrategyWeights: () => getJson("/api/learning/strategy-weights"),
+  learningTrainChallenger: (algorithm = "lightgbm") =>
+    postJson("/api/learning/train-challenger", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ algorithm }),
+    }),
+  learningRecommendations: () => getJson("/api/learning/recommendations"),
   riskSettingsGet: () => getJson("/api/risk/settings"),
   riskSettingsUpdate: (patch: Record<string, unknown>) => putJson("/api/risk/settings", patch),
   riskSettingsReset: () => postJson("/api/risk/settings/reset"),

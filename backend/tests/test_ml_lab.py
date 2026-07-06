@@ -33,7 +33,9 @@ from app.ml_lab.algorithms import availability, catalog
 
 def _synthetic_klines(symbol: str, interval: str, limit: int) -> pd.DataFrame:
     """Deterministic trending+noise series ending 'now', unique per symbol."""
-    rng = np.random.default_rng(abs(hash(symbol)) % (2**32))
+    # zlib.crc32 instead of hash(): str hashes are salted per process, which
+    # made this fixture non-deterministic across runs
+    rng = np.random.default_rng(__import__("zlib").crc32(symbol.encode()))
     n = min(int(limit), 1500)
     interval_ms = 3_600_000
     now = int(time.time() * 1000)

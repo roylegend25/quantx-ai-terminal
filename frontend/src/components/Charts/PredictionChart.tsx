@@ -757,7 +757,12 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
           indicators={prefs.indicators}
           showAiOverlay={prefs.aiOverlay}
           showHistory={prefs.history}
-          showBands={prefs.bands}
+          forecastBars={prediction?.forecast?.bars || FORECAST_BARS}
+          showPrice={true}
+          showForecast={true}
+          showUpperBand={prefs.bands}
+          showLowerBand={prefs.bands}
+          showCone={prefs.bands}
           showCrosshair={prefs.crosshair}
           autoScale={prefs.autoScale}
           neon={prefs.neon}

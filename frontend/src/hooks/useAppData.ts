@@ -65,6 +65,18 @@ export function useAppData(authed: boolean | null) {
   const [labCompare, setLabCompare] = useDedupedState<any>(null);
   const [labMonteCarlo, setLabMonteCarlo] = useState<any>(null);
   const [labWalkForward, setLabWalkForward] = useState<any>(null);
+  // ---- Phase 20: data engine / advanced backtest / learning loop ----
+  const [dataSources, setDataSources] = useDedupedState<any>(null);
+  const [dataJobs, setDataJobs] = useDedupedState<any[]>([]);
+  const [dataQuality, setDataQuality] = useDedupedState<any>(null);
+  const [dataGaps, setDataGaps] = useState<any>(null);
+  const [advRun, setAdvRun] = useState<any>(null);
+  const [advRuns, setAdvRuns] = useDedupedState<any[]>([]);
+  const [advWalkForward, setAdvWalkForward] = useState<any>(null);
+  const [advMonteCarlo, setAdvMonteCarlo] = useState<any>(null);
+  const [learningPerformance, setLearningPerformance] = useDedupedState<any>(null);
+  const [learningWeights, setLearningWeights] = useDedupedState<any>(null);
+  const [learningRecommendations, setLearningRecommendations] = useDedupedState<any>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [toast, setToast] = useState("");
   const [toastTone, setToastTone] = useState<"success" | "error">("success");
@@ -89,36 +101,37 @@ export function useAppData(authed: boolean | null) {
 
     setLoading(true);
     try {
-      // Each fetched independently with its own fallback - previously a
-      // transient failure (timeout, 5xx, non-JSON error body) in ANY one of
-      // these blocked the other two from updating at all via Promise.all,
-      // since only this trio (unlike every other call below) had no
-      // per-call .catch(). Prediction is the heaviest of the three (it fans
-      // out into a multi-timeframe consensus fetch + market-intelligence
-      // context), so it's the most likely to time out - when it did, real
-      // freshly-fetched candles were being thrown away along with it,
-      // leaving the chart showing nothing for the affected symbol until a
-      // later poll happened to succeed. Candles/dashboard/prediction now
-      // update independently; a failed leg just keeps its last known value
-      // instead of blanking the other two.
-      const [dash, predRes, candleRows] = await Promise.all([
-        api.dashboard().catch(() => null),
-        api.prediction(symbol, interval).catch(() => null),
-        api.candles(symbol, interval, 220).catch(() => null),
-      ]);
-
+      // Staged, isolated updates: each of these three commits its state the
+      // moment its own request resolves (guarded by isStale), instead of a
+      // single Promise.all gating all three on the SLOWEST. The prediction
+      // endpoint fans out into a 6-timeframe consensus fetch and market
+      // intelligence and routinely takes seconds; candles return in ~300ms.
+      // Awaiting them together meant every symbol/timeframe switch showed
+      // an empty chart until the prediction finished - the "forecast and
+      // even candles disappear after switching" symptom. Failures stay
+      // isolated per-call: a failed leg keeps its last known value.
+      const dashP = api.dashboard().then(
+        (dash) => { if (!isStale() && dash) setDashboard(dash); },
+        () => {}
+      );
+      const predP = api.prediction(symbol, interval).then(
+        (predRes) => { if (!isStale() && predRes) setPrediction(predRes.prediction); },
+        () => {}
+      );
+      const candleP = api.candles(symbol, interval, 220).then(
+        (candleRows) => {
+          if (isStale() || !candleRows) return;
+          setCandles(
+            candleRows.map((x: Candle) => ({
+              ...x,
+              label: new Date(x.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+            }))
+          );
+        },
+        () => {}
+      );
+      await Promise.all([dashP, predP, candleP]);
       if (isStale()) return;
-
-      if (dash) setDashboard(dash);
-      if (predRes) setPrediction(predRes.prediction);
-      if (candleRows) {
-        setCandles(
-          candleRows.map((x: Candle) => ({
-            ...x,
-            label: new Date(x.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-          }))
-        );
-      }
 
       const [ob, tr, pf, pos, hist, ctx, tf, weights, bot, sys, stress, exStatus, exRisk, execStatus, execMetrics, mlModels, mlChampion, mlExperiments, mlDrift] =
         await Promise.all([
@@ -343,6 +356,90 @@ export function useAppData(authed: boolean | null) {
     return res;
   }, []);
 
+  // ---- Phase 20: data engine ----
+  const loadDataEngine = useCallback(async () => {
+    const [sources, jobs, quality] = await Promise.all([
+      api.dataSources().catch(() => null),
+      api.dataJobs(20).catch(() => null),
+      api.dataQuality().catch(() => null),
+    ]);
+    setDataSources(sources);
+    setDataJobs(jobs?.jobs || []);
+    setDataQuality(quality);
+  }, [setDataSources, setDataJobs, setDataQuality]);
+
+  const startDataDownload = useCallback(
+    async (payload: Record<string, unknown>) => {
+      const res = await api.dataDownload(payload);
+      await loadDataEngine();
+      return res;
+    },
+    [loadDataEngine]
+  );
+
+  const loadDataGaps = useCallback(async (gapSymbol: string, timeframe: string) => {
+    const res = await api.dataGaps(gapSymbol, timeframe).catch((e: any) => ({ error: e?.message }));
+    setDataGaps(res);
+    return res;
+  }, []);
+
+  // ---- Phase 20: advanced backtest ----
+  const runAdvancedBacktest = useCallback(async (payload: Record<string, unknown>) => {
+    const res = await api.backtestRunAdvanced(payload);
+    setAdvRun(res?.run || null);
+    setAdvWalkForward(null);
+    setAdvMonteCarlo(null);
+    const runs = await api.backtestRuns(20).catch(() => null);
+    setAdvRuns(runs?.runs || []);
+    return res;
+  }, [setAdvRuns]);
+
+  const loadAdvancedRuns = useCallback(async () => {
+    const runs = await api.backtestRuns(20).catch(() => null);
+    setAdvRuns(runs?.runs || []);
+  }, [setAdvRuns]);
+
+  const loadAdvancedRun = useCallback(async (runId: string) => {
+    const res = await api.backtestResult(runId);
+    setAdvRun(res?.run || null);
+    setAdvWalkForward(null);
+    setAdvMonteCarlo(null);
+    return res;
+  }, []);
+
+  const runAdvancedWalkForward = useCallback(async (runId: string, trainBars = 500, validateBars = 150) => {
+    const res = await api.backtestWalkforwardAdvanced(runId, trainBars, validateBars);
+    setAdvWalkForward(res);
+    return res;
+  }, []);
+
+  const runAdvancedMonteCarlo = useCallback(async (runId: string, simulations = 1000) => {
+    const res = await api.backtestMontecarloAdvanced(runId, simulations);
+    setAdvMonteCarlo(res);
+    return res;
+  }, []);
+
+  // ---- Phase 20: learning loop ----
+  const loadLearning = useCallback(async () => {
+    const [perf, weights, recs] = await Promise.all([
+      api.learningPerformance().catch(() => null),
+      api.learningStrategyWeights().catch(() => null),
+      api.learningRecommendations().catch(() => null),
+    ]);
+    setLearningPerformance(perf?.performance || null);
+    setLearningWeights(weights);
+    setLearningRecommendations(recs);
+  }, [setLearningPerformance, setLearningWeights, setLearningRecommendations]);
+
+  const runLearningEvaluate = useCallback(
+    async (evalSymbol?: string) => {
+      const res = await api.learningEvaluate(evalSymbol);
+      await loadLearning();
+      return res;
+    },
+    [loadLearning]
+  );
+
   const botAction = useCallback(async (action: string) => {
     try {
       const data = await api.botAction(action);
@@ -426,6 +523,28 @@ export function useAppData(authed: boolean | null) {
     runLabCompare,
     runLabMonteCarlo,
     runLabWalkForward,
+    // Phase 20
+    dataSources,
+    dataJobs,
+    dataQuality,
+    dataGaps,
+    advRun,
+    advRuns,
+    advWalkForward,
+    advMonteCarlo,
+    learningPerformance,
+    learningWeights,
+    learningRecommendations,
+    loadDataEngine,
+    startDataDownload,
+    loadDataGaps,
+    runAdvancedBacktest,
+    loadAdvancedRuns,
+    loadAdvancedRun,
+    runAdvancedWalkForward,
+    runAdvancedMonteCarlo,
+    loadLearning,
+    runLearningEvaluate,
   };
 }
 
