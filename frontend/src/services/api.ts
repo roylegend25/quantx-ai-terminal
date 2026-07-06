@@ -112,6 +112,54 @@ export const api = {
     const res = await authFetch(`${API}/api/models/archive/${encodeURIComponent(modelId)}`, { method: "POST" });
     return res.json();
   },
+  // ---- AI Model Lab (/api/ml) ----
+  mlAlgorithms: () => getJson("/api/ml/algorithms"),
+  mlOverview: () => getJson("/api/ml/overview"),
+  mlTrain: (body: Record<string, unknown>) =>
+    postJson("/api/ml/train", { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+  mlJobs: (status?: string, limit = 30) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (status) params.set("status", status);
+    return getJson(`/api/ml/jobs?${params.toString()}`);
+  },
+  mlJob: (jobId: string) => getJson(`/api/ml/jobs/${encodeURIComponent(jobId)}`),
+  mlCancelJob: (jobId: string) => postJson(`/api/ml/jobs/${encodeURIComponent(jobId)}/cancel`),
+  mlRegistry: (status?: string) =>
+    getJson(`/api/ml/registry${status ? `?status=${encodeURIComponent(status)}` : ""}`),
+  mlRegistryDetail: (modelId: string) => getJson(`/api/ml/registry/${encodeURIComponent(modelId)}`),
+  mlRegistryDelete: async (modelId: string) => {
+    const res = await authFetch(`${API}/api/ml/registry/${encodeURIComponent(modelId)}`, { method: "DELETE" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.detail || `Delete failed (${res.status})`);
+    return data;
+  },
+  mlDownloadUrl: (modelId: string) => `${API}/api/ml/registry/${encodeURIComponent(modelId)}/download`,
+  mlPromote: (modelId: string, force = false) =>
+    postJson(`/api/ml/promote/${encodeURIComponent(modelId)}${force ? "?force=true" : ""}`),
+  mlRollback: (modelName: string) => postJson(`/api/ml/rollback/${encodeURIComponent(modelName)}`),
+  mlCompare: () => getJson("/api/ml/compare"),
+  mlDrift: () => getJson("/api/ml/drift"),
+  mlDriftHistory: (days = 30) => getJson(`/api/ml/drift/history?days=${days}`),
+  mlDriftScan: (symbol = "BTCUSDT") =>
+    postJson("/api/ml/drift/scan", { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbol }) }),
+  mlLive: (symbol?: string) => getJson(`/api/ml/live${symbol ? `?symbol=${encodeURIComponent(symbol)}` : ""}`),
+  mlInference: (limit = 50, symbol?: string) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (symbol) params.set("symbol", symbol);
+    return getJson(`/api/ml/inference?${params.toString()}`);
+  },
+  mlPerformanceHistory: (days = 30) => getJson(`/api/ml/history?days=${days}`),
+  mlShap: (modelId: string) => getJson(`/api/ml/shap/${encodeURIComponent(modelId)}`),
+  mlExplain: (predictionId?: number, symbol?: string) =>
+    predictionId != null
+      ? getJson(`/api/ml/explain/${predictionId}`)
+      : getJson(`/api/ml/explain${symbol ? `?symbol=${encodeURIComponent(symbol)}` : ""}`),
+  mlHpoStart: (body: Record<string, unknown>) =>
+    postJson("/api/ml/hpo", { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+  mlHpoResults: () => getJson("/api/ml/hpo/results"),
+  mlSettings: () => getJson("/api/ml/settings"),
+  mlSettingsUpdate: (patch: Record<string, unknown>) => putJson("/api/ml/settings", patch),
+  mlRetrainNow: () => postJson("/api/ml/retrain"),
   labExperiments: (strategy?: string, symbol?: string) => {
     const params = new URLSearchParams();
     if (strategy) params.set("strategy", strategy);
