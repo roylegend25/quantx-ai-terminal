@@ -34,6 +34,9 @@ SCHEDULE_INTERVALS = {
     "monthly": timedelta(days=30),
 }
 
+# Minimum gap between drift-triggered retrain batches (see _retrain_due).
+DRIFT_RETRAIN_COOLDOWN = timedelta(hours=6)
+
 
 def health_check(db=None) -> dict:
     owns_session = db is None
@@ -81,12 +84,37 @@ def cleanup(db=None) -> dict:
 async def _retrain_due(db) -> bool:
     global _last_retrain_check
 
-    now = datetime.now(timezone.utc)
-    interval = SCHEDULE_INTERVALS.get(settings.mlops_retrain_schedule, SCHEDULE_INTERVALS["daily"])
-    scheduled_due = _last_retrain_check is None or (now - _last_retrain_check) >= interval
+    # Dashboard-editable schedule (app/ml_lab/settings_repo.py) takes
+    # precedence over the static env default; "manual" disables scheduled
+    # retraining entirely while leaving the drift trigger configurable.
+    try:
+        from app.ml_lab.settings_repo import get_settings as get_lab_settings
 
-    trigger = retrainer.should_retrain(db=db)
-    return scheduled_due or trigger["due"]
+        lab = get_lab_settings(db=db)["retraining"]
+        schedule = lab.get("schedule", settings.mlops_retrain_schedule)
+        drift_trigger_enabled = bool(lab.get("drift_trigger_enabled", True))
+    except Exception:
+        schedule = settings.mlops_retrain_schedule
+        drift_trigger_enabled = True
+
+    now = datetime.now(timezone.utc)
+    if schedule == "manual":
+        scheduled_due = False
+    else:
+        interval = SCHEDULE_INTERVALS.get(schedule, SCHEDULE_INTERVALS["daily"])
+        scheduled_due = _last_retrain_check is None or (now - _last_retrain_check) >= interval
+
+    # Drift stays elevated for hours once it crosses a threshold - without a
+    # cooldown the trigger fires on EVERY cycle and registers a new
+    # challenger batch each time (observed: v1..v8 sprawl within one
+    # evening). One drift-triggered batch per cooldown window is enough;
+    # the drift doesn't get more drifted by retraining on it again.
+    trigger_due = False
+    if drift_trigger_enabled:
+        cooled_down = _last_retrain_check is None or (now - _last_retrain_check) >= DRIFT_RETRAIN_COOLDOWN
+        if cooled_down:
+            trigger_due = retrainer.should_retrain(db=db)["due"]
+    return scheduled_due or trigger_due
 
 
 async def _run_cycle():
@@ -94,7 +122,14 @@ async def _run_cycle():
 
     db = SessionLocal()
     try:
-        drift_detector.run_full_scan(db=db)
+        # extended scan = the original feature/prediction/market checks plus
+        # data/concept drift and KL/Wasserstein readings (app/ml_lab/drift_ext)
+        try:
+            from app.ml_lab.drift_ext import run_extended_scan
+
+            run_extended_scan(db=db)
+        except Exception:
+            drift_detector.run_full_scan(db=db)
         health_check(db=db)
         cleanup(db=db)
 

@@ -35,10 +35,50 @@ def _migrate_prediction_feature_columns():
         if "stop" not in existing:
             conn.execute(text("ALTER TABLE prediction_features ADD COLUMN stop FLOAT"))
 
+def _migrate_ml_lab_columns():
+    """Columns added by the AI Model Lab (app/ml_lab/) after mlops_models /
+    prediction_features already existed on disk. All nullable - older rows
+    keep NULL rather than fabricated values."""
+    inspector = inspect(engine)
+    tables = inspector.get_table_names()
+
+    if "mlops_models" in tables:
+        existing = {col["name"] for col in inspector.get_columns("mlops_models")}
+        new_columns = {
+            "model_size_bytes": "INTEGER",
+            "training_samples": "INTEGER",
+            "test_samples": "INTEGER",
+            "dataset_source": "VARCHAR",
+            "dataset_spec": "TEXT",
+            "precision": "FLOAT",
+            "recall": "FLOAT",
+            "f1": "FLOAT",
+            "roc_auc": "FLOAT",
+            "avg_confidence": "FLOAT",
+            "avg_prediction_error": "FLOAT",
+            "total_trades": "INTEGER",
+            "inference_rows_per_sec": "FLOAT",
+            "peak_memory_mb": "FLOAT",
+            "cpu_info": "VARCHAR",
+            "gpu_info": "VARCHAR",
+        }
+        with engine.begin() as conn:
+            for name, sql_type in new_columns.items():
+                if name not in existing:
+                    conn.execute(text(f'ALTER TABLE mlops_models ADD COLUMN "{name}" {sql_type}'))
+
+    if "prediction_features" in tables:
+        existing = {col["name"] for col in inspector.get_columns("prediction_features")}
+        if "latency_ms" not in existing:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE prediction_features ADD COLUMN latency_ms FLOAT"))
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_trade_columns()
     _migrate_prediction_feature_columns()
+    _migrate_ml_lab_columns()
 
     db: Session = SessionLocal()
     try:

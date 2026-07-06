@@ -58,6 +58,23 @@ def _row_to_dict(row: MLOpsModel) -> dict:
         "git_commit": row.git_commit,
         "model_path": row.model_path,
         "notes": row.notes,
+        # AI Model Lab fields (nullable on rows written by older paths)
+        "model_size_bytes": row.model_size_bytes,
+        "training_samples": row.training_samples,
+        "test_samples": row.test_samples,
+        "dataset_source": row.dataset_source,
+        "dataset_spec": row.dataset_spec,
+        "precision": row.precision,
+        "recall": row.recall,
+        "f1": row.f1,
+        "roc_auc": row.roc_auc,
+        "avg_confidence": row.avg_confidence,
+        "avg_prediction_error": row.avg_prediction_error,
+        "total_trades": row.total_trades,
+        "inference_rows_per_sec": row.inference_rows_per_sec,
+        "peak_memory_mb": row.peak_memory_mb,
+        "cpu_info": row.cpu_info,
+        "gpu_info": row.gpu_info,
     }
 
 

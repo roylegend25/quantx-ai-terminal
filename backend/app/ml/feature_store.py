@@ -29,12 +29,14 @@ class FeatureStore:
         symbol: str,
         timeframe: str,
         prediction: dict,
+        latency_ms: float | None = None,
         db: Session | None = None,
     ) -> int:
         owns_session = db is None
         db = db or SessionLocal()
         try:
             row = PredictionFeature(
+                latency_ms=latency_ms,
                 symbol=symbol,
                 timeframe=timeframe,
                 direction=prediction.get("direction"),

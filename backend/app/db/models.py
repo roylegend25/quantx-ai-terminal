@@ -48,6 +48,7 @@ class PredictionFeature(Base):
     pnl = Column(Float, nullable=True)
     outcome = Column(String, nullable=True)  # WIN / LOSS
     realized_return = Column(Float, nullable=True)
+    latency_ms = Column(Float, nullable=True)
 
 class StrategyPerformance(Base):
     __tablename__ = "strategy_performance"
@@ -236,6 +237,80 @@ class MLOpsModel(Base):
     git_commit = Column(String, nullable=True)
     model_path = Column(String, nullable=True)
     notes = Column(Text, nullable=True)
+    # --- AI Model Lab additions (app/ml_lab/) - all nullable so rows written
+    # by the older retrainer path stay valid without backfill ---
+    model_size_bytes = Column(Integer, nullable=True)
+    training_samples = Column(Integer, nullable=True)
+    test_samples = Column(Integer, nullable=True)
+    dataset_source = Column(String, nullable=True)  # market_history | trade_outcomes
+    dataset_spec = Column(JSON, nullable=True)
+    precision = Column(Float, nullable=True)
+    recall = Column(Float, nullable=True)
+    f1 = Column(Float, nullable=True)
+    roc_auc = Column(Float, nullable=True)
+    avg_confidence = Column(Float, nullable=True)
+    avg_prediction_error = Column(Float, nullable=True)
+    total_trades = Column(Integer, nullable=True)
+    inference_rows_per_sec = Column(Float, nullable=True)
+    peak_memory_mb = Column(Float, nullable=True)
+    cpu_info = Column(String, nullable=True)
+    gpu_info = Column(String, nullable=True)
+
+
+class MLTrainingJob(Base):
+    """One asynchronous training/HPO job run by app/ml_lab/jobs.py in a
+    separate worker process. The `progress` JSON is rewritten by the worker
+    as training advances (epoch, loss, eta, cpu/ram, samples/sec...) so the
+    UI can poll it without any state living in the API process - a restart
+    mid-job leaves an honest 'running' row whose dead pid gets reaped to
+    'failed' on the next read."""
+    __tablename__ = "ml_training_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(String, unique=True, index=True)
+    kind = Column(String, default="train")  # train | hpo
+    algorithm = Column(String, index=True)
+    model_name = Column(String, index=True)
+    params = Column(JSON, nullable=True)  # dataset spec + hyperparameters / hpo config
+    status = Column(String, default="queued", index=True)  # queued|running|succeeded|failed|cancelled
+    progress = Column(JSON, nullable=True)
+    result_model_id = Column(String, nullable=True)
+    result = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    pid = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+
+class MLModelArtifact(Base):
+    """Evaluation artifacts for one MLOpsModel version, one row per kind:
+    confusion_matrix, roc_curve, pr_curve, calibration_curve, lift_gain,
+    importance (native SHAP summary or permutation importance),
+    shap_sample (per-row contributions for beeswarm plots),
+    training_curve, hpo_trials. Pure JSON payloads computed from real
+    holdout data by app/ml_lab/runner.py - never synthesized after the
+    fact."""
+    __tablename__ = "ml_model_artifacts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    model_id = Column(String, index=True)
+    kind = Column(String, index=True)
+    payload = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class MLLabSettings(Base):
+    """Singleton row (id=1) of dashboard-editable AI-lab configuration:
+    automatic-promotion thresholds and the retraining schedule/drift
+    trigger (app/ml_lab/settings_repo.py)."""
+    __tablename__ = "ml_lab_settings"
+
+    id = Column(Integer, primary_key=True, default=1)
+    data = Column(JSON, nullable=True)
+    updated_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
 
 
 class MLOpsExperiment(Base):

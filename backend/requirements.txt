@@ -28,4 +28,5 @@ tensorflow
 matplotlib
 plotly
 scipy
+optuna
 pytest

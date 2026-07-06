@@ -352,6 +352,10 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
                 symbol=symbol,
                 timeframe=interval,
                 prediction=pred,
+                # end-to-end latency up to this point (klines fetch +
+                # features + ensemble + consensus) - stored per row so the
+                # AI Lab inference monitor reports measured latency
+                latency_ms=round((time.perf_counter() - start) * 1000, 2),
             )
         except Exception:
             pred["feature_id"] = None
