@@ -3,14 +3,18 @@ from datetime import timezone
 
 from fastapi import APIRouter, HTTPException, Query
 import httpx
-from app.db.models import PredictionFeature
+from app.data_sources.downloader import load_candles as load_cached_candles
+from app.data_sources.validator import MIN_USABLE_QUALITY
+from app.db.models import DataQualityReport, PredictionFeature
 from app.db.session import SessionLocal
 from app.quant.forecast import build_forecast
 from app.quant.indicators import compute_features
 from app.trading import risk_manager
 from app.trading.risk_manager import calculate_levels
+from app.strategy.ensemble import NO_TRADE_BAND as ENSEMBLE_NO_TRADE_BAND
 from app.strategy.ensemble import evaluate as ensemble_evaluate
 from app.intelligence import market_intelligence
+from app.ml_lab import champion_gate
 from app.timeframes.multi_timeframe import evaluate_all as evaluate_all_timeframes
 from app.ml.feature_store import store as feature_store
 from app.monitoring.logging import get_logger, log_event
@@ -74,9 +78,35 @@ def _consensus_adjustment(consensus: dict | None, direction: str) -> float:
     return round(-MTF_DISAGREE_PENALTY_MAX * agreement, 1)
 
 
-def make_prediction(features: dict, market_context: dict | None = None, consensus: dict | None = None):
+def make_prediction(
+    features: dict,
+    market_context: dict | None = None,
+    consensus: dict | None = None,
+    data_quality: dict | None = None,
+):
     ens = ensemble_evaluate(features, market_context)
     decision = ens["ensemble"]
+
+    # ML Champion gate (app/ml_lab/champion_gate.py): the promoted Champion
+    # drives the decision only when it is explicitly enabled, exists, loads,
+    # and the data-quality verdict is OK - in every other case the strategy
+    # ensemble decision above stands untouched. The gate never raises.
+    champion_signal = champion_gate.maybe_predict(features, data_quality)
+    if champion_signal.get("used"):
+        p_up_pct = champion_signal["p_up"] * 100
+        # same no-trade band the ensemble uses, so a coin-flip Champion
+        # probability doesn't force a direction the ensemble would not
+        if abs(p_up_pct - 50) <= ENSEMBLE_NO_TRADE_BAND:
+            champion_direction = "NO_TRADE"
+        else:
+            champion_direction = champion_signal["direction"]
+        decision = {
+            **decision,
+            "direction": champion_direction,
+            "confidence": champion_signal["confidence"] if champion_direction != "NO_TRADE" else 0.0,
+            "probability_up": round(p_up_pct),
+            "probability_down": round(100 - p_up_pct),
+        }
 
     # candle_count is only present when features came from compute_features()
     # (the real pipeline) - a hand-built features dict (unit tests exercising
@@ -85,7 +115,11 @@ def make_prediction(features: dict, market_context: dict | None = None, consensu
     candle_count = features.get("candle_count")
     insufficient_history = candle_count is not None and candle_count < MIN_CANDLES_FOR_PREDICTION
     stale_feed = bool(features.get("stale"))
-    if insufficient_history or stale_feed:
+    # data_quality comes from the endpoint (validated-store quality report +
+    # live/cached provenance); an explicitly unreliable dataset is never
+    # traded on, same as a stale or too-short one.
+    data_unreliable = bool(data_quality) and data_quality.get("reliable") is False
+    if insufficient_history or stale_feed or data_unreliable:
         decision = {**decision, "direction": "NO_TRADE", "confidence": 0.0}
 
     consensus_adjustment = _consensus_adjustment(consensus, decision["direction"])
@@ -120,6 +154,11 @@ def make_prediction(features: dict, market_context: dict | None = None, consensu
 
     if not risk_settings["paper_trading_enabled"]:
         risk_allowed, risk_reason = False, "Paper trading is disabled in risk settings"
+    elif data_unreliable:
+        risk_allowed, risk_reason = (
+            False,
+            data_quality.get("reason") or "Market data quality below the usable threshold - trading blocked",
+        )
     elif insufficient_history:
         risk_allowed, risk_reason = (
             False,
@@ -161,6 +200,8 @@ def make_prediction(features: dict, market_context: dict | None = None, consensu
         "market_context_adjustment": ens["market_context_adjustment"],
         "multi_timeframe_consensus": consensus,
         "multi_timeframe_adjustment": consensus_adjustment,
+        "ml_champion": champion_signal,
+        "data_quality": data_quality,
         "risk": {
             "allowed": risk_allowed,
             "reason": risk_reason,
@@ -288,6 +329,129 @@ def prediction_history(
     }
 
 
+# A cached candle set older than this many intervals is too stale to act on
+# even as a fallback - the response then degrades to an explicit NO_TRADE.
+CACHE_FRESHNESS_INTERVALS = 3
+
+
+async def _fetch_candles_with_fallback(symbol: str, interval: str, limit: int) -> tuple[list[dict], dict]:
+    """Live Binance klines, falling back to the validated market_candles
+    store when the provider is unreachable. Returns (candles, provenance).
+    Cached candles are handed to the exact same pipeline - compute_features'
+    staleness check and the data-quality gate decide whether they are still
+    tradable, so a provider outage can never fabricate a fresh signal."""
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"{BINANCE_FAPI}/fapi/v1/klines",
+                params={"symbol": symbol, "interval": interval, "limit": limit},
+            )
+            r.raise_for_status()
+        candles = [
+            {
+                "time": k[0],
+                "open": float(k[1]),
+                "high": float(k[2]),
+                "low": float(k[3]),
+                "close": float(k[4]),
+                "volume": float(k[5]),
+            }
+            for k in r.json()
+        ]
+        return candles, {"source": "binance_live", "provider_ok": True, "provider_error": None}
+    except (httpx.HTTPError, ValueError) as exc:
+        cached = load_cached_candles(symbol, interval, limit=limit)
+        return (
+            [
+                {"time": c["time"], "open": c["open"], "high": c["high"], "low": c["low"], "close": c["close"], "volume": c["volume"]}
+                for c in cached
+            ],
+            {"source": "cached_db", "provider_ok": False, "provider_error": repr(exc)},
+        )
+
+
+def _data_quality_block(symbol: str, interval: str, provenance: dict, candles: list[dict]) -> dict:
+    """Reliability verdict for this prediction's input data, combining the
+    latest stored quality report with live/cached provenance. `reliable` is
+    the single flag the risk gate acts on; `reason` explains a False."""
+    db = SessionLocal()
+    try:
+        report = (
+            db.query(DataQualityReport)
+            .filter(DataQualityReport.symbol == symbol, DataQualityReport.timeframe == interval)
+            .order_by(DataQualityReport.created_at.desc())
+            .first()
+        )
+    finally:
+        db.close()
+
+    block = {
+        "source": provenance["source"],
+        "provider_ok": provenance["provider_ok"],
+        "provider_error": provenance["provider_error"],
+        "quality_score": report.quality_score if report else None,
+        "quality_checked_at": report.created_at.isoformat() if report and report.created_at else None,
+        "last_candle_time": candles[-1]["time"] if candles else None,
+        "reliable": True,
+        "reason": None,
+    }
+
+    if not candles:
+        block["reliable"] = False
+        block["reason"] = "Market data provider unavailable and no cached candles exist - NO_TRADE"
+        return block
+
+    if provenance["source"] == "cached_db":
+        age_ms = time.time() * 1000 - float(candles[-1]["time"])
+        max_age_ms = SUPPORTED_INTERVALS_MS[interval] * CACHE_FRESHNESS_INTERVALS
+        if age_ms > max_age_ms:
+            block["reliable"] = False
+            block["reason"] = (
+                f"Provider unavailable and cached {interval} data is {age_ms / 60000:.0f}m old "
+                f"(limit {max_age_ms / 60000:.0f}m) - NO_TRADE"
+            )
+            return block
+        # Fresh-enough cache: only trust it if its stored quality clears the bar.
+        if report is not None and report.quality_score is not None and report.quality_score < MIN_USABLE_QUALITY:
+            block["reliable"] = False
+            block["reason"] = (
+                f"Cached {symbol} {interval} data quality {report.quality_score:.1f} is below the usable "
+                f"threshold {MIN_USABLE_QUALITY} - trading blocked"
+            )
+    return block
+
+
+def _no_data_response(symbol: str, interval: str, data_quality: dict) -> dict:
+    """Honest degraded response when there is no market data at all: an
+    explicit NO_TRADE with empty forecast arrays and the blocking reason -
+    nothing fabricated, no invented prices."""
+    reason = data_quality["reason"]
+    return {
+        "symbol": symbol,
+        "interval": interval,
+        "timeframe": interval,
+        "reason": reason,
+        "direction": "NO_TRADE",
+        "confidence": 0.0,
+        "probability_up": None,
+        "probability_down": None,
+        "current_price": None,
+        "target": None,
+        "stop": None,
+        "forecast_points": [],
+        "upper_band_points": [],
+        "lower_band_points": [],
+        "prediction_horizon": {"bars": 0, "interval": interval, "horizon_ms": 0, "band_basis": None, "reason": reason},
+        "prediction": {
+            "direction": "NO_TRADE",
+            "confidence": 0.0,
+            "data_quality": data_quality,
+            "risk": {"allowed": False, "reason": reason},
+            "computed_at": int(time.time() * 1000),
+        },
+    }
+
+
 @router.get("/{symbol}")
 async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = None, limit: int = 220):
     symbol = symbol.upper()
@@ -310,24 +474,14 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
         return cached["response"]
 
     with span("prediction", symbol=symbol, interval=interval):
-        async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.get(
-                f"{BINANCE_FAPI}/fapi/v1/klines",
-                params={"symbol": symbol, "interval": interval, "limit": limit},
-            )
-            r.raise_for_status()
+        candles, provenance = await _fetch_candles_with_fallback(symbol, interval, limit)
+        data_quality = _data_quality_block(symbol, interval, provenance, candles)
 
-        candles = [
-            {
-                "time": k[0],
-                "open": float(k[1]),
-                "high": float(k[2]),
-                "low": float(k[3]),
-                "close": float(k[4]),
-                "volume": float(k[5]),
-            }
-            for k in r.json()
-        ]
+        if not candles:
+            # Provider down and nothing cached: degraded-but-honest NO_TRADE
+            # (spec: never fabricate data). Deliberately not cached so the
+            # next request retries the provider immediately.
+            return _no_data_response(symbol, interval, data_quality)
 
         features = compute_features(candles)["symbol_features"]
 
@@ -341,7 +495,7 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
         except Exception:
             consensus = None
 
-        pred = make_prediction(features, market_context, consensus)
+        pred = make_prediction(features, market_context, consensus, data_quality=data_quality)
         pred["computed_at"] = int(time.time() * 1000)
 
         try:
@@ -419,6 +573,7 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
         "current_price": pred["price"],
         "target": pred["target"],
         "stop": pred["stop"],
+        "data_quality": data_quality,
         "forecast_points": forecast["forecast_points"],
         "upper_band_points": forecast["upper_band_points"],
         "lower_band_points": forecast["lower_band_points"],

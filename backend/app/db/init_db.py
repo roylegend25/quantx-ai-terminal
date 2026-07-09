@@ -61,6 +61,7 @@ def _migrate_ml_lab_columns():
             "peak_memory_mb": "FLOAT",
             "cpu_info": "VARCHAR",
             "gpu_info": "VARCHAR",
+            "oos_accuracy": "FLOAT",
         }
         with engine.begin() as conn:
             for name, sql_type in new_columns.items():

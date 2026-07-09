@@ -255,6 +255,10 @@ class MLOpsModel(Base):
     peak_memory_mb = Column(Float, nullable=True)
     cpu_info = Column(String, nullable=True)
     gpu_info = Column(String, nullable=True)
+    # mean out-of-sample accuracy across walk-forward folds
+    # (app/ml_lab/walk_forward.py); NULL for versions trained before the
+    # walk-forward step existed or for sequence models where it is skipped
+    oos_accuracy = Column(Float, nullable=True)
 
 
 class MLTrainingJob(Base):
@@ -298,6 +302,25 @@ class MLModelArtifact(Base):
     kind = Column(String, index=True)
     payload = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class MLNotification(Base):
+    """In-app MLOps notification feed (app/ml_lab/notifications.py): one row
+    per lifecycle event - training started/completed/failed, challenger
+    created/rejected, champion promoted/rolled back, drift and data-quality
+    warnings. Rows are the source of truth for the UI bell; external
+    channels (Telegram/Discord/SMTP) are best-effort mirrors of these rows,
+    never the other way around."""
+    __tablename__ = "ml_notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event = Column(String, index=True)  # training_started | training_completed | ...
+    severity = Column(String, default="info", index=True)  # info | success | warning | error
+    title = Column(String)
+    message = Column(Text, nullable=True)
+    data = Column(JSON, nullable=True)
+    read = Column(Boolean, default=False, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
 
 class MLLabSettings(Base):

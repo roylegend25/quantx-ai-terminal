@@ -75,6 +75,7 @@ def _row_to_dict(row: MLOpsModel) -> dict:
         "peak_memory_mb": row.peak_memory_mb,
         "cpu_info": row.cpu_info,
         "gpu_info": row.gpu_info,
+        "oos_accuracy": row.oos_accuracy,
     }
 
 
@@ -253,8 +254,10 @@ class ModelRegistry:
 
     def promote_to_champion(self, model_id: str, db: Session | None = None) -> dict | None:
         """Promotes one model version to Champion, archiving whichever
-        version (if any) previously held that status for the same
-        model_name. Never deletes a row."""
+        version previously held that status. There is exactly one Champion
+        across all model_names (the prediction engine loads a single global
+        Champion), so every other Champion row is archived - the crown can
+        move between algorithms. Never deletes a row."""
         owns_session = db is None
         db = db or SessionLocal()
         try:
@@ -262,13 +265,13 @@ class ModelRegistry:
             if row is None:
                 return None
 
-            previous_champion = (
+            previous_champions = (
                 db.query(MLOpsModel)
-                .filter(MLOpsModel.model_name == row.model_name, MLOpsModel.status == STATUS_CHAMPION)
+                .filter(MLOpsModel.status == STATUS_CHAMPION)
                 .filter(MLOpsModel.id != row.id)
-                .first()
+                .all()
             )
-            if previous_champion is not None:
+            for previous_champion in previous_champions:
                 previous_champion.status = STATUS_ARCHIVED
 
             row.status = STATUS_CHAMPION

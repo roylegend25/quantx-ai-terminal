@@ -70,6 +70,7 @@ def _reap_orphans(db: Session):
     reason instead of leaving it running forever."""
     rows = db.query(MLTrainingJob).filter(MLTrainingJob.status == "running").all()
     changed = False
+    orphaned = []
     for row in rows:
         if not _pid_alive(row.pid):
             row.status = "failed"
@@ -79,8 +80,20 @@ def _reap_orphans(db: Session):
             )
             row.finished_at = datetime.now(timezone.utc)
             changed = True
+            orphaned.append((row.job_id, row.model_name, row.algorithm))
     if changed:
         db.commit()
+        from app.ml_lab import notifications
+
+        for job_id, model_name, algorithm in orphaned:
+            notifications.notify(
+                notifications.EVENT_TRAINING_FAILED,
+                title=f"Training failed: {model_name}",
+                message=f"{algorithm} job {job_id}: worker process disappeared without reporting a result",
+                severity="error",
+                data={"job_id": job_id, "algorithm": algorithm},
+                db=db,
+            )
 
 
 def _spawn(row: MLTrainingJob, db: Session):
@@ -95,6 +108,17 @@ def _spawn(row: MLTrainingJob, db: Session):
     row.pid = proc.pid
     row.started_at = datetime.now(timezone.utc)
     db.commit()
+
+    from app.ml_lab import notifications
+
+    notifications.notify(
+        notifications.EVENT_TRAINING_STARTED,
+        title=f"Training started: {row.model_name}",
+        message=f"{row.algorithm} ({row.kind}) job {row.job_id} is running",
+        severity="info",
+        data={"job_id": row.job_id, "algorithm": row.algorithm, "kind": row.kind},
+        db=db,
+    )
 
 
 def _start_queued_if_free(db: Session):

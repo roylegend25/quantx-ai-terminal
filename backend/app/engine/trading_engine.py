@@ -81,6 +81,7 @@ class TradingEngine:
             spread_pct = None
 
         features = prediction.get("features") or {}
+        data_quality = prediction.get("data_quality") or {}
         signal_time = datetime.now(timezone.utc)
 
         decision = risk_manager.evaluate_risk(
@@ -92,6 +93,8 @@ class TradingEngine:
             spread_pct=spread_pct,
             volume=features.get("volume"),
             volume_sma20=features.get("volume_sma20"),
+            data_reliable=data_quality.get("reliable"),
+            data_reason=data_quality.get("reason"),
         )
 
         log_event(

@@ -208,6 +208,7 @@ def test_promotion_rules_fail_closed_on_missing_metrics(clean_lab_tables):
     good = {
         "val_accuracy": 0.6, "sharpe_ratio": 1.0, "profit_factor": 1.5,
         "total_trades": 50, "max_drawdown_pct": 10.0, "avg_confidence": 0.7,
+        "win_rate": 60.0, "test_samples": 120, "oos_accuracy": 0.55,
     }
     assert settings_repo.evaluate_promotion_rules(good)["met"] is True
 

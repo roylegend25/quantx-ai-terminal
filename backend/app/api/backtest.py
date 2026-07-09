@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.backtest.engine import BacktestEngine
 from app.backtest.data_loader import save_history
 from app.db.session import get_db
-from app.research import advanced_backtest
+from app.research import advanced_backtest, optimizer
 
 router = APIRouter(prefix="/api/backtest", tags=["Backtest"])
 
@@ -42,9 +42,51 @@ class AdvancedRunRequest(BaseModel):
     max_drawdown_stop_pct: float | None = None
 
 
+class OptimizeRequest(BaseModel):
+    strategy: str = "ensemble"
+    symbol: str = "BTCUSDT"
+    timeframe: str = "5m"
+    start_date: str | None = None
+    end_date: str | None = None
+    starting_balance: float = 10000.0
+    position_size_usd: float = 1000.0
+    sl_mults: list[float] | None = None
+    tp_mults: list[float] | None = None
+    entry_thresholds: list[float] | None = None
+
+
 @router.get("/presets")
 async def presets():
     return {"presets": advanced_backtest.PRESETS}
+
+
+@router.post("/optimize")
+def optimize(req: OptimizeRequest, db: Session = Depends(get_db)):
+    """Grid search over execution-level risk parameters, replayed on candles
+    from the validated market_candles store (CSV fallback, same as
+    run-advanced). Results carry their data provenance."""
+    try:
+        df, data_info = advanced_backtest.load_history_db(
+            req.symbol, req.timeframe, req.start_date, req.end_date, db=db
+        )
+        result = optimizer.optimize(
+            strategy=req.strategy,
+            symbol=req.symbol,
+            timeframe=req.timeframe,
+            starting_balance=req.starting_balance,
+            position_size_usd=req.position_size_usd,
+            sl_mults=req.sl_mults,
+            tp_mults=req.tp_mults,
+            entry_thresholds=req.entry_thresholds,
+            df=df,
+            db=db,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except advanced_backtest.DataNotAvailableError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    result["data_info"] = data_info
+    return {"ok": True, "optimization": result}
 
 
 @router.post("/run-advanced")

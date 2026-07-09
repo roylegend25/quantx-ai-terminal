@@ -65,6 +65,20 @@ class Settings(BaseSettings):
     champion_max_latency_ms: float = 500.0
     max_allowed_drift: float = 0.25
 
+    # --- Optional external MLOps notification channels (app/ml_lab/
+    # notifications.py). All empty by default: with no env vars set, only
+    # in-app notification rows are written and no network call is ever
+    # attempted. ---
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    discord_webhook_url: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    notify_email_to: str = ""
+
     class Config:
         env_file = ".env"
         extra = "ignore"

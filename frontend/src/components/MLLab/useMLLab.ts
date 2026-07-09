@@ -34,6 +34,17 @@ export type MLJob = {
 
 export type RegistryModel = Record<string, any>;
 
+export type MLNotificationItem = {
+  id: number;
+  event: string;
+  severity: "info" | "success" | "warning" | "error";
+  title: string;
+  message: string | null;
+  data: Record<string, any> | null;
+  read: boolean;
+  created_at: string | null;
+};
+
 export function useMLLab(active: boolean) {
   const [algorithms, setAlgorithms] = useState<Algorithm[]>([]);
   const [hpoSupported, setHpoSupported] = useState<string[]>([]);
@@ -50,6 +61,12 @@ export function useMLLab(active: boolean) {
   const [hpoResults, setHpoResults] = useState<any[]>([]);
   const [explanation, setExplanation] = useState<any>(null);
   const [modelDetail, setModelDetail] = useState<any>(null);
+  const [schedule, setSchedule] = useState<any>(null);
+  const [championInfo, setChampionInfo] = useState<any>(null);
+  const [notifications, setNotifications] = useState<MLNotificationItem[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [notifChannels, setNotifChannels] = useState<string[]>([]);
+  const [preflightState, setPreflightState] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -66,8 +83,20 @@ export function useMLLab(active: boolean) {
     }
   }, []);
 
+  const refreshNotifications = useCallback(async () => {
+    try {
+      const res = await api.mlNotifications(50);
+      setNotifications(res?.notifications || []);
+      setUnreadCount(res?.unread ?? 0);
+      setNotifChannels(res?.external_channels || []);
+      return res;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const refreshAll = useCallback(async () => {
-    const [ov, cmp, reg, dr, drh, lv, inf, hist, st, hpo, expl] = await Promise.all([
+    const [ov, cmp, reg, dr, drh, lv, inf, hist, st, hpo, expl, sched, champ] = await Promise.all([
       api.mlOverview().catch(() => null),
       api.mlCompare().catch(() => null),
       api.mlRegistry().catch(() => null),
@@ -79,6 +108,8 @@ export function useMLLab(active: boolean) {
       api.mlSettings().catch(() => null),
       api.mlHpoResults().catch(() => null),
       api.mlExplain().catch(() => null),
+      api.mlSchedule().catch(() => null),
+      api.mlChampion().catch(() => null),
     ]);
     if (!activeRef.current) return;
     if (ov) setOverview(ov);
@@ -92,9 +123,12 @@ export function useMLLab(active: boolean) {
     if (st) setSettings(st.settings || null);
     if (hpo) setHpoResults(hpo.results || []);
     if (expl) setExplanation(expl);
+    if (sched) setSchedule(sched);
+    if (champ) setChampionInfo(champ);
+    await refreshNotifications();
     setError(ov ? null : "AI Lab API unreachable — check that the backend is running");
     setLoading(false);
-  }, []);
+  }, [refreshNotifications]);
 
   // initial load: catalog once + full bundle, then ambient 15s refresh
   useEffect(() => {
@@ -189,6 +223,49 @@ export function useMLLab(active: boolean) {
     return res;
   }, [refreshJobs]);
 
+  const trainNow = useCallback(async (algorithms?: string[]) => {
+    const res = await api.mlTrainNow(algorithms);
+    await refreshJobs();
+    await refreshNotifications();
+    return res;
+  }, [refreshJobs, refreshNotifications]);
+
+  const saveSchedule = useCallback(async (patch: Record<string, unknown>) => {
+    const res = await api.mlScheduleUpdate(patch);
+    setSchedule((prev: any) => ({ ...(prev || {}), schedule: res?.schedule }));
+    return res;
+  }, []);
+
+  const runPreflight = useCallback(async () => {
+    setPreflightState({ loading: true });
+    try {
+      const res = await api.mlPreflight();
+      setPreflightState(res);
+      return res;
+    } catch (e: any) {
+      setPreflightState({ healthy: false, error: e?.message || "Preflight check failed" });
+      return null;
+    }
+  }, []);
+
+  const rollbackCurrent = useCallback(async (modelName?: string) => {
+    const res = await api.mlRollbackCurrent(modelName);
+    await refreshAll();
+    return res;
+  }, [refreshAll]);
+
+  const markNotificationRead = useCallback(async (id: number) => {
+    const res = await api.mlNotificationRead(id);
+    await refreshNotifications();
+    return res;
+  }, [refreshNotifications]);
+
+  const markAllNotificationsRead = useCallback(async () => {
+    const res = await api.mlNotificationsReadAll();
+    await refreshNotifications();
+    return res;
+  }, [refreshNotifications]);
+
   const loadModelDetail = useCallback(async (modelId: string) => {
     setModelDetail({ loading: true, model_id: modelId });
     try {
@@ -210,9 +287,12 @@ export function useMLLab(active: boolean) {
   return {
     algorithms, hpoSupported, overview, jobs, registry, compare, drift, driftHistory,
     live, inference, history, settings, hpoResults, explanation, modelDetail,
+    schedule, championInfo, notifications, unreadCount, notifChannels, preflightState,
     loading, error, hasActiveJob,
     train, cancelJob, promote, rollback, deleteModel, startHpo, scanDrift,
     saveSettings, retrainNow, loadModelDetail, explainPrediction, refreshAll,
+    trainNow, saveSchedule, runPreflight, rollbackCurrent,
+    refreshNotifications, markNotificationRead, markAllNotificationsRead,
   };
 }
 

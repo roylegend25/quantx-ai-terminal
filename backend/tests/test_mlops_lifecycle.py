@@ -77,6 +77,18 @@ def test_rollback_restores_previous_champion():
 
 
 def test_rollback_without_prior_champion_raises():
+    # A previous Champion may live in any lineage (the crown moves between
+    # algorithms), so this test needs a registry with no ex-Champion anywhere.
+    from app.db.models import MLOpsModel
+    from app.db.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        db.query(MLOpsModel).delete()
+        db.commit()
+    finally:
+        db.close()
+
     model_name = _unique_name("no_history_model")
     only = _register_passing_challenger(model_name)
     maybe_promote(only["model_id"])

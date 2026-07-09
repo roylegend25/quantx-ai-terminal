@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.data_sources import coinglass, downloader, scheduler as data_scheduler
+from app.data_sources import coinglass, cryptoquant, downloader, glassnode, hyblock, scheduler as data_scheduler
 from app.data_sources.normalizer import SUPPORTED_SYMBOLS, TIMEFRAMES_MS
 from app.db.models import DataQualityReport
 from app.db.session import get_db
@@ -44,6 +44,9 @@ async def sources():
             {"name": "alternative.me", "available": True, "kind": "sentiment", "requires_key": False},
             {"name": "coingecko", "available": True, "kind": "macro", "requires_key": False},
             coinglass.status() | {"kind": "derivatives", "requires_key": True, "name": "coinglass"},
+            hyblock.status() | {"kind": "liquidity", "requires_key": True, "name": "hyblock"},
+            cryptoquant.status() | {"kind": "on-chain", "requires_key": True, "name": "cryptoquant"},
+            glassnode.status() | {"kind": "on-chain", "requires_key": True, "name": "glassnode"},
         ],
         "scheduler": {
             "enabled": data_scheduler.enabled(),

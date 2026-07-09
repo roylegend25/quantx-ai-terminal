@@ -160,6 +160,25 @@ export const api = {
   mlSettings: () => getJson("/api/ml/settings"),
   mlSettingsUpdate: (patch: Record<string, unknown>) => putJson("/api/ml/settings", patch),
   mlRetrainNow: () => postJson("/api/ml/retrain"),
+  mlSchedule: () => getJson("/api/ml/schedule"),
+  mlScheduleUpdate: (patch: Record<string, unknown>) => putJson("/api/ml/schedule", patch),
+  mlTrainNow: (algorithms?: string[]) =>
+    postJson("/api/ml/train-now", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ algorithms: algorithms ?? null }),
+    }),
+  mlPreflight: () => getJson("/api/ml/preflight"),
+  mlChampion: () => getJson("/api/ml/champion"),
+  mlCompareModel: (modelId: string) => getJson(`/api/ml/compare/${encodeURIComponent(modelId)}`),
+  mlRollbackCurrent: (modelName?: string) =>
+    postJson("/api/ml/rollback", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model_name: modelName ?? null }),
+    }),
+  mlNotifications: (limit = 50, unreadOnly = false) =>
+    getJson(`/api/ml/notifications?limit=${limit}${unreadOnly ? "&unread_only=true" : ""}`),
+  mlNotificationRead: (id: number) => postJson(`/api/ml/notifications/${id}/read`),
+  mlNotificationsReadAll: () => postJson("/api/ml/notifications/read-all"),
   labExperiments: (strategy?: string, symbol?: string) => {
     const params = new URLSearchParams();
     if (strategy) params.set("strategy", strategy);
@@ -206,8 +225,12 @@ export const api = {
   },
   dataGaps: (symbol: string, timeframe: string) =>
     getJson(`/api/data/gaps?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`),
-  dataCandles: (symbol: string, timeframe: string, limit = 500) =>
-    getJson(`/api/data/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${limit}`),
+  dataCandles: (symbol: string, timeframe: string, limit = 500, startDate?: string, endDate?: string) => {
+    const params = new URLSearchParams({ symbol, timeframe, limit: String(limit) });
+    if (startDate) params.set("start_date", startDate);
+    if (endDate) params.set("end_date", endDate);
+    return getJson(`/api/data/candles?${params.toString()}`);
+  },
   dataFeatures: (symbol: string, timeframe: string, refresh = true) =>
     getJson(`/api/data/features?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&refresh=${refresh}`),
   // ---- Phase 20: advanced backtesting (/api/backtest) ----
@@ -227,6 +250,11 @@ export const api = {
     ),
   backtestMontecarloAdvanced: (runId: string, simulations = 1000) =>
     getJson(`/api/backtest/montecarlo/${encodeURIComponent(runId)}?simulations=${simulations}`),
+  backtestOptimize: (body: Record<string, unknown>) =>
+    postJson("/api/backtest/optimize", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   // ---- Phase 20: learning loop (/api/learning) ----
   learningEvaluate: (symbol?: string) =>
     postJson("/api/learning/evaluate", {

@@ -37,10 +37,6 @@ function App() {
     data.botAction("stop");
   }, [data.botAction]);
 
-  const handleBellClick = useCallback(() => {
-    data.showToast("Notifications are coming soon");
-  }, [data.showToast]);
-
   if (authed === null) {
     return null;
   }
@@ -96,7 +92,7 @@ function App() {
       />
 
       <main className="main">
-        <Topbar dashboard={data.dashboard} onBellClick={handleBellClick} theme={theme} />
+        <Topbar dashboard={data.dashboard} theme={theme} />
 
         {data.toast && <div className={`toast ${data.toastTone === "error" ? "toast-error" : ""}`}>{data.toast}</div>}
 

@@ -19,6 +19,10 @@ DEFAULT_SL_MULTS = [1.0, 1.5, 2.0, 2.5]
 DEFAULT_TP_MULTS = [2.0, 3.0, 4.0]
 DEFAULT_ENTRY_THRESHOLDS = [40.0, 50.0, 60.0]
 
+# A grid larger than this re-runs the simulator enough times to stall a
+# request-scoped call; the API rejects it up front rather than timing out.
+MAX_GRID_COMBINATIONS = 200
+
 
 def _score(metrics: dict) -> float:
     if metrics.get("sharpe_ratio") is not None:
@@ -38,14 +42,27 @@ def optimize(
     sl_mults: list[float] | None = None,
     tp_mults: list[float] | None = None,
     entry_thresholds: list[float] | None = None,
+    df=None,
     db=None,
 ) -> dict:
+    """`df` lets a caller supply pre-loaded candles-with-indicators (the
+    Phase 20 API loads them from the validated market_candles store via
+    advanced_backtest.load_history_db); without it this falls back to the
+    legacy CSV history like the rest of the Phase 16 lab."""
     cost = cost or execution_sim.CostConfig()
     sl_mults = sl_mults or DEFAULT_SL_MULTS
     tp_mults = tp_mults or DEFAULT_TP_MULTS
     entry_thresholds = entry_thresholds or DEFAULT_ENTRY_THRESHOLDS
 
-    df = lab_engine.load_history(symbol, timeframe, start_date, end_date)
+    combinations = len(sl_mults) * len(tp_mults) * len(entry_thresholds)
+    if combinations > MAX_GRID_COMBINATIONS:
+        raise ValueError(
+            f"Grid of {combinations} combinations exceeds the maximum of {MAX_GRID_COMBINATIONS} - "
+            "trim sl_mults/tp_mults/entry_thresholds"
+        )
+
+    if df is None:
+        df = lab_engine.load_history(symbol, timeframe, start_date, end_date)
     signals = lab_strategies.generate_signals(strategy, df, db=db)
 
     results = []

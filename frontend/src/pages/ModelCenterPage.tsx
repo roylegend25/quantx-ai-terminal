@@ -4,23 +4,29 @@ import {
   Activity,
   AlertTriangle,
   Award,
+  Bell,
   BrainCircuit,
+  CalendarClock,
+  CheckCircle2,
   Crown,
   Download,
   FlaskConical,
   Gauge,
   LineChart as LineChartIcon,
+  ListChecks,
+  ListTodo,
   PlayCircle,
   RadioTower,
   RotateCw,
-  Settings2,
+  ShieldCheck,
   Square,
   Trash2,
+  XCircle,
 } from "lucide-react";
 import Card from "../components/Layout/Card";
 import { fmtNum, fmtPct } from "../lib/format";
 import type { AppData } from "../hooks/useAppData";
-import { useMLLab, type Algorithm, type MLJob } from "../components/MLLab/useMLLab";
+import { useMLLab, type Algorithm, type MLJob, type MLNotificationItem } from "../components/MLLab/useMLLab";
 import {
   EmptySlate,
   KpiTile,
@@ -44,16 +50,28 @@ import {
 
 const TABS = [
   { id: "overview", label: "Overview", icon: Gauge },
-  { id: "train", label: "Training", icon: PlayCircle },
-  { id: "models", label: "Models", icon: Crown },
+  { id: "schedule", label: "Training Schedule", icon: CalendarClock },
+  { id: "jobs", label: "Jobs", icon: ListTodo },
+  { id: "champion", label: "Champion", icon: Crown },
+  { id: "challengers", label: "Challengers", icon: Award },
+  { id: "registry", label: "Registry", icon: ListChecks },
+  { id: "notifications", label: "Notifications", icon: Bell },
+  { id: "rules", label: "Promotion Rules", icon: ShieldCheck },
   { id: "analytics", label: "Analytics", icon: LineChartIcon },
   { id: "monitoring", label: "Monitoring", icon: Activity },
-  { id: "settings", label: "Settings", icon: Settings2 },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
 
 const pct01 = (v?: number | null) => (typeof v === "number" ? `${(v * 100).toFixed(1)}%` : "—");
+
+const SCHEDULE_LABELS: Record<string, string> = {
+  manual: "Manual only",
+  every_6_hours: "Every 6 hours",
+  daily: "Daily",
+  weekly: "Weekly",
+  monthly: "Monthly (legacy)",
+};
 
 export default function ModelCenterPage(props: AppData) {
   const { showToast } = props;
@@ -80,7 +98,10 @@ export default function ModelCenterPage(props: AppData) {
           {TABS.map(({ id, label, icon: Icon }) => (
             <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>
               <Icon size={14} /> {label}
-              {id === "train" && lab.hasActiveJob ? <span className="mll-live-dot" /> : null}
+              {id === "jobs" && lab.hasActiveJob ? <span className="mll-live-dot" /> : null}
+              {id === "notifications" && lab.unreadCount > 0 ? (
+                <span className="mll-tab-badge">{lab.unreadCount > 99 ? "99+" : lab.unreadCount}</span>
+              ) : null}
             </button>
           ))}
         </div>
@@ -97,11 +118,15 @@ export default function ModelCenterPage(props: AppData) {
               transition={{ duration: 0.18 }}
             >
               {tab === "overview" && <OverviewTab lab={lab} />}
-              {tab === "train" && <TrainTab lab={lab} busy={busy} act={act} />}
-              {tab === "models" && <ModelsTab lab={lab} busy={busy} act={act} setTab={setTab} />}
+              {tab === "schedule" && <ScheduleTab lab={lab} busy={busy} act={act} />}
+              {tab === "jobs" && <JobsTab lab={lab} busy={busy} act={act} />}
+              {tab === "champion" && <ChampionTab lab={lab} busy={busy} act={act} />}
+              {tab === "challengers" && <ChallengersTab lab={lab} busy={busy} act={act} setTab={setTab} />}
+              {tab === "registry" && <RegistryTab lab={lab} busy={busy} act={act} />}
+              {tab === "notifications" && <NotificationsTab lab={lab} busy={busy} act={act} />}
+              {tab === "rules" && <RulesTab lab={lab} busy={busy} act={act} />}
               {tab === "analytics" && <AnalyticsTab lab={lab} />}
               {tab === "monitoring" && <MonitoringTab lab={lab} busy={busy} act={act} />}
-              {tab === "settings" && <SettingsTab lab={lab} busy={busy} act={act} />}
             </motion.div>
           </AnimatePresence>
         )}
@@ -123,30 +148,11 @@ function OverviewTab({ lab }: { lab: ReturnType<typeof useMLLab> }) {
     <div className="mll-stack">
       <div className="mll-section-title"><Crown size={14} className="yellow" /> Champion Model</div>
       {champion ? (
-        <div className="mll-kpi-grid">
-          <KpiTile label="Champion" value={champion.model_name} sub={champion.algorithm} tone="cyan" />
-          <KpiTile label="Version" value={champion.version} sub={`promoted ${fmtAgo(champion.promoted_at)}`} />
-          <KpiTile label="Trained" value={fmtAgo(champion.trained_at)} sub={champion.trained_at?.slice(0, 10)} />
-          <KpiTile label="Dataset Size" value={champion.training_samples ?? "—"} sub={champion.dataset_source || "pre-lab pipeline"} />
-          <KpiTile label="Holdout Trades" value={champion.total_trades ?? "—"} sub="threshold-crossing signals" />
-          <KpiTile label="Win Rate" value={champion.win_rate != null ? fmtPct(champion.win_rate, 1) : "—"} tone={champion.win_rate >= 50 ? "green" : "red"} />
-          <KpiTile label="Accuracy" value={pct01(champion.val_accuracy ?? champion.train_accuracy)} />
-          <KpiTile label="Precision" value={pct01(champion.precision)} />
-          <KpiTile label="Recall" value={pct01(champion.recall)} />
-          <KpiTile label="F1 Score" value={pct01(champion.f1)} />
-          <KpiTile label="ROC AUC" value={champion.roc_auc != null ? fmtNum(champion.roc_auc, 3) : "—"} />
-          <KpiTile label="Profit Factor" value={champion.profit_factor != null ? fmtNum(champion.profit_factor, 2) : "—"} tone={champion.profit_factor >= 1 ? "green" : "red"} />
-          <KpiTile label="Sharpe" value={champion.sharpe_ratio != null ? fmtNum(champion.sharpe_ratio, 2) : "—"} />
-          <KpiTile label="Avg Confidence" value={pct01(champion.avg_confidence)} />
-          <KpiTile label="Avg Pred. Error" value={champion.avg_prediction_error != null ? fmtNum(champion.avg_prediction_error, 4) : "—"} sub="mean |P(up) − outcome|" />
-          <KpiTile label="Model Size" value={fmtBytes(champion.model_size_bytes)} />
-          <KpiTile label="Training Time" value={fmtDurationS(champion.training_duration_seconds)} sub={`peak RAM ${champion.peak_memory_mb != null ? `${champion.peak_memory_mb} MB` : "—"}`} />
-          <KpiTile label="Hardware" value={champion.gpu_info || "CPU"} sub={champion.cpu_info || "—"} />
-        </div>
+        <ChampionKpis champion={champion} />
       ) : (
         <EmptySlate
           title="No Champion promoted yet"
-          reason="Train a challenger in the Training tab — it auto-promotes when it clears every configured promotion rule, or promote manually from the Models tab."
+          reason="Train a challenger from the Training Schedule tab — it auto-promotes when it clears every configured promotion rule, or promote manually from the Challengers tab."
         />
       )}
 
@@ -221,22 +227,169 @@ function OverviewTab({ lab }: { lab: ReturnType<typeof useMLLab> }) {
   );
 }
 
-// ================================================================== train
+function ChampionKpis({ champion }: { champion: any }) {
+  return (
+    <div className="mll-kpi-grid">
+      <KpiTile label="Champion" value={champion.model_name} sub={champion.algorithm} tone="cyan" />
+      <KpiTile label="Version" value={champion.version} sub={`promoted ${fmtAgo(champion.promoted_at)}`} />
+      <KpiTile label="Trained" value={fmtAgo(champion.trained_at)} sub={champion.trained_at?.slice(0, 10)} />
+      <KpiTile label="Dataset Size" value={champion.training_samples ?? "—"} sub={champion.dataset_source || "pre-lab pipeline"} />
+      <KpiTile label="Holdout Trades" value={champion.total_trades ?? "—"} sub="threshold-crossing signals" />
+      <KpiTile label="Win Rate" value={champion.win_rate != null ? fmtPct(champion.win_rate, 1) : "—"} tone={champion.win_rate >= 50 ? "green" : "red"} />
+      <KpiTile label="Accuracy" value={pct01(champion.val_accuracy ?? champion.train_accuracy)} />
+      <KpiTile label="Walk-Forward OOS" value={pct01(champion.oos_accuracy)} sub="mean fold accuracy" />
+      <KpiTile label="Precision" value={pct01(champion.precision)} />
+      <KpiTile label="Recall" value={pct01(champion.recall)} />
+      <KpiTile label="F1 Score" value={pct01(champion.f1)} />
+      <KpiTile label="ROC AUC" value={champion.roc_auc != null ? fmtNum(champion.roc_auc, 3) : "—"} />
+      <KpiTile label="Profit Factor" value={champion.profit_factor != null ? fmtNum(champion.profit_factor, 2) : "—"} tone={champion.profit_factor >= 1 ? "green" : "red"} />
+      <KpiTile label="Sharpe" value={champion.sharpe_ratio != null ? fmtNum(champion.sharpe_ratio, 2) : "—"} />
+      <KpiTile label="Avg Confidence" value={pct01(champion.avg_confidence)} />
+      <KpiTile label="Model Size" value={fmtBytes(champion.model_size_bytes)} />
+      <KpiTile label="Training Time" value={fmtDurationS(champion.training_duration_seconds)} sub={`peak RAM ${champion.peak_memory_mb != null ? `${champion.peak_memory_mb} MB` : "—"}`} />
+      <KpiTile label="Hardware" value={champion.gpu_info || "CPU"} sub={champion.cpu_info || "—"} />
+    </div>
+  );
+}
 
-function TrainTab({ lab, busy, act }: { lab: ReturnType<typeof useMLLab>; busy: string | null; act: (k: string, fn: () => Promise<unknown>, ok?: string) => Promise<void> }) {
+// ======================================================== training schedule
+
+function ScheduleTab({ lab, busy, act }: { lab: ReturnType<typeof useMLLab>; busy: string | null; act: (k: string, fn: () => Promise<unknown>, ok?: string) => Promise<void> }) {
+  const [draft, setDraft] = useState<any>(null);
   const [symbols, setSymbols] = useState<string[]>(["BTCUSDT", "ETHUSDT"]);
   const [timeframe, setTimeframe] = useState("1h");
   const [bars, setBars] = useState(1500);
   const [horizon, setHorizon] = useState(4);
   const [dataset, setDataset] = useState("market_history");
+  const [hpoAlgo, setHpoAlgo] = useState("xgboost");
+  const [hpoMethod, setHpoMethod] = useState("random");
+  const [hpoTrials, setHpoTrials] = useState(20);
 
-  const activeJobs = lab.jobs.filter((j) => j.status === "running" || j.status === "queued");
-  const recentJobs = lab.jobs.filter((j) => j.status !== "running" && j.status !== "queued").slice(0, 8);
+  const stored = lab.schedule?.schedule || lab.settings?.retraining || null;
+  const schedule = draft ?? stored;
+  const choices: string[] = lab.schedule?.choices || ["manual", "every_6_hours", "daily", "weekly"];
+  const preflight = lab.preflightState;
+
+  if (!schedule) return <SkeletonTiles count={6} />;
+
+  const scheduleAlgos: string[] = schedule.schedule_algorithms || [];
 
   return (
     <div className="mll-stack">
+      <div className="mll-two-col">
+        <div className="mll-panel">
+          <div className="mll-panel-title"><CalendarClock size={14} className="cyan" /> Automatic Training Schedule</div>
+          <p className="mll-dim">
+            On schedule, the bot checks system health, then trains every selected algorithm as a challenger —
+            each run backtests, walk-forward validates, compares against the Champion, and promotes only if every rule passes.
+          </p>
+          <div className="mll-form-grid">
+            <label>
+              Schedule
+              <select
+                value={schedule.schedule || "manual"}
+                onChange={(e) => setDraft({ ...schedule, schedule: e.target.value })}
+              >
+                {choices.filter((c) => c !== "monthly" || schedule.schedule === "monthly").map((c) => (
+                  <option key={c} value={c}>{SCHEDULE_LABELS[c] || c}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <label className="mll-check">
+            <input
+              type="checkbox"
+              checked={!!schedule.drift_trigger_enabled}
+              onChange={(e) => setDraft({ ...schedule, drift_trigger_enabled: e.target.checked })}
+            />
+            Also retrain automatically when drift crosses threshold
+          </label>
+          <div className="mll-panel-title" style={{ marginTop: 10 }}>Algorithms trained on schedule</div>
+          <div className="mll-algo-checks">
+            {lab.algorithms.filter((a) => !["tft", "rl_agent"].includes(a.id)).map((a) => (
+              <label key={a.id} className={`mll-check${a.available ? "" : " mll-check-off"}`} title={a.available ? a.description || "" : a.unavailable_reason || ""}>
+                <input
+                  type="checkbox"
+                  checked={scheduleAlgos.includes(a.id)}
+                  onChange={(e) =>
+                    setDraft({
+                      ...schedule,
+                      schedule_algorithms: e.target.checked
+                        ? [...scheduleAlgos, a.id]
+                        : scheduleAlgos.filter((x) => x !== a.id),
+                    })
+                  }
+                />
+                {a.label}
+                {!a.available && <span className="mll-dim"> (unavailable on this host — skipped)</span>}
+              </label>
+            ))}
+          </div>
+          <div className="mll-btn-row" style={{ marginTop: 10 }}>
+            <button
+              className="mll-train-btn"
+              disabled={busy !== null || !draft}
+              onClick={() =>
+                act(
+                  "save-schedule",
+                  () =>
+                    lab.saveSchedule({
+                      schedule: schedule.schedule,
+                      drift_trigger_enabled: schedule.drift_trigger_enabled,
+                      schedule_algorithms: scheduleAlgos,
+                    }).then(() => setDraft(null)),
+                  "Training schedule saved"
+                )
+              }
+            >
+              {busy === "save-schedule" ? "Saving…" : "Save schedule"}
+            </button>
+            <button
+              className="mll-train-btn"
+              disabled={busy !== null}
+              onClick={() => act("train-now", () => lab.trainNow(), "Training batch queued — watch the Jobs tab")}
+            >
+              <PlayCircle size={13} /> {busy === "train-now" ? "Checking health…" : "Train now"}
+            </button>
+          </div>
+          <div className="mll-mini-grid" style={{ marginTop: 10 }}>
+            <span>Last scheduled run <b>{stored?.last_scheduled_run ? fmtAgo(stored.last_scheduled_run) : "never"}</b></span>
+            <span>Interval <b>{lab.schedule?.interval_hours ? `${lab.schedule.interval_hours}h` : "—"}</b></span>
+            <span>Scheduler <b className={lab.schedule?.scheduler_running ? "green" : "red"}>{lab.schedule?.scheduler_running ? "running" : "stopped"}</b></span>
+            <span>Due now <b>{lab.schedule?.due_now ? "yes" : "no"}</b></span>
+          </div>
+        </div>
+
+        <div className="mll-panel">
+          <div className="mll-panel-title">
+            <ShieldCheck size={14} className="green" /> Pre-Training Health Gate
+            <button className="mll-inline-btn" disabled={busy !== null} onClick={() => act("preflight", () => lab.runPreflight())}>
+              {busy === "preflight" ? "Checking…" : "Run health check"}
+            </button>
+          </div>
+          <p className="mll-dim">
+            Every scheduled or manual batch runs these checks first. If any fails, training is skipped and a notification is sent.
+          </p>
+          {preflight?.loading && <SkeletonTiles count={3} />}
+          {preflight?.error && <p className="mll-dim red">{preflight.error}</p>}
+          {preflight?.checks ? (
+            <div className="mll-preflight">
+              {preflight.checks.map((c: any) => (
+                <div key={c.name} className="mll-preflight-row">
+                  {c.passed ? <CheckCircle2 size={14} className="green" /> : <XCircle size={14} className="red" />}
+                  <b>{c.name}</b>
+                  <span className="mll-dim">{c.detail}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            !preflight?.loading && <p className="mll-dim">Not checked in this session yet.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="mll-section-title"><PlayCircle size={14} className="green" /> Manual Training (custom dataset)</div>
       <div className="mll-panel">
-        <div className="mll-panel-title">Dataset for new training runs</div>
         <div className="mll-form-row">
           <label>
             Source
@@ -277,15 +430,6 @@ function TrainTab({ lab, busy, act }: { lab: ReturnType<typeof useMLLab>; busy: 
           </label>
         </div>
       </div>
-
-      {activeJobs.length > 0 && (
-        <div className="mll-panel mll-panel-live">
-          <div className="mll-panel-title"><RadioTower size={14} className="cyan" /> Live Training</div>
-          {activeJobs.map((job) => <JobProgress key={job.job_id} job={job} busy={busy} act={act} cancel={lab.cancelJob} />)}
-        </div>
-      )}
-
-      <div className="mll-section-title"><PlayCircle size={14} className="green" /> One-Click Training</div>
       <div className="mll-algo-grid">
         {lab.algorithms.map((algo) => (
           <AlgoCard
@@ -304,34 +448,94 @@ function TrainTab({ lab, busy, act }: { lab: ReturnType<typeof useMLLab>; busy: 
         ))}
       </div>
 
-      <div className="mll-section-title">Recent Jobs</div>
-      {recentJobs.length === 0 ? (
-        <EmptySlate title="No completed jobs yet" reason="Launch any algorithm above — every run appears here with its full result or failure reason." />
-      ) : (
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr><th>Job</th><th>Kind</th><th>Algorithm</th><th>Status</th><th>Result</th><th>Finished</th></tr>
-            </thead>
-            <tbody>
-              {recentJobs.map((j) => (
-                <tr key={j.job_id}>
-                  <td className="mll-mono">{j.job_id}</td>
-                  <td>{j.kind}</td>
-                  <td>{j.algorithm}</td>
-                  <td><StatusPill status={j.status} /></td>
-                  <td className="mll-dim">
-                    {j.status === "succeeded"
-                      ? j.kind === "hpo"
-                        ? `best ${fmtNum(j.result?.best_value, 4)} over ${j.result?.trials_run} trials`
-                        : `${j.result?.version} · acc ${pct01(j.result?.metrics?.accuracy)}${j.result?.promotion?.promoted ? " · PROMOTED" : ""}`
-                      : j.error || "—"}
-                  </td>
-                  <td>{fmtAgo(j.finished_at)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <div className="mll-section-title"><FlaskConical size={14} className="purple" /> Hyperparameter Optimization</div>
+      <div className="mll-panel">
+        <div className="mll-form-row">
+          <label>
+            Algorithm
+            <select value={hpoAlgo} onChange={(e) => setHpoAlgo(e.target.value)}>
+              {lab.hpoSupported.map((a) => <option key={a} value={a}>{a}</option>)}
+            </select>
+          </label>
+          <label>
+            Method
+            <select value={hpoMethod} onChange={(e) => setHpoMethod(e.target.value)}>
+              <option value="grid">Grid Search</option>
+              <option value="random">Random Search</option>
+              <option value="bayesian">Bayesian (Optuna TPE)</option>
+            </select>
+          </label>
+          <label>
+            Trials
+            <select value={hpoTrials} onChange={(e) => setHpoTrials(Number(e.target.value))}>
+              {[10, 20, 30, 40].map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </label>
+          <button
+            className="mll-train-btn"
+            style={{ alignSelf: "flex-end" }}
+            disabled={busy !== null}
+            onClick={() => act("hpo", () => lab.startHpo({ algorithm: hpoAlgo, method: hpoMethod, n_trials: hpoTrials }), "HPO job queued — watch it in Jobs")}
+          >
+            {busy === "hpo" ? "Queuing…" : "Start optimization"}
+          </button>
+        </div>
+      </div>
+      <HpoResults lab={lab} />
+    </div>
+  );
+}
+
+function HpoResults({ lab }: { lab: ReturnType<typeof useMLLab> }) {
+  const [hpoView, setHpoView] = useState(0);
+  const hpoResult = lab.hpoResults[hpoView];
+  if (lab.hpoResults.length === 0) return null;
+  return (
+    <div className="mll-stack">
+      <div className="mll-seg">
+        {lab.hpoResults.slice(0, 6).map((r, i) => (
+          <button key={r.job_id} className={hpoView === i ? "active" : ""} onClick={() => setHpoView(i)}>
+            {r.algorithm} · {r.method} · {fmtAgo(r.created_at)}
+          </button>
+        ))}
+      </div>
+      {hpoResult && (
+        <div className="mll-two-col">
+          <div className="mll-panel">
+            <div className="mll-panel-title">Best result — validation accuracy {fmtNum(hpoResult.best_value, 4)}</div>
+            <pre className="mll-code">{JSON.stringify(hpoResult.best_params, null, 2)}</pre>
+            {hpoResult.param_importance && (
+              <>
+                <div className="mll-panel-title" style={{ marginTop: 10 }}>Parameter importance (Optuna)</div>
+                {Object.entries(hpoResult.param_importance).map(([k, v]: [string, any]) => (
+                  <div key={k} className="mll-param-imp">
+                    <span>{k}</span>
+                    <ProgressBar pct={v * 100} tone="green" />
+                    <b>{fmtNum(v * 100, 1)}%</b>
+                  </div>
+                ))}
+              </>
+            )}
+            <div className="mll-panel-title" style={{ marginTop: 10 }}>Optimization history</div>
+            <HpoHistoryChart history={hpoResult.history || []} />
+          </div>
+          <div className="mll-panel">
+            <div className="mll-panel-title">Top {Math.min(20, hpoResult.top_trials?.length ?? 0)} trials</div>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead><tr><th>#</th><th>Val. accuracy</th><th>Parameters</th></tr></thead>
+                <tbody>
+                  {(hpoResult.top_trials || []).map((t: any) => (
+                    <tr key={t.trial}>
+                      <td>{t.trial}</td>
+                      <td><b>{fmtNum(t.value, 4)}</b></td>
+                      <td className="mll-mono mll-dim">{Object.entries(t.params).map(([k, v]) => `${k}=${v}`).join("  ")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -365,6 +569,58 @@ function AlgoCard({ algo, busy, disabled, onTrain }: { algo: Algorithm; busy: st
         <p className="mll-unavailable-reason"><AlertTriangle size={12} /> {algo.unavailable_reason}</p>
       )}
     </motion.div>
+  );
+}
+
+// =================================================================== jobs
+
+function JobsTab({ lab, busy, act }: { lab: ReturnType<typeof useMLLab>; busy: string | null; act: any }) {
+  const activeJobs = lab.jobs.filter((j) => j.status === "running" || j.status === "queued");
+  const doneJobs = lab.jobs.filter((j) => j.status !== "running" && j.status !== "queued");
+
+  return (
+    <div className="mll-stack">
+      {activeJobs.length > 0 ? (
+        <div className="mll-panel mll-panel-live">
+          <div className="mll-panel-title"><RadioTower size={14} className="cyan" /> Active Training</div>
+          {activeJobs.map((job) => <JobProgress key={job.job_id} job={job} busy={busy} act={act} cancel={lab.cancelJob} />)}
+        </div>
+      ) : (
+        <EmptySlate title="No job running" reason="Queue training from the Training Schedule tab — live progress (epoch, loss, ETA, CPU/RAM) appears here." />
+      )}
+
+      <div className="mll-section-title">Job History</div>
+      {doneJobs.length === 0 ? (
+        <EmptySlate title="No completed jobs yet" reason="Every run appears here permanently with its full result or failure reason." />
+      ) : (
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr><th>Job</th><th>Kind</th><th>Algorithm</th><th>Status</th><th>Result</th><th>Trigger</th><th>Finished</th></tr>
+            </thead>
+            <tbody>
+              {doneJobs.map((j) => (
+                <tr key={j.job_id}>
+                  <td className="mll-mono">{j.job_id}</td>
+                  <td>{j.kind}</td>
+                  <td>{j.algorithm}</td>
+                  <td><StatusPill status={j.status} /></td>
+                  <td className="mll-dim">
+                    {j.status === "succeeded"
+                      ? j.kind === "hpo"
+                        ? `best ${fmtNum(j.result?.best_value, 4)} over ${j.result?.trials_run} trials`
+                        : `${j.result?.version} · acc ${pct01(j.result?.metrics?.accuracy)}${j.result?.promotion?.promoted ? " · PROMOTED" : ""}`
+                      : j.error || "—"}
+                  </td>
+                  <td className="mll-dim">{(j as any).params?.trigger || "manual"}</td>
+                  <td>{fmtAgo(j.finished_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -405,14 +661,111 @@ function JobProgress({ job, busy, act, cancel }: { job: MLJob; busy: string | nu
   );
 }
 
-// ================================================================= models
+// ================================================================ champion
 
-function ModelsTab({ lab, busy, act, setTab }: { lab: ReturnType<typeof useMLLab>; busy: string | null; act: any; setTab: (t: TabId) => void }) {
+function ChampionTab({ lab, busy, act }: { lab: ReturnType<typeof useMLLab>; busy: string | null; act: any }) {
+  const champion = lab.championInfo?.champion || lab.overview?.champion;
+  const gate = lab.championInfo?.inference_gate;
+  const promotionHistory = lab.championInfo?.promotion_history || [];
+  const inferenceEnabled = !!lab.settings?.inference?.champion_enabled;
+
+  return (
+    <div className="mll-stack">
+      {champion ? (
+        <>
+          <ChampionKpis champion={champion} />
+          <div className="mll-two-col">
+            <div className="mll-panel">
+              <div className="mll-panel-title"><ShieldCheck size={14} className="cyan" /> Live Inference Gate</div>
+              <p className="mll-dim">{gate?.verdict || "Loading gate status…"}</p>
+              <div className="mll-mini-grid">
+                <span>Champion exists <b className={gate?.champion_exists ? "green" : "red"}>{gate?.champion_exists ? "yes" : "no"}</b></span>
+                <span>Model file healthy <b className={gate?.healthy ? "green" : "red"}>{gate?.healthy ? "yes" : "no"}</b></span>
+                <span>Inference enabled <b className={gate?.enabled ? "green" : "yellow"}>{gate?.enabled ? "yes" : "no"}</b></span>
+                <span>Driving predictions <b className={gate?.active ? "green" : "yellow"}>{gate?.active ? "yes" : "no — ensemble fallback"}</b></span>
+              </div>
+              <label className="mll-check" style={{ marginTop: 10 }}>
+                <input
+                  type="checkbox"
+                  checked={inferenceEnabled}
+                  disabled={busy !== null}
+                  onChange={(e) =>
+                    act(
+                      "toggle-inference",
+                      () => lab.saveSettings({ inference: { champion_enabled: e.target.checked } }).then(() => lab.refreshAll()),
+                      e.target.checked
+                        ? "Champion now drives live predictions (with automatic ensemble fallback)"
+                        : "Champion inference disabled — strategy ensemble drives predictions"
+                    )
+                  }
+                />
+                Use Champion for live predictions when healthy
+              </label>
+              <p className="mll-dim" style={{ marginTop: 6 }}>
+                Even when enabled, predictions fall back to the strategy ensemble the moment the Champion is missing,
+                unhealthy, or data quality drops below the usable threshold.
+              </p>
+            </div>
+            <div className="mll-panel">
+              <div className="mll-panel-title"><RotateCw size={14} className="yellow" /> Rollback</div>
+              <p className="mll-dim">
+                Re-promotes the previous Champion and archives the current one. Nothing is deleted — the full
+                version history below is the audit trail.
+              </p>
+              <button
+                className="mll-train-btn"
+                disabled={busy !== null}
+                onClick={() => act("rollback-current", () => lab.rollbackCurrent(), "Rolled back to the previous Champion")}
+              >
+                <RotateCw size={13} /> {busy === "rollback-current" ? "Rolling back…" : "Rollback to previous Champion"}
+              </button>
+              <div className="mll-panel-title" style={{ marginTop: 12 }}>Promotion history ({champion.model_name})</div>
+              {promotionHistory.length === 0 ? (
+                <p className="mll-dim">No earlier promotions recorded for this model.</p>
+              ) : (
+                <div className="table-wrap">
+                  <table className="data-table">
+                    <thead><tr><th>Version</th><th>Status</th><th>Accuracy</th><th>Win Rate</th><th>Promoted</th></tr></thead>
+                    <tbody>
+                      {promotionHistory.map((v: any) => (
+                        <tr key={v.model_id}>
+                          <td>{v.version}</td>
+                          <td><StatusPill status={v.status} /></td>
+                          <td>{pct01(v.val_accuracy)}</td>
+                          <td>{v.win_rate != null ? fmtPct(v.win_rate, 1) : "—"}</td>
+                          <td>{fmtAgo(v.promoted_at)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="mll-btn-row">
+            <a className="mll-link" href={api_download(champion.model_id)} download><Download size={12} /> Export model file</a>
+          </div>
+        </>
+      ) : (
+        <EmptySlate
+          title="No Champion promoted yet"
+          reason="Train challengers from the Training Schedule tab. The first model to clear every promotion rule becomes Champion; until then the strategy ensemble drives all predictions."
+        />
+      )}
+    </div>
+  );
+}
+
+// ============================================================== challengers
+
+function ChallengersTab({ lab, busy, act, setTab }: { lab: ReturnType<typeof useMLLab>; busy: string | null; act: any; setTab: (t: TabId) => void }) {
   const champion = lab.compare.find((r) => r.role === "champion");
   const challengers = lab.compare.filter((r) => r.role === "challenger");
+  const [explain, setExplain] = useState<string | null>(null);
 
   const METRIC_ROWS: Array<[string, (m: any) => string]> = [
     ["Accuracy", (m) => pct01(m.val_accuracy ?? m.train_accuracy)],
+    ["Walk-Forward OOS", (m) => pct01(m.oos_accuracy)],
     ["Win Rate", (m) => (m.win_rate != null ? fmtPct(m.win_rate, 1) : "—")],
     ["Sharpe", (m) => (m.sharpe_ratio != null ? fmtNum(m.sharpe_ratio, 2) : "—")],
     ["Profit Factor", (m) => (m.profit_factor != null ? fmtNum(m.profit_factor, 2) : "—")],
@@ -423,11 +776,8 @@ function ModelsTab({ lab, busy, act, setTab }: { lab: ReturnType<typeof useMLLab
     ["F1", (m) => pct01(m.f1)],
     ["ROC AUC", (m) => (m.roc_auc != null ? fmtNum(m.roc_auc, 3) : "—")],
     ["Avg Confidence", (m) => pct01(m.avg_confidence)],
-    ["Pred. Error", (m) => (m.avg_prediction_error != null ? fmtNum(m.avg_prediction_error, 4) : "—")],
     ["Latency", (m) => (m.latency_ms != null ? `${fmtNum(m.latency_ms, 3)} ms` : "—")],
-    ["Inference", (m) => (m.inference_rows_per_sec != null ? `${fmtNum(m.inference_rows_per_sec, 0)}/s` : "—")],
     ["Training Time", (m) => fmtDurationS(m.training_duration_seconds)],
-    ["Memory", (m) => (m.peak_memory_mb != null ? `${fmtNum(m.peak_memory_mb, 0)} MB` : "—")],
     ["Size", (m) => fmtBytes(m.model_size_bytes)],
   ];
 
@@ -435,7 +785,7 @@ function ModelsTab({ lab, busy, act, setTab }: { lab: ReturnType<typeof useMLLab
     <div className="mll-stack">
       <div className="mll-section-title"><Award size={14} className="cyan" /> Challengers</div>
       {challengers.length === 0 ? (
-        <EmptySlate title="No challengers pending" reason="Every new training run registers as a Challenger. Launch one from the Training tab." />
+        <EmptySlate title="No challengers pending" reason="Every training run registers a Challenger. Launch one from the Training Schedule tab." />
       ) : (
         <div className="mll-challenger-grid">
           {challengers.map((m) => (
@@ -445,23 +795,19 @@ function ModelsTab({ lab, busy, act, setTab }: { lab: ReturnType<typeof useMLLab
               </div>
               <div className="mll-mini-grid">
                 <span>Accuracy <b>{pct01(m.val_accuracy ?? m.train_accuracy)}</b></span>
-                <span>Return <b className={m.profit_factor >= 1 ? "green" : "red"}>{m.profit_factor != null ? `PF ${fmtNum(m.profit_factor, 2)}` : "—"}</b></span>
+                <span>Walk-forward <b>{pct01(m.oos_accuracy)}</b></span>
+                <span>PF <b className={m.profit_factor >= 1 ? "green" : "red"}>{m.profit_factor != null ? fmtNum(m.profit_factor, 2) : "—"}</b></span>
                 <span>Sharpe <b>{m.sharpe_ratio != null ? fmtNum(m.sharpe_ratio, 2) : "—"}</b></span>
                 <span>Win Rate <b>{m.win_rate != null ? fmtPct(m.win_rate, 1) : "—"}</b></span>
                 <span>Age <b>{fmtAgo(m.trained_at)}</b></span>
-                <span>Live est. <b>{pct01(m.val_accuracy)}</b></span>
               </div>
-              {!m.promotion_check?.met && (
-                <p className="mll-dim mll-promo-fails" title={m.promotion_check?.failures?.join("\n")}>
-                  Blocked from auto-promotion: {m.promotion_check?.failures?.[0]}{(m.promotion_check?.failures?.length ?? 0) > 1 ? ` (+${m.promotion_check.failures.length - 1} more)` : ""}
-                </p>
-              )}
+              <PromotionExplanation model={m} open={explain === m.model_id} onToggle={() => setExplain(explain === m.model_id ? null : m.model_id)} />
               <div className="mll-btn-row">
                 <button disabled={busy !== null} onClick={() => act(`promote-${m.model_id}`, () => lab.promote(m.model_id, !m.promotion_check?.met), m.promotion_check?.met ? "Promoted" : "Force-promoted despite failing rules")}>
                   <Award size={12} /> Promote{m.promotion_check?.met ? "" : " (force)"}
                 </button>
                 <button disabled={busy !== null} onClick={() => { lab.loadModelDetail(m.model_id); setTab("analytics"); }}>
-                  <LineChartIcon size={12} /> Compare / Inspect
+                  <LineChartIcon size={12} /> Inspect
                 </button>
                 <button className="danger" disabled={busy !== null} onClick={() => act(`delete-${m.model_id}`, () => lab.deleteModel(m.model_id), "Model archived + file removed")}>
                   <Trash2 size={12} /> Delete
@@ -520,25 +866,64 @@ function ModelsTab({ lab, busy, act, setTab }: { lab: ReturnType<typeof useMLLab
           </table>
         </div>
       )}
+    </div>
+  );
+}
 
-      <div className="mll-section-title">Model Registry — every version</div>
+function PromotionExplanation({ model, open, onToggle }: { model: any; open: boolean; onToggle: () => void }) {
+  const check = model.promotion_check;
+  if (!check) return null;
+  const detail = check.detail || {};
+  return (
+    <div className="mll-promo-explain">
+      <button className="mll-inline-btn" onClick={onToggle}>
+        {check.met
+          ? "✓ Passes every promotion rule"
+          : `Blocked from auto-promotion (${check.failures?.length ?? 0} rule${(check.failures?.length ?? 0) === 1 ? "" : "s"} failing)`}
+        {" "}{open ? "▾" : "▸"}
+      </button>
+      {open && (
+        <div className="mll-preflight" style={{ marginTop: 6 }}>
+          {Object.entries(detail).map(([name, d]: [string, any]) => (
+            <div key={name} className="mll-preflight-row">
+              {d.passed ? <CheckCircle2 size={13} className="green" /> : <XCircle size={13} className="red" />}
+              <b>{name.replace(/_/g, " ")}</b>
+              <span className="mll-dim">
+                {d.value != null ? fmtNum(d.value, 4) : "n/a"} vs {d.threshold != null ? fmtNum(d.threshold, 4) : "—"}
+                {d.note ? ` — ${d.note}` : ""}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ================================================================ registry
+
+function RegistryTab({ lab, busy, act }: { lab: ReturnType<typeof useMLLab>; busy: string | null; act: any }) {
+  return (
+    <div className="mll-stack">
+      <div className="mll-section-title"><ListChecks size={14} className="cyan" /> Model Registry — every version, permanently</div>
       {lab.registry.length === 0 ? (
         <EmptySlate title="Registry is empty" reason="Every training run (including failed and archived versions) is recorded here permanently." />
       ) : (
         <div className="table-wrap">
           <table className="data-table">
             <thead>
-              <tr><th>Model</th><th>Version</th><th>Status</th><th>Created</th><th>Accuracy</th><th>Dataset</th><th>Features</th><th>Params</th><th>Git</th><th>Size</th><th></th></tr>
+              <tr><th>Model</th><th>Version</th><th>Status</th><th>Created</th><th>Accuracy</th><th>OOS</th><th>Dataset</th><th>Features</th><th>Params</th><th>Git</th><th>Size</th><th></th></tr>
             </thead>
             <tbody>
               {lab.registry.map((m) => (
                 <tr key={m.model_id}>
-                  <td><b>{m.model_name}</b><div className="tile-label">{m.algorithm}</div></td>
+                  <td><b>{m.model_name}</b><div className="mll-dim" style={{ fontSize: 11 }}>{m.algorithm}</div></td>
                   <td>{m.version}</td>
                   <td><StatusPill status={m.status} /></td>
                   <td>{fmtAgo(m.trained_at)}</td>
                   <td>{pct01(m.val_accuracy ?? m.train_accuracy)}</td>
-                  <td className="mll-dim">{m.dataset_source || m.dataset_version || "—"}</td>
+                  <td>{pct01(m.oos_accuracy)}</td>
+                  <td className="mll-dim" title={m.dataset_spec ? JSON.stringify(m.dataset_spec) : undefined}>{m.dataset_source || m.dataset_version || "—"}</td>
                   <td>{m.feature_list?.length ?? "—"}</td>
                   <td className="mll-dim" title={JSON.stringify(m.parameters, null, 2)}>{m.parameters ? `${Object.keys(m.parameters).length} set` : "—"}</td>
                   <td className="mll-mono">{m.git_commit || "n/a"}</td>
@@ -567,11 +952,140 @@ function api_download(modelId: string): string {
   return `/api/ml/registry/${encodeURIComponent(modelId)}/download`;
 }
 
+// ============================================================ notifications
+
+const EVENT_LABELS: Record<string, string> = {
+  training_started: "Training started",
+  training_completed: "Training completed",
+  training_failed: "Training failed",
+  training_skipped: "Training skipped",
+  challenger_created: "New challenger",
+  challenger_rejected: "Challenger rejected",
+  champion_promoted: "Champion promoted",
+  champion_rollback: "Champion rollback",
+  drift_warning: "Drift warning",
+  data_quality_warning: "Data quality warning",
+};
+
+function NotificationsTab({ lab, busy, act }: { lab: ReturnType<typeof useMLLab>; busy: string | null; act: any }) {
+  const items = lab.notifications;
+  return (
+    <div className="mll-stack">
+      <div className="mll-section-title">
+        <Bell size={14} className="cyan" /> Notification Center
+        <span className="mll-dim" style={{ marginLeft: 8, fontSize: 12 }}>
+          {lab.unreadCount} unread
+          {lab.notifChannels.length > 0
+            ? ` · also sent to: ${lab.notifChannels.join(", ")}`
+            : " · in-app only (set TELEGRAM_BOT_TOKEN / DISCORD_WEBHOOK_URL / SMTP_HOST env vars for external delivery)"}
+        </span>
+        {lab.unreadCount > 0 && (
+          <button className="mll-inline-btn" disabled={busy !== null} onClick={() => act("read-all", () => lab.markAllNotificationsRead(), "All notifications marked read")}>
+            Mark all read
+          </button>
+        )}
+      </div>
+      {items.length === 0 ? (
+        <EmptySlate title="No notifications yet" reason="Training runs, promotions, rollbacks, drift and data-quality warnings all land here (and on Telegram/Discord/email when configured)." />
+      ) : (
+        <div className="mll-notif-list">
+          {items.map((n) => <NotificationRow key={n.id} n={n} busy={busy} act={act} markRead={lab.markNotificationRead} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NotificationRow({ n, busy, act, markRead }: { n: MLNotificationItem; busy: string | null; act: any; markRead: (id: number) => Promise<unknown> }) {
+  return (
+    <div className={`mll-notif${n.read ? " read" : ""} sev-${n.severity}`}>
+      <span className={`mll-notif-dot sev-${n.severity}`} />
+      <div className="mll-notif-body">
+        <div className="mll-notif-head">
+          <b>{n.title}</b>
+          <span className="mll-tag">{EVENT_LABELS[n.event] || n.event}</span>
+          <span className="mll-dim">{fmtAgo(n.created_at)}</span>
+        </div>
+        {n.message && <p className="mll-dim">{n.message}</p>}
+      </div>
+      {!n.read && (
+        <button className="mll-inline-btn" disabled={busy !== null} onClick={() => act(`read-${n.id}`, () => markRead(n.id))}>
+          Mark read
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ================================================================== rules
+
+function RulesTab({ lab, busy, act }: { lab: ReturnType<typeof useMLLab>; busy: string | null; act: any }) {
+  const [promo, setPromo] = useState<any>(null);
+  const promotion = promo ?? lab.settings?.promotion ?? null;
+
+  if (!lab.settings) return <SkeletonTiles count={6} />;
+
+  const promoFields: Array<[string, string, number, string]> = [
+    ["min_accuracy", "Minimum Accuracy (0-1)", 0.01, "Holdout accuracy on the chronological test slice"],
+    ["min_win_rate", "Minimum Win Rate (%)", 1, "Directional win rate of the simulated trading on the holdout"],
+    ["min_profit_factor", "Minimum Profit Factor", 0.05, "Gross wins / gross losses in the holdout simulation"],
+    ["min_sharpe", "Minimum Sharpe", 0.1, "Risk-adjusted return of the holdout simulation"],
+    ["max_drawdown_pct", "Maximum Drawdown %", 1, "Worst peak-to-trough of the holdout equity curve"],
+    ["min_trades", "Minimum Trades", 1, "Sample size: threshold-crossing signals in the holdout"],
+    ["min_test_samples", "Minimum Test Samples", 10, "Sample size: rows in the holdout slice"],
+    ["min_oos_accuracy", "Minimum Walk-Forward Accuracy (0-1)", 0.01, "Mean accuracy across expanding-window out-of-sample folds"],
+    ["champion_margin_pct", "Must Beat Champion By (%)", 0.5, "Challenger accuracy must exceed the Champion's by this relative margin"],
+    ["min_confidence", "Minimum Avg Confidence (0-1)", 0.05, "Mean max(p, 1-p) of holdout predictions"],
+  ];
+
+  return (
+    <div className="mll-stack">
+      <div className="mll-panel">
+        <div className="mll-panel-title"><ShieldCheck size={14} className="green" /> Automatic Promotion Rules</div>
+        <p className="mll-dim">
+          A challenger auto-promotes to Champion only when EVERY rule passes on its real holdout evaluation.
+          A metric that is unavailable for a model counts as failing — an unevaluable model never auto-promotes.
+          If a challenger fails, the current Champion is kept.
+        </p>
+        <label className="mll-check">
+          <input
+            type="checkbox"
+            checked={!!promotion?.auto_promote}
+            onChange={(e) => setPromo({ ...promotion, auto_promote: e.target.checked })}
+          />
+          Auto-promote enabled
+        </label>
+        <div className="mll-form-grid">
+          {promoFields.map(([key, label, step, hint]) => (
+            <label key={key} title={hint}>
+              {label}
+              <input
+                type="number"
+                step={step}
+                value={promotion?.[key] ?? ""}
+                onChange={(e) => setPromo({ ...promotion, [key]: Number(e.target.value) })}
+              />
+            </label>
+          ))}
+        </div>
+        <button
+          className="mll-train-btn"
+          disabled={busy !== null || !promo}
+          onClick={() => act("save-promo", () => lab.saveSettings({ promotion: promo }).then(() => setPromo(null)), "Promotion rules saved")}
+        >
+          {busy === "save-promo" ? "Saving…" : "Save promotion rules"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // =============================================================== analytics
 
 function AnalyticsTab({ lab }: { lab: ReturnType<typeof useMLLab> }) {
   const detail = lab.modelDetail;
   const withArtifacts = lab.registry.filter((m) => m.status !== "Failed");
+  const wf = detail?.artifacts?.walk_forward;
 
   return (
     <div className="mll-stack">
@@ -593,7 +1107,7 @@ function AnalyticsTab({ lab }: { lab: ReturnType<typeof useMLLab> }) {
       </div>
 
       {!detail && (
-        <EmptySlate title="Pick a model version" reason={withArtifacts.length ? "Its holdout evaluation — SHAP, curves, confusion matrix, simulated trading — renders here." : "No trained versions exist yet. Train one first."} />
+        <EmptySlate title="Pick a model version" reason={withArtifacts.length ? "Its holdout evaluation — SHAP, curves, confusion matrix, simulated trading, walk-forward folds — renders here." : "No trained versions exist yet. Train one first."} />
       )}
       {detail?.loading && <SkeletonTiles count={6} />}
       {detail?.error && <EmptySlate title="Failed to load" reason={detail.error} />}
@@ -608,6 +1122,41 @@ function AnalyticsTab({ lab }: { lab: ReturnType<typeof useMLLab> }) {
               <KpiTile label="Sim Sharpe" value={detail.artifacts.trading_simulation.sharpe_ratio != null ? fmtNum(detail.artifacts.trading_simulation.sharpe_ratio, 2) : "—"} />
               <KpiTile label="Sim Max DD" value={detail.artifacts.trading_simulation.max_drawdown_pct != null ? fmtPct(detail.artifacts.trading_simulation.max_drawdown_pct, 1) : "—"} />
               <KpiTile label="Expectancy" value={detail.artifacts.trading_simulation.expectancy_pct != null ? `${fmtNum(detail.artifacts.trading_simulation.expectancy_pct, 3)}%` : "—"} sub="per trade" />
+            </div>
+          )}
+
+          {wf && (
+            <div className="mll-panel">
+              <div className="mll-panel-title">Walk-Forward Validation (out-of-sample)</div>
+              {wf.available ? (
+                <>
+                  <div className="mll-mini-grid">
+                    <span>Mean accuracy <b>{pct01(wf.mean_accuracy)}</b></span>
+                    <span>Worst fold <b>{pct01(wf.worst_fold_accuracy)}</b></span>
+                    <span>Std dev <b>{wf.std_accuracy != null ? fmtNum(wf.std_accuracy, 4) : "—"}</b></span>
+                    <span>Folds <b>{wf.n_folds}</b></span>
+                  </div>
+                  <div className="table-wrap" style={{ marginTop: 8 }}>
+                    <table className="data-table">
+                      <thead><tr><th>Fold</th><th>Train Rows</th><th>Test Rows</th><th>Accuracy</th><th>Signals</th><th>Win Rate</th></tr></thead>
+                      <tbody>
+                        {(wf.folds || []).map((f: any) => (
+                          <tr key={f.fold}>
+                            <td>{f.fold}</td>
+                            <td>{f.train_rows}</td>
+                            <td>{f.test_rows}</td>
+                            <td className={f.accuracy >= 0.5 ? "green" : "red"}>{pct01(f.accuracy)}</td>
+                            <td>{f.signals ?? "—"}</td>
+                            <td>{f.win_rate != null ? fmtPct(f.win_rate, 1) : "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              ) : (
+                <p className="mll-dim">{wf.reason}</p>
+              )}
             </div>
           )}
 
@@ -783,205 +1332,6 @@ function MonitoringTab({ lab, busy, act }: { lab: ReturnType<typeof useMLLab>; b
               ))}
             </tbody>
           </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ================================================================ settings
-
-function SettingsTab({ lab, busy, act }: { lab: ReturnType<typeof useMLLab>; busy: string | null; act: any }) {
-  const [promo, setPromo] = useState<any>(null);
-  const [retrain, setRetrain] = useState<any>(null);
-  const [hpoAlgo, setHpoAlgo] = useState("xgboost");
-  const [hpoMethod, setHpoMethod] = useState("random");
-  const [hpoTrials, setHpoTrials] = useState(20);
-  const [hpoView, setHpoView] = useState(0);
-
-  const promotion = promo ?? lab.settings?.promotion ?? null;
-  const retraining = retrain ?? lab.settings?.retraining ?? null;
-  const hpoResult = lab.hpoResults[hpoView];
-
-  if (!lab.settings) return <SkeletonTiles count={6} />;
-
-  const promoFields: Array<[string, string, number]> = [
-    ["min_accuracy", "Minimum Accuracy (0-1)", 0.01],
-    ["min_sharpe", "Minimum Sharpe", 0.1],
-    ["min_profit_factor", "Minimum Profit Factor", 0.05],
-    ["min_trades", "Minimum Trades", 1],
-    ["max_drawdown_pct", "Maximum Drawdown %", 1],
-    ["min_confidence", "Minimum Avg Confidence (0-1)", 0.05],
-  ];
-
-  return (
-    <div className="mll-stack">
-      <div className="mll-two-col">
-        <div className="mll-panel">
-          <div className="mll-panel-title">Automatic Promotion Rules</div>
-          <p className="mll-dim">A challenger auto-promotes to Champion only when EVERY rule passes on its holdout evaluation.</p>
-          <label className="mll-check">
-            <input
-              type="checkbox"
-              checked={!!promotion?.auto_promote}
-              onChange={(e) => setPromo({ ...promotion, auto_promote: e.target.checked })}
-            />
-            Auto-promote enabled
-          </label>
-          <div className="mll-form-grid">
-            {promoFields.map(([key, label, step]) => (
-              <label key={key}>
-                {label}
-                <input
-                  type="number"
-                  step={step}
-                  value={promotion?.[key] ?? ""}
-                  onChange={(e) => setPromo({ ...promotion, [key]: Number(e.target.value) })}
-                />
-              </label>
-            ))}
-          </div>
-          <button
-            className="mll-train-btn"
-            disabled={busy !== null || !promo}
-            onClick={() => act("save-promo", () => lab.saveSettings({ promotion: promo }).then(() => setPromo(null)), "Promotion rules saved")}
-          >
-            {busy === "save-promo" ? "Saving…" : "Save promotion rules"}
-          </button>
-        </div>
-
-        <div className="mll-panel">
-          <div className="mll-panel-title">Scheduled Retraining</div>
-          <div className="mll-form-grid">
-            <label>
-              Schedule
-              <select
-                value={retraining?.schedule || "manual"}
-                onChange={(e) => setRetrain({ ...retraining, schedule: e.target.value })}
-              >
-                <option value="manual">Manual only</option>
-                <option value="daily">Daily</option>
-                <option value="weekly">Weekly</option>
-                <option value="monthly">Monthly</option>
-              </select>
-            </label>
-          </div>
-          <label className="mll-check">
-            <input
-              type="checkbox"
-              checked={!!retraining?.drift_trigger_enabled}
-              onChange={(e) => setRetrain({ ...retraining, drift_trigger_enabled: e.target.checked })}
-            />
-            Auto-retrain when drift crosses threshold
-          </label>
-          <div className="mll-btn-row" style={{ marginTop: 10 }}>
-            <button
-              className="mll-train-btn"
-              disabled={busy !== null || !retrain}
-              onClick={() => act("save-retrain", () => lab.saveSettings({ retraining: retrain }).then(() => setRetrain(null)), "Retraining settings saved")}
-            >
-              {busy === "save-retrain" ? "Saving…" : "Save schedule"}
-            </button>
-            <button
-              disabled={busy !== null}
-              onClick={() => act("retrain-now", () => lab.retrainNow(), "Retraining jobs queued")}
-            >
-              Retrain now
-            </button>
-          </div>
-          {lab.overview?.retrain_triggers?.due && (
-            <p className="mll-dim" style={{ marginTop: 8 }}>
-              <AlertTriangle size={12} className="yellow" /> Triggers currently firing:{" "}
-              {lab.overview.retrain_triggers.reasons.map((r: any) => r.trigger).join(", ")}
-            </p>
-          )}
-        </div>
-      </div>
-
-      <div className="mll-section-title"><FlaskConical size={14} className="purple" /> Hyperparameter Optimization</div>
-      <div className="mll-panel">
-        <div className="mll-form-row">
-          <label>
-            Algorithm
-            <select value={hpoAlgo} onChange={(e) => setHpoAlgo(e.target.value)}>
-              {lab.hpoSupported.map((a) => <option key={a} value={a}>{a}</option>)}
-            </select>
-          </label>
-          <label>
-            Method
-            <select value={hpoMethod} onChange={(e) => setHpoMethod(e.target.value)}>
-              <option value="grid">Grid Search</option>
-              <option value="random">Random Search</option>
-              <option value="bayesian">Bayesian (Optuna TPE)</option>
-            </select>
-          </label>
-          <label>
-            Trials
-            <select value={hpoTrials} onChange={(e) => setHpoTrials(Number(e.target.value))}>
-              {[10, 20, 30, 40].map((n) => <option key={n} value={n}>{n}</option>)}
-            </select>
-          </label>
-          <button
-            className="mll-train-btn"
-            style={{ alignSelf: "flex-end" }}
-            disabled={busy !== null}
-            onClick={() => act("hpo", () => lab.startHpo({ algorithm: hpoAlgo, method: hpoMethod, n_trials: hpoTrials }), "HPO job queued — watch it in Training")}
-          >
-            {busy === "hpo" ? "Queuing…" : "Start optimization"}
-          </button>
-        </div>
-      </div>
-
-      {lab.hpoResults.length === 0 ? (
-        <EmptySlate title="No optimization results yet" reason="Completed HPO runs persist here with every trial, the best parameters, and parameter importance." />
-      ) : (
-        <div className="mll-stack">
-          <div className="mll-seg">
-            {lab.hpoResults.slice(0, 6).map((r, i) => (
-              <button key={r.job_id} className={hpoView === i ? "active" : ""} onClick={() => setHpoView(i)}>
-                {r.algorithm} · {r.method} · {fmtAgo(r.created_at)}
-              </button>
-            ))}
-          </div>
-          {hpoResult && (
-            <div className="mll-two-col">
-              <div className="mll-panel">
-                <div className="mll-panel-title">Best result — validation accuracy {fmtNum(hpoResult.best_value, 4)}</div>
-                <pre className="mll-code">{JSON.stringify(hpoResult.best_params, null, 2)}</pre>
-                {hpoResult.param_importance && (
-                  <>
-                    <div className="mll-panel-title" style={{ marginTop: 10 }}>Parameter importance (Optuna)</div>
-                    {Object.entries(hpoResult.param_importance).map(([k, v]: [string, any]) => (
-                      <div key={k} className="mll-param-imp">
-                        <span>{k}</span>
-                        <ProgressBar pct={v * 100} tone="green" />
-                        <b>{fmtNum(v * 100, 1)}%</b>
-                      </div>
-                    ))}
-                  </>
-                )}
-                <div className="mll-panel-title" style={{ marginTop: 10 }}>Optimization history</div>
-                <HpoHistoryChart history={hpoResult.history || []} />
-              </div>
-              <div className="mll-panel">
-                <div className="mll-panel-title">Top {Math.min(20, hpoResult.top_trials?.length ?? 0)} trials</div>
-                <div className="table-wrap">
-                  <table className="data-table">
-                    <thead><tr><th>#</th><th>Val. accuracy</th><th>Parameters</th></tr></thead>
-                    <tbody>
-                      {(hpoResult.top_trials || []).map((t: any) => (
-                        <tr key={t.trial}>
-                          <td>{t.trial}</td>
-                          <td><b>{fmtNum(t.value, 4)}</b></td>
-                          <td className="mll-mono mll-dim">{Object.entries(t.params).map(([k, v]) => `${k}=${v}`).join("  ")}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          )}
         </div>
       )}
     </div>

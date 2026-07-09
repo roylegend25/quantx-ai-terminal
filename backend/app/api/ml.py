@@ -17,12 +17,24 @@ from app.db.models import MLModelArtifact
 from app.db.session import get_db
 from app.ml.feature_store import store as feature_store
 from app.ml.model_registry import registry as legacy_model_registry
-from app.ml_lab import drift_ext, explain as explain_module, hpo as hpo_module, jobs, live_tracking, market_dataset, settings_repo
+from app.ml_lab import (
+    champion_gate,
+    drift_ext,
+    explain as explain_module,
+    hpo as hpo_module,
+    jobs,
+    live_tracking,
+    market_dataset,
+    notifications,
+    preflight,
+    settings_repo,
+)
 from app.ml_lab.algorithms import catalog as algorithm_catalog
-from app.mlops import rollback as rollback_module
+from app.mlops import model_manager, rollback as rollback_module
 from app.mlops.evaluation import history as evaluation_history
 from app.mlops.model_registry import STATUS_ARCHIVED, STATUS_CHAMPION, registry as mlops_registry
 from app.mlops.retrainer import should_retrain
+from app.mlops.scheduler import SCHEDULE_INTERVALS, run_scheduled_training
 
 router = APIRouter(prefix="/api/ml", tags=["ml"])
 
@@ -255,13 +267,62 @@ async def promote(model_id: str, force: bool = False, db: Session = Depends(get_
         return {"promoted": False, **rules}
 
     promoted = mlops_registry.promote_to_champion(model_id, db=db)
+    notifications.notify(
+        notifications.EVENT_CHAMPION_PROMOTED,
+        title=f"Champion promoted manually: {promoted['model_name']} {promoted['version']}",
+        message=(
+            "Promoted by user despite failing rules: " + "; ".join(rules["failures"][:3])
+            if not rules["met"]
+            else "Promoted by user - every promotion rule passed"
+        ),
+        severity="success" if rules["met"] else "warning",
+        data={"model_id": model_id, "forced": not rules["met"]},
+        db=db,
+    )
     return {"promoted": True, "forced": not rules["met"], "model": promoted, **rules}
+
+
+def _do_rollback(model_name: str, db: Session) -> dict:
+    result = rollback_module.rollback(model_name, db=db)
+    restored = result.get("rolled_back_to") or {}
+    demoted = result.get("rolled_back_from") or {}
+    notifications.notify(
+        notifications.EVENT_CHAMPION_ROLLBACK,
+        title=f"Champion rolled back: {model_name}",
+        message=(
+            f"Restored {restored.get('model_name')} {restored.get('version')} as Champion"
+            + (f", demoted {demoted.get('version')}" if demoted else " (no Champion was active)")
+        ),
+        severity="warning",
+        data={
+            "restored_model_id": restored.get("model_id"),
+            "demoted_model_id": demoted.get("model_id"),
+        },
+        db=db,
+    )
+    return result
+
+
+@router.post("/rollback")
+async def rollback_current(model_name: str | None = Body(None, embed=True), db: Session = Depends(get_db)):
+    """Rolls the current Champion back to its previous version. Without a
+    model_name in the body, targets whichever model currently holds
+    Champion status."""
+    if not model_name:
+        champion = mlops_registry.get_champion(db=db)
+        if champion is None:
+            raise HTTPException(status_code=400, detail="No Champion is active, so there is nothing to roll back")
+        model_name = champion["model_name"]
+    try:
+        return _do_rollback(model_name, db)
+    except rollback_module.NoPreviousChampionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.post("/rollback/{model_name}")
 async def rollback(model_name: str, db: Session = Depends(get_db)):
     try:
-        return rollback_module.rollback(model_name, db=db)
+        return _do_rollback(model_name, db)
     except rollback_module.NoPreviousChampionError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -417,6 +478,115 @@ async def hpo_results(limit: int = Query(default=10, ge=1, le=50), db: Session =
             for r in rows
         ]
     }
+
+
+# ------------------------------------------------------- MLOps automation
+
+
+@router.get("/schedule")
+async def get_schedule(db: Session = Depends(get_db)):
+    from app.mlops.scheduler import RUNNING, _scheduled_due
+
+    retraining = settings_repo.get_settings(db=db)["retraining"]
+    schedule = retraining.get("schedule", "manual")
+    interval = SCHEDULE_INTERVALS.get(schedule)
+    return {
+        "schedule": retraining,
+        "choices": settings_repo.SCHEDULE_CHOICES,
+        "scheduler_running": RUNNING,
+        "interval_hours": interval.total_seconds() / 3600 if interval else None,
+        "due_now": _scheduled_due(retraining),
+    }
+
+
+@router.put("/schedule")
+async def put_schedule(patch: dict = Body(...), db: Session = Depends(get_db)):
+    """Accepts the retraining keys directly ({"schedule": "daily", ...}) or
+    the full {"retraining": {...}} shape - both end up in the same settings
+    section the scheduler reads on its next cycle."""
+    values = patch.get("retraining") if isinstance(patch.get("retraining"), dict) else patch
+    try:
+        updated = settings_repo.update_settings({"retraining": values}, db=db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"schedule": updated["retraining"], "choices": settings_repo.SCHEDULE_CHOICES}
+
+
+@router.post("/train-now")
+def train_now(algorithms: list[str] | None = Body(None, embed=True), db: Session = Depends(get_db)):
+    """Manual trigger for the full automatic pipeline: preflight health
+    gate, then one async training job per configured (or requested)
+    algorithm. Sync handler on purpose - preflight builds the dataset, and
+    FastAPI runs `def` endpoints in the threadpool."""
+    result = run_scheduled_training(reason="manual", algorithms=algorithms, db=db)
+    if not result["started"]:
+        failures = "; ".join(result["preflight"]["failures"][:4])
+        raise HTTPException(status_code=409, detail=f"Preflight health gate failed - training skipped: {failures}")
+    return result
+
+
+@router.get("/preflight")
+def get_preflight(db: Session = Depends(get_db)):
+    """Current pre-training health gate status (also a sync/threadpool
+    handler: it builds the dataset to verify feature generation)."""
+    return preflight.run_preflight(db=db)
+
+
+@router.get("/champion")
+async def champion(db: Session = Depends(get_db)):
+    row = mlops_registry.get_champion(db=db)
+    gate = champion_gate.status(db=db)
+    history = (
+        [
+            {k: v.get(k) for k in ("model_id", "version", "status", "trained_at", "promoted_at", "val_accuracy", "win_rate")}
+            for v in mlops_registry.list_versions(row["model_name"], db=db)
+            if v.get("promoted_at")
+        ]
+        if row
+        else []
+    )
+    return {"champion": row, "inference_gate": gate, "promotion_history": history}
+
+
+@router.get("/compare/{model_id}")
+async def compare_model(model_id: str, db: Session = Depends(get_db)):
+    """One challenger vs the current Champion: per-metric deltas plus the
+    promotion-rule evaluation, i.e. the full promotion decision input."""
+    try:
+        result = model_manager.compare(model_id, db=db)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    result["promotion_check"] = settings_repo.evaluate_promotion_rules(result["challenger"], db=db)
+    artifact = (
+        db.query(MLModelArtifact)
+        .filter(MLModelArtifact.model_id == result["challenger"]["model_id"], MLModelArtifact.kind == "promotion_decision")
+        .order_by(MLModelArtifact.created_at.desc())
+        .first()
+    )
+    result["promotion_decision"] = artifact.payload if artifact else None
+    return result
+
+
+@router.get("/notifications")
+async def list_notifications(
+    limit: int = Query(default=50, ge=1, le=200),
+    unread_only: bool = False,
+    db: Session = Depends(get_db),
+):
+    return notifications.list_notifications(limit=limit, unread_only=unread_only, db=db)
+
+
+@router.post("/notifications/read-all")
+async def notifications_read_all(db: Session = Depends(get_db)):
+    return {"marked_read": notifications.mark_all_read(db=db)}
+
+
+@router.post("/notifications/{notification_id}/read")
+async def notification_read(notification_id: int, db: Session = Depends(get_db)):
+    row = notifications.mark_read(notification_id, db=db)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Notification {notification_id} not found")
+    return {"notification": row}
 
 
 @router.get("/settings")

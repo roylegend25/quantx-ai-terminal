@@ -21,9 +21,12 @@ def rollback(model_name: str, db: Session | None = None) -> dict:
     try:
         current = registry.get_champion(model_name=model_name, db=db)
 
+        # The crown can move between algorithms (e.g. xgboost -> ensemble_ml),
+        # so the previous Champion may live in another lineage entirely: it is
+        # whichever Archived row was promoted most recently, across all names.
         candidates = [
             version
-            for version in registry.list_versions(model_name, db=db)
+            for version in registry.list_all(db=db)
             if version["status"] == STATUS_ARCHIVED
             and version["promoted_at"]
             and (current is None or version["model_id"] != current["model_id"])

@@ -69,9 +69,12 @@ def compare(challenger_id: str, champion_id: str | None = None, db: Session | No
     if challenger is None:
         raise ValueError(f"Challenger model '{challenger_id}' not found")
 
-    champion = registry.get_by_id(champion_id, db=db) if champion_id else registry.get_champion(
-        model_name=challenger["model_name"], db=db
-    )
+    if champion_id:
+        champion = registry.get_by_id(champion_id, db=db)
+    else:
+        # Prefer the same-lineage champion, but fall back to the global one so
+        # the comparison matches what the promotion rules actually test against.
+        champion = registry.get_champion(model_name=challenger["model_name"], db=db) or registry.get_champion(db=db)
 
     diff = {}
     for field in COMPARISON_FIELDS:

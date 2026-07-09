@@ -15,6 +15,7 @@ import {
   ListOrdered,
   PlayCircle,
   ShieldAlert,
+  SlidersHorizontal,
   Waves,
 } from "lucide-react";
 import {
@@ -30,6 +31,7 @@ import {
 } from "recharts";
 import Card from "../components/Layout/Card";
 import { fmtDuration, fmtNum, fmtPct, fmtRelativeTime } from "../lib/format";
+import { api } from "../services/api";
 import type { AppData } from "../hooks/useAppData";
 
 type Props = AppData;
@@ -163,6 +165,7 @@ export default function ResearchLabPage({
   const [busy, setBusy] = useState<string | null>(null);
   const [dataForm, setDataForm] = useState(DATA_FORM_DEFAULT);
   const [advForm, setAdvForm] = useState(ADV_FORM_DEFAULT);
+  const [optResult, setOptResult] = useState<any>(null);
 
   useEffect(() => {
     loadLabExperiments();
@@ -971,6 +974,31 @@ export default function ResearchLabPage({
             <Waves size={16} />
             {busy === "walkforward" ? "Validating…" : "Walk-Forward Validate"}
           </button>
+          <button
+            disabled={busy !== null}
+            onClick={() =>
+              withBusy("optimize", async () => {
+                const res = await api.backtestOptimize({
+                  strategy: form.strategy,
+                  symbol: form.symbol,
+                  timeframe: form.timeframe,
+                  start_date: form.start_date || null,
+                  end_date: form.end_date || null,
+                  starting_balance: form.starting_balance,
+                  position_size_usd: form.position_size_usd,
+                });
+                if (res?.ok) {
+                  setOptResult(res.optimization);
+                  showToast(`Optimization complete: ${res.optimization?.combinations_tested ?? 0} combinations tested`);
+                } else {
+                  showToast(res?.detail ? String(res.detail) : "Optimization failed");
+                }
+              })
+            }
+          >
+            <SlidersHorizontal size={16} />
+            {busy === "optimize" ? "Optimizing…" : "Optimize Parameters"}
+          </button>
         </div>
       </Card>
 
@@ -1155,6 +1183,70 @@ export default function ResearchLabPage({
                     <td>{fmtNum(w.metrics?.sharpe_ratio, 2)}</td>
                     <td>{fmtPct(w.metrics?.win_rate, 1)}</td>
                     <td>{w.metrics?.total_trades ?? 0}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {optResult && (
+        <Card title="Parameter Optimization" full right={<SlidersHorizontal size={16} />}>
+          <p className="regime-desc">
+            {optResult.combinations_tested} combinations of ATR stop-loss / take-profit multiples and entry-confidence
+            thresholds, ranked by Sharpe ratio — {optResult.strategy} on {optResult.symbol} {optResult.timeframe}
+            {optResult.data_info?.source ? ` (data: ${optResult.data_info.source}${optResult.data_info.quality_score != null ? `, quality ${fmtNum(optResult.data_info.quality_score, 1)}` : ""})` : ""}.
+          </p>
+          {optResult.best && (
+            <div className="analytics-grid" style={{ marginTop: 12 }}>
+              <div className="analytics-tile">
+                <span className="tile-label">Best SL Mult</span>
+                <b className="tile-value">{fmtNum(optResult.best.atr_sl_mult, 1)}</b>
+              </div>
+              <div className="analytics-tile">
+                <span className="tile-label">Best TP Mult</span>
+                <b className="tile-value">{fmtNum(optResult.best.atr_tp_mult, 1)}</b>
+              </div>
+              <div className="analytics-tile">
+                <span className="tile-label">Best Entry Threshold</span>
+                <b className="tile-value">{fmtNum(optResult.best.entry_confidence_threshold, 0)}</b>
+              </div>
+              <div className="analytics-tile">
+                <span className="tile-label">Best Score</span>
+                <b className="tile-value">{fmtNum(optResult.best.score, 3)}</b>
+              </div>
+            </div>
+          )}
+          <div className="table-wrap" style={{ marginTop: 14 }}>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>SL Mult</th>
+                  <th>TP Mult</th>
+                  <th>Entry Threshold</th>
+                  <th>Score</th>
+                  <th>Total Return</th>
+                  <th>Sharpe</th>
+                  <th>Win Rate</th>
+                  <th>Max Drawdown</th>
+                  <th>Trades</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(optResult.results || []).slice(0, 20).map((r: any, i: number) => (
+                  <tr key={i}>
+                    <td>{fmtNum(r.atr_sl_mult, 1)}</td>
+                    <td>{fmtNum(r.atr_tp_mult, 1)}</td>
+                    <td>{fmtNum(r.entry_confidence_threshold, 0)}</td>
+                    <td>{fmtNum(r.score, 3)}</td>
+                    <td className={(r.metrics?.total_return_pct ?? 0) >= 0 ? "green" : "red"}>
+                      {fmtPct(r.metrics?.total_return_pct, 2)}
+                    </td>
+                    <td>{fmtNum(r.metrics?.sharpe_ratio, 2)}</td>
+                    <td>{fmtPct(r.metrics?.win_rate, 1)}</td>
+                    <td>{fmtPct(r.metrics?.max_drawdown_pct, 2)}</td>
+                    <td>{r.metrics?.total_trades ?? 0}</td>
                   </tr>
                 ))}
               </tbody>

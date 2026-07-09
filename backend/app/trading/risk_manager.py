@@ -163,6 +163,8 @@ def evaluate_risk(
     spread_pct: float | None = None,
     volume: float | None = None,
     volume_sma20: float | None = None,
+    data_reliable: bool | None = None,
+    data_reason: str | None = None,
 ) -> dict:
     """The single authoritative paper-trading risk gate. Reads the editable
     limits fresh from settings_repository (dashboard-configurable) rather
@@ -194,6 +196,13 @@ def evaluate_risk(
 
     if not risk["paper_trading_enabled"]:
         result["reason"] = "Paper trading is disabled in risk settings"
+        return result
+
+    # Same fail-open-on-unknown policy as spread/volume: None means the
+    # caller had no data-quality verdict to hand; only an explicit False
+    # (set by the prediction pipeline's data-quality gate) vetoes.
+    if data_reliable is False:
+        result["reason"] = data_reason or "Market data quality below the usable threshold - trading blocked"
         return result
 
     if direction not in ("LONG", "SHORT"):

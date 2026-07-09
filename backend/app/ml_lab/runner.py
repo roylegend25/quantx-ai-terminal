@@ -20,11 +20,12 @@ from pathlib import Path
 
 import joblib
 import numpy as np
+import pandas as pd
 import psutil
 
 from app.db.models import MLModelArtifact, MLTrainingJob
 from app.db.session import SessionLocal
-from app.ml_lab import market_dataset, metrics_ext, shap_native
+from app.ml_lab import market_dataset, metrics_ext, notifications, shap_native, walk_forward
 from app.ml_lab.algorithms import ALGORITHMS, SEQUENCE_ALGORITHMS, build_estimator
 from app.ml_lab.settings_repo import evaluate_promotion_rules
 from app.mlops.experiment import tracker as experiment_tracker
@@ -121,7 +122,12 @@ def _load_dataset(params: dict, report: ProgressWriter):
     )
     columns = market_dataset.FEATURE_COLUMNS
     train_df, val_df, test_df = market_dataset.chronological_split(frame)
-    spec = {"source": "market_history", **resolved, "rows": len(frame)}
+    spec = {
+        "source": "market_history",
+        **resolved,
+        "rows": len(frame),
+        "range": {"first_bar": int(frame["time"].min()), "last_bar": int(frame["time"].max())},
+    }
     return (
         train_df[columns], train_df["label"].to_numpy(),
         val_df[columns], val_df["label"].to_numpy(),
@@ -285,6 +291,14 @@ def run_training_job(job_id: str) -> dict:
         rows_per_sec = round(len(bench_X) / bench_elapsed, 1)
         latency_ms = round(bench_elapsed / max(1, len(bench_X)) * 1000, 4)
 
+        report(stage="walk_forward", pct=90, message="Walk-forward validation (expanding-window out-of-sample folds)")
+        wf = walk_forward.run(
+            algorithm,
+            hp,
+            pd.concat([X_train, X_val, X_test]),
+            np.concatenate([y_train, y_val, y_test]),
+        )
+
         report(stage="attribution", pct=92, message="Computing feature attribution")
         if algorithm in SEQUENCE_ALGORITHMS:
             importance = {
@@ -327,6 +341,7 @@ def run_training_job(job_id: str) -> dict:
             model_size_bytes=int(size_bytes),
             training_samples=int(len(X_train)),
             test_samples=int(len(y_eval)),
+            oos_accuracy=wf.get("mean_accuracy"),
             dataset_source=spec.get("source"),
             dataset_spec=spec,
             precision=cls_metrics["precision"], recall=cls_metrics["recall"],
@@ -349,6 +364,7 @@ def run_training_job(job_id: str) -> dict:
         _save_artifact(db, model_id, "calibration_curve", calibration)
         _save_artifact(db, model_id, "lift_gain", lift)
         _save_artifact(db, model_id, "trading_simulation", sim)
+        _save_artifact(db, model_id, "walk_forward", wf)
         _save_artifact(db, model_id, "importance", {k: v for k, v in importance.items() if k != "sample"})
         if importance.get("sample"):
             _save_artifact(db, model_id, "shap_sample", importance["sample"])
@@ -357,10 +373,82 @@ def run_training_job(job_id: str) -> dict:
 
         final_model = registry.get_by_id(model_id, db=db)
         rules = evaluate_promotion_rules(final_model, db=db)
+
+        # champion comparison + drift snapshot recorded alongside the rules
+        # so every promotion (or rejection) is fully explainable after the
+        # fact. Drift is informational here, not a gate: this challenger
+        # was just trained on post-drift data, so elevated market drift is
+        # the reason it exists, not evidence against it.
+        champion_before = registry.get_champion(db=db)
+        try:
+            from app.mlops.model_manager import compare as compare_to_champion
+
+            champion_diff = compare_to_champion(model_id, db=db)["diff"] if champion_before else None
+        except Exception:
+            champion_diff = None
+        try:
+            from app.mlops.drift_detector import latest_by_type
+
+            drift_snapshot = {
+                k: {"is_drifted": v.get("is_drifted"), "score": v.get("score")}
+                for k, v in latest_by_type(db=db).items() if v
+            }
+        except Exception:
+            drift_snapshot = {}
+
         promoted = False
         if rules["auto_promote_enabled"] and rules["met"]:
             registry.promote_to_champion(model_id, db=db)
             promoted = True
+
+        decision = {
+            "promoted": promoted,
+            "auto_promote_enabled": rules["auto_promote_enabled"],
+            "rules_met": rules["met"],
+            "failures": rules["failures"],
+            "detail": rules["detail"],
+            "walk_forward": wf,
+            "vs_champion": champion_diff,
+            "previous_champion": (
+                {"model_id": champion_before["model_id"], "version": champion_before["version"],
+                 "model_name": champion_before["model_name"]}
+                if champion_before else None
+            ),
+            "drift_at_decision": drift_snapshot,
+        }
+        _save_artifact(db, model_id, "promotion_decision", decision)
+
+        acc_pct = f"{cls_metrics['accuracy'] * 100:.1f}%"
+        notifications.notify(
+            notifications.EVENT_CHALLENGER_CREATED,
+            title=f"New challenger: {job.model_name} {registered['version']}",
+            message=f"{algorithm} trained on {spec.get('source')} ({len(X_train)} samples) - holdout accuracy {acc_pct}",
+            severity="info",
+            data={"model_id": model_id, "job_id": job_id, "metrics": cls_metrics},
+            db=db,
+        )
+        if promoted:
+            notifications.notify(
+                notifications.EVENT_CHAMPION_PROMOTED,
+                title=f"Champion promoted: {job.model_name} {registered['version']}",
+                message=(
+                    f"Cleared every promotion rule (accuracy {acc_pct}, "
+                    f"walk-forward {wf.get('mean_accuracy', 'n/a')})"
+                    + (f"; replaced {champion_before['model_name']} {champion_before['version']}" if champion_before else "")
+                ),
+                severity="success",
+                data={"model_id": model_id, "decision": {k: decision[k] for k in ("rules_met", "failures", "previous_champion")}},
+                db=db,
+            )
+        elif rules["auto_promote_enabled"]:
+            notifications.notify(
+                notifications.EVENT_CHALLENGER_REJECTED,
+                title=f"Challenger rejected: {job.model_name} {registered['version']}",
+                message="Kept current Champion - failed: " + "; ".join(rules["failures"][:4]),
+                severity="warning",
+                data={"model_id": model_id, "failures": rules["failures"]},
+                db=db,
+            )
 
         experiment_tracker.complete(
             experiment["experiment_id"],
@@ -373,8 +461,21 @@ def run_training_job(job_id: str) -> dict:
             "version": registered["version"],
             "metrics": cls_metrics,
             "trading_simulation": sim,
+            "walk_forward": wf,
             "promotion": {"promoted": promoted, **rules},
         }
+
+        notifications.notify(
+            notifications.EVENT_TRAINING_COMPLETED,
+            title=f"Training completed: {job.model_name} {registered['version']}",
+            message=(
+                f"{algorithm} finished in {duration}s - accuracy {acc_pct}, "
+                f"{'promoted to Champion' if promoted else 'registered as Challenger'}"
+            ),
+            severity="success",
+            data={"job_id": job_id, "model_id": model_id},
+            db=db,
+        )
 
         job = db.query(MLTrainingJob).filter(MLTrainingJob.job_id == job_id).first()
         job.status = "succeeded"
@@ -422,6 +523,14 @@ def main():
                 job.error = f"{type(exc).__name__}: {exc}"
                 job.finished_at = datetime.now(timezone.utc)
                 db.commit()
+                notifications.notify(
+                    notifications.EVENT_TRAINING_FAILED,
+                    title=f"Training failed: {job.model_name}",
+                    message=f"{job.algorithm} job {job_id}: {type(exc).__name__}: {exc}",
+                    severity="error",
+                    data={"job_id": job_id, "algorithm": job.algorithm},
+                    db=db,
+                )
         finally:
             db.close()
         raise

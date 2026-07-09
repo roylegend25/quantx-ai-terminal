@@ -19,6 +19,14 @@ type Risk = {
   reason: string;
 };
 
+type DataQuality = {
+  source?: string;
+  provider_ok?: boolean;
+  quality_score?: number | null;
+  reliable?: boolean;
+  reason?: string | null;
+};
+
 type Prediction = {
   direction?: string;
   confidence?: number;
@@ -31,6 +39,7 @@ type Prediction = {
   features?: Features;
   strategies?: Record<string, StrategyResult>;
   risk?: Risk;
+  data_quality?: DataQuality;
 };
 
 type Props = {
@@ -73,6 +82,19 @@ function AIDecisionCenter({ symbol, prediction, lastUpdated }: Props) {
   const neutral = strategies.length - bullish - bearish;
 
   const macdHist = prediction?.features?.macd_hist;
+
+  // data_quality comes from the Phase 20 data engine: reliable=false means
+  // the risk gate is blocking on data grounds; source cached_db means the
+  // provider was down and stored candles served this prediction.
+  const dataQuality = prediction?.data_quality;
+  const dataFeedLabel = !dataQuality
+    ? "—"
+    : dataQuality.reliable === false
+      ? "UNRELIABLE"
+      : dataQuality.source === "cached_db"
+        ? "CACHED"
+        : "LIVE";
+  const dataFeedTone: Tone = !dataQuality ? "yellow" : dataQuality.reliable === false ? "red" : dataQuality.source === "cached_db" ? "yellow" : "green";
 
   return (
     <div className="decision-center">
@@ -137,6 +159,18 @@ function AIDecisionCenter({ symbol, prediction, lastUpdated }: Props) {
         <div className="analytics-tile">
           <span className="tile-label">MACD Histogram</span>
           <b className={`tile-value ${(macdHist ?? 0) >= 0 ? "green" : "red"}`}>{fmtNum(macdHist, 4)}</b>
+        </div>
+
+        <div className="analytics-tile">
+          <span className="tile-label">Data Feed</span>
+          <b className={`tile-value ${dataFeedTone}`}>{dataFeedLabel}</b>
+        </div>
+
+        <div className="analytics-tile">
+          <span className="tile-label">Data Quality Score</span>
+          <b className="tile-value">
+            {typeof dataQuality?.quality_score === "number" ? fmtNum(dataQuality.quality_score, 1) : "—"}
+          </b>
         </div>
       </div>
 
