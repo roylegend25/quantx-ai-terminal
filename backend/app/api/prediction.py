@@ -78,6 +78,136 @@ def _consensus_adjustment(consensus: dict | None, direction: str) -> float:
     return round(-MTF_DISAGREE_PENALTY_MAX * agreement, 1)
 
 
+def _vote_probability_up(vote: dict) -> float:
+    """Same mapping app/strategy/ensemble.py uses to combine votes: a
+    LONG/SHORT vote pushes probability_up above/below 50 by half its
+    confidence, NO_TRADE sits at 50."""
+    confidence = max(0.0, min(100.0, vote.get("confidence") or 0))
+    if vote.get("direction") == "LONG":
+        return 50 + confidence / 2
+    if vote.get("direction") == "SHORT":
+        return 50 - confidence / 2
+    return 50.0
+
+
+def _build_decision_engine(
+    ens: dict,
+    champion_signal: dict,
+    direction: str,
+    confidence: float,
+    required_confidence: float,
+    risk_allowed: bool,
+    risk_reason: str,
+    trade_blockers: list[str],
+    consensus: dict | None,
+    consensus_adjustment: float,
+) -> dict:
+    """Full 'who decided this and why' block for the dashboard. Everything
+    here is derived from values the pipeline actually computed this cycle -
+    nothing is estimated or invented for display."""
+    champion_used = bool(champion_signal.get("used"))
+    weights = ens.get("weights") or {}
+
+    if champion_used:
+        mode = "champion_ml"
+    elif champion_signal.get("expected"):
+        # Champion inference is enabled and a Champion exists, but it could
+        # not be used this cycle - the ensemble is acting as the fallback.
+        mode = "fallback"
+    else:
+        mode = "strategy_ensemble"
+
+    active_model = (
+        {
+            "model_id": champion_signal.get("model_id"),
+            "model_type": champion_signal.get("algorithm") or champion_signal.get("model_name"),
+            "name": champion_signal.get("model_name"),
+            "version": champion_signal.get("version"),
+        }
+        if champion_used
+        else None
+    )
+
+    dominant = max(weights, key=weights.get) if weights else None
+    strategy_used = "champion" if champion_used else (dominant or "ensemble")
+
+    # ---- votes: the Champion first, then every ensemble strategy.
+    # contribution is the signed push toward LONG in probability points -
+    # for strategies it is exactly the term the ensemble summed
+    # ((p_up - 50) * weight); the Champion, when used, overrides rather
+    # than averages, so its contribution is its own full (p_up - 50).
+    model_votes: list[dict] = [
+        {
+            "name": "Champion ML",
+            "direction": champion_signal.get("direction") if champion_used else None,
+            "confidence": champion_signal.get("confidence") if champion_used else None,
+            "weight": 1.0 if champion_used else 0.0,
+            "available": champion_used,
+            "drives_decision": champion_used,
+            "contribution": round(champion_signal["p_up"] * 100 - 50, 1) if champion_used else 0.0,
+            "reason": None if champion_used else champion_signal.get("reason"),
+        }
+    ]
+    for name, vote in (ens.get("strategies") or {}).items():
+        weight = weights.get(name, 0.0)
+        model_votes.append(
+            {
+                "name": name,
+                "direction": vote.get("direction"),
+                "confidence": vote.get("confidence"),
+                "weight": round(weight, 4),
+                "available": True,
+                "drives_decision": not champion_used,
+                "contribution": round((_vote_probability_up(vote) - 50) * weight, 1),
+                "reason": vote.get("reason"),
+            }
+        )
+
+    # ---- top reasons, most decision-relevant first
+    top_reasons: list[str] = []
+    if champion_used:
+        top_reasons.append(
+            f"Champion {champion_signal.get('model_name')} {champion_signal.get('version')} predicts "
+            f"{champion_signal.get('direction')} ({champion_signal['p_up'] * 100:.0f}% up probability)"
+        )
+    elif mode == "fallback":
+        top_reasons.append(f"Champion unavailable, using strategy ensemble: {champion_signal.get('reason')}")
+    strategy_votes = sorted(
+        ((n, v) for n, v in (ens.get("strategies") or {}).items() if v.get("direction") in ("LONG", "SHORT")),
+        key=lambda item: weights.get(item[0], 0.0) * (item[1].get("confidence") or 0),
+        reverse=True,
+    )
+    for name, vote in strategy_votes[:3]:
+        top_reasons.append(
+            f"{name.replace('_', ' ').title()} voted {vote['direction']} ({vote.get('confidence') or 0:.0f}% confidence)"
+        )
+    if consensus and consensus_adjustment:
+        top_reasons.append(
+            f"Multi-timeframe consensus is {consensus.get('direction')} "
+            f"({'+' if consensus_adjustment >= 0 else ''}{consensus_adjustment:.1f} confidence adjustment)"
+        )
+    for blocker in trade_blockers:
+        top_reasons.append(f"Blocked: {blocker}")
+
+    return {
+        "mode": mode,
+        "active_model": active_model,
+        "fallback_reason": champion_signal.get("reason") if not champion_used else None,
+        "strategy_used": strategy_used,
+        "final_direction": direction,
+        "final_confidence": confidence,
+        "required_confidence": required_confidence,
+        "risk_allowed": risk_allowed,
+        "risk_reason": risk_reason,
+        "trade_allowed": risk_allowed,
+        "trade_blockers": trade_blockers,
+        "top_reasons": top_reasons[:5],
+        "model_votes": model_votes,
+        "strategy_weights": weights,
+        "market_regime": ens.get("regime"),
+    }
+
+
 def make_prediction(
     features: dict,
     market_context: dict | None = None,
@@ -152,34 +282,50 @@ def make_prediction(
 
     volume_ok, volume_reason = risk_manager.volume_allowed(features.get("volume"), features.get("volume_sma20"))
 
+    # Every blocker that currently applies, in the same priority order the
+    # old single-reason gate used - risk_reason stays byte-for-byte what it
+    # was (the first match), trade_blockers exposes the full list.
+    trade_blockers: list[str] = []
     if not risk_settings["paper_trading_enabled"]:
-        risk_allowed, risk_reason = False, "Paper trading is disabled in risk settings"
-    elif data_unreliable:
-        risk_allowed, risk_reason = (
-            False,
-            data_quality.get("reason") or "Market data quality below the usable threshold - trading blocked",
+        trade_blockers.append("Paper trading is disabled in risk settings")
+    if data_unreliable:
+        trade_blockers.append(
+            data_quality.get("reason") or "Market data quality below the usable threshold - trading blocked"
         )
-    elif insufficient_history:
-        risk_allowed, risk_reason = (
-            False,
-            f"Insufficient candle history ({candle_count} < {MIN_CANDLES_FOR_PREDICTION}) for a reliable prediction",
+    if insufficient_history:
+        trade_blockers.append(
+            f"Insufficient candle history ({candle_count} < {MIN_CANDLES_FOR_PREDICTION}) for a reliable prediction"
         )
-    elif stale_feed:
-        risk_allowed, risk_reason = (
-            False,
+    if stale_feed:
+        trade_blockers.append(
             f"Price feed is stale ({features.get('candle_age_seconds', 0):.0f}s since the last candle) - "
-            "waiting for fresh data",
+            "waiting for fresh data"
         )
-    elif direction == "NO_TRADE":
-        risk_allowed, risk_reason = False, "No qualifying trade signal"
-    elif not direction_allowed:
-        risk_allowed, risk_reason = False, f"{direction.title()} trades disabled by risk settings"
-    elif confidence < required_confidence:
-        risk_allowed, risk_reason = False, f"Confidence {confidence:.1f}% below required {required_confidence:.1f}%"
-    elif not volume_ok:
-        risk_allowed, risk_reason = False, volume_reason
+    if direction == "NO_TRADE":
+        trade_blockers.append("No qualifying trade signal")
     else:
-        risk_allowed, risk_reason = True, "Risk checks passed"
+        if not direction_allowed:
+            trade_blockers.append(f"{direction.title()} trades disabled by risk settings")
+        if confidence < required_confidence:
+            trade_blockers.append(f"Confidence {confidence:.1f}% below required {required_confidence:.1f}%")
+        if not volume_ok:
+            trade_blockers.append(volume_reason)
+
+    risk_allowed = not trade_blockers
+    risk_reason = trade_blockers[0] if trade_blockers else "Risk checks passed"
+
+    decision_engine = _build_decision_engine(
+        ens=ens,
+        champion_signal=champion_signal,
+        direction=direction,
+        confidence=confidence,
+        required_confidence=required_confidence,
+        risk_allowed=risk_allowed,
+        risk_reason=risk_reason,
+        trade_blockers=trade_blockers,
+        consensus=consensus,
+        consensus_adjustment=consensus_adjustment,
+    )
 
     return {
         "direction": decision["direction"],
@@ -201,6 +347,7 @@ def make_prediction(
         "multi_timeframe_consensus": consensus,
         "multi_timeframe_adjustment": consensus_adjustment,
         "ml_champion": champion_signal,
+        "decision_engine": decision_engine,
         "data_quality": data_quality,
         "risk": {
             "allowed": risk_allowed,
@@ -426,6 +573,23 @@ def _no_data_response(symbol: str, interval: str, data_quality: dict) -> dict:
     explicit NO_TRADE with empty forecast arrays and the blocking reason -
     nothing fabricated, no invented prices."""
     reason = data_quality["reason"]
+    decision_engine = {
+        "mode": "fallback",
+        "active_model": None,
+        "fallback_reason": reason,
+        "strategy_used": None,
+        "final_direction": "NO_TRADE",
+        "final_confidence": 0.0,
+        "required_confidence": None,
+        "risk_allowed": False,
+        "risk_reason": reason,
+        "trade_allowed": False,
+        "trade_blockers": [reason],
+        "top_reasons": [f"Blocked: {reason}"],
+        "model_votes": [],
+        "strategy_weights": {},
+        "market_regime": None,
+    }
     return {
         "symbol": symbol,
         "interval": interval,
@@ -433,6 +597,7 @@ def _no_data_response(symbol: str, interval: str, data_quality: dict) -> dict:
         "reason": reason,
         "direction": "NO_TRADE",
         "confidence": 0.0,
+        "decision_engine": decision_engine,
         "probability_up": None,
         "probability_down": None,
         "current_price": None,
@@ -445,6 +610,7 @@ def _no_data_response(symbol: str, interval: str, data_quality: dict) -> dict:
         "prediction": {
             "direction": "NO_TRADE",
             "confidence": 0.0,
+            "decision_engine": decision_engine,
             "data_quality": data_quality,
             "risk": {"allowed": False, "reason": reason},
             "computed_at": int(time.time() * 1000),
@@ -573,6 +739,7 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
         "current_price": pred["price"],
         "target": pred["target"],
         "stop": pred["stop"],
+        "decision_engine": pred["decision_engine"],
         "data_quality": data_quality,
         "forecast_points": forecast["forecast_points"],
         "upper_band_points": forecast["upper_band_points"],

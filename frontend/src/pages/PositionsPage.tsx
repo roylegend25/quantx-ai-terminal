@@ -1,9 +1,17 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import Card from "../components/Layout/Card";
 import OpenPositionsCard from "../components/Dashboard/OpenPositionsCard";
 import { fmtLocalDateTime, fmtTradeDuration, fmtUsd, toneClass, toneOf } from "../lib/format";
 import type { AppData } from "../hooks/useAppData";
 import type { NavKey } from "../lib/nav";
+
+const ENGINE_LABEL: Record<string, string> = {
+  champion_ml: "Champion ML",
+  strategy_ensemble: "Strategy Ensemble",
+  fallback: "Fallback",
+  manual: "Manual",
+};
 
 type Props = AppData & { navigate: (key: NavKey) => void };
 
@@ -44,6 +52,7 @@ export default function PositionsPage(props: Props) {
   const [symbolFilter, setSymbolFilter] = useState<SymbolFilter>("ALL");
   const [showResetModal, setShowResetModal] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [expandedTrade, setExpandedTrade] = useState<number | null>(null);
 
   const filteredPositions =
     symbolFilter === "ALL" ? positions : positions.filter((p) => p.symbol === symbolFilter);
@@ -196,12 +205,15 @@ export default function PositionsPage(props: Props) {
             <table className="data-table">
               <thead>
                 <tr>
+                  <th></th>
                   <th>Symbol</th>
                   <th>Side</th>
                   <th>Status</th>
                   <th>Entry</th>
                   <th>Exit</th>
                   <th>PnL</th>
+                  <th>Engine</th>
+                  <th>Confidence</th>
                   <th>Opened Time</th>
                   <th>Closed Time</th>
                   <th>Duration</th>
@@ -209,19 +221,102 @@ export default function PositionsPage(props: Props) {
               </thead>
               <tbody>
                 {filteredHistory.slice(0, 30).map((t) => (
-                  <tr key={t.id}>
-                    <td>
-                      <b>{t.symbol}</b>
-                    </td>
-                    <td className={t.side === "LONG" ? "green" : "red"}>{t.side}</td>
-                    <td>{t.status}</td>
-                    <td>{t.entry ?? "—"}</td>
-                    <td>{t.exit ?? "—"}</td>
-                    <td className={toneClass(toneOf(t.pnl))}>{fmtUsd(t.pnl)}</td>
-                    <td>{fmtLocalDateTime(t.opened_at)}</td>
-                    <td>{t.closed_at ? fmtLocalDateTime(t.closed_at) : "Open"}</td>
-                    <td>{fmtTradeDuration(t.opened_at, t.closed_at)}</td>
-                  </tr>
+                  <Fragment key={t.id}>
+                    <tr
+                      className={`journal-row${expandedTrade === t.id ? " journal-row-open" : ""}`}
+                      onClick={() => setExpandedTrade(expandedTrade === t.id ? null : t.id)}
+                    >
+                      <td>
+                        <span className="journal-chevron">
+                          {expandedTrade === t.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                        </span>
+                      </td>
+                      <td>
+                        <b>{t.symbol}</b>
+                      </td>
+                      <td className={t.side === "LONG" ? "green" : "red"}>{t.side}</td>
+                      <td>{t.status}</td>
+                      <td>{t.entry ?? "—"}</td>
+                      <td>{t.exit ?? "—"}</td>
+                      <td className={toneClass(toneOf(t.pnl))}>{fmtUsd(t.pnl)}</td>
+                      <td>
+                        <span className={t.decision_mode === "champion_ml" ? "green" : ""}>
+                          {t.decision_mode ? ENGINE_LABEL[t.decision_mode] ?? t.decision_mode : "—"}
+                        </span>
+                      </td>
+                      <td>{typeof t.confidence === "number" ? `${t.confidence.toFixed(0)}%` : "—"}</td>
+                      <td>{fmtLocalDateTime(t.opened_at)}</td>
+                      <td>{t.closed_at ? fmtLocalDateTime(t.closed_at) : "Open"}</td>
+                      <td>{fmtTradeDuration(t.opened_at, t.closed_at)}</td>
+                    </tr>
+                    {expandedTrade === t.id && (
+                      <tr className="journal-detail-row">
+                        <td colSpan={12}>
+                          <div className="journal-detail">
+                            <div className="journal-detail-grid">
+                              <div>
+                                <span className="tile-label">Decision Engine</span>
+                                <b className="tile-value">
+                                  {t.decision_mode ? ENGINE_LABEL[t.decision_mode] ?? t.decision_mode : "Not recorded"}
+                                </b>
+                              </div>
+                              <div>
+                                <span className="tile-label">Model</span>
+                                <b className="tile-value">{t.champion_model_type ?? "—"}</b>
+                              </div>
+                              <div>
+                                <span className="tile-label">Strategy</span>
+                                <b className="tile-value">{t.strategy_used ? t.strategy_used.replace(/_/g, " ") : "—"}</b>
+                              </div>
+                              <div>
+                                <span className="tile-label">Confidence</span>
+                                <b className="tile-value">
+                                  {typeof t.confidence === "number" ? `${t.confidence.toFixed(1)}%` : "—"}
+                                  {typeof t.required_confidence === "number"
+                                    ? ` (needs ${t.required_confidence.toFixed(1)}%)`
+                                    : ""}
+                                </b>
+                              </div>
+                              <div>
+                                <span className="tile-label">Market Regime</span>
+                                <b className="tile-value">{t.regime ? t.regime.replace(/_/g, " ") : "—"}</b>
+                              </div>
+                              <div>
+                                <span className="tile-label">Timeframe</span>
+                                <b className="tile-value">{t.timeframe ?? "—"}</b>
+                              </div>
+                              <div>
+                                <span className="tile-label">Risk Reason</span>
+                                <b className="tile-value">{t.risk_reason ?? "—"}</b>
+                              </div>
+                              <div>
+                                <span className="tile-label">Why Trade Was Closed</span>
+                                <b className="tile-value">
+                                  {t.close_reason ? t.close_reason.replace(/_/g, " ") : t.status === "OPEN" ? "Still open" : "—"}
+                                </b>
+                              </div>
+                            </div>
+                            <div className="journal-detail-reasons">
+                              <span className="tile-label">Why Trade Was Opened</span>
+                              {Array.isArray(t.decision_reasons) && t.decision_reasons.length > 0 ? (
+                                <ul>
+                                  {t.decision_reasons.map((r: string, i: number) => (
+                                    <li key={i}>{r}</li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <p className="regime-desc">
+                                  {t.decision_mode === "manual"
+                                    ? "Opened manually from the UI/API - no automated decision context."
+                                    : "No decision context recorded for this trade (opened before decision tracking existed)."}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>

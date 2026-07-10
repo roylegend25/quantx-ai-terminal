@@ -545,7 +545,49 @@ async def champion(db: Session = Depends(get_db)):
         if row
         else []
     )
-    return {"champion": row, "inference_gate": gate, "promotion_history": history}
+
+    # Flat status contract for the dashboard's Active Decision Engine card.
+    # status: is the Champion the thing driving predictions right now?
+    #   active      - promoted, healthy, and enabled for inference
+    #   fallback    - a Champion exists but predictions come from the
+    #                 strategy ensemble (disabled, unhealthy, or unusable)
+    #   unavailable - no Champion has been promoted at all
+    # health: healthy (loads and can predict) / warning (fine but not
+    # enabled for inference) / degraded (exists but cannot be used).
+    if row is None:
+        status_label, health = "unavailable", "degraded"
+        reason = "No Champion model has been promoted - the bot is using the strategy ensemble"
+    elif gate["active"]:
+        status_label, health, reason = "active", "healthy", gate["verdict"]
+    elif gate["healthy"]:
+        status_label, health, reason = "fallback", "warning", gate["verdict"]
+    else:
+        status_label, health = "fallback", "degraded"
+        reason = gate["verdict"]
+
+    spec = (row or {}).get("dataset_spec") or {}
+    symbols = spec.get("symbols") or []
+    return {
+        "has_champion": row is not None,
+        "model_id": (row or {}).get("model_id"),
+        "model_type": (row or {}).get("algorithm") or (row or {}).get("model_name"),
+        "version": (row or {}).get("version"),
+        "symbol": ", ".join(symbols) if symbols else None,
+        "timeframe": spec.get("timeframe"),
+        "trained_at": (row or {}).get("trained_at"),
+        "promoted_at": (row or {}).get("promoted_at"),
+        "accuracy": (row or {}).get("val_accuracy"),
+        "win_rate": (row or {}).get("win_rate"),
+        "profit_factor": (row or {}).get("profit_factor"),
+        "sharpe": (row or {}).get("sharpe_ratio"),
+        "status": status_label,
+        "health": health,
+        "reason": reason,
+        # Existing nested contract (Model Center Champion tab) - unchanged.
+        "champion": row,
+        "inference_gate": gate,
+        "promotion_history": history,
+    }
 
 
 @router.get("/compare/{model_id}")

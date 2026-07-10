@@ -36,6 +36,39 @@ def _iso_utc(dt: datetime | None) -> str | None:
 class StrategyContext(BaseModel):
     regime: str | None = None
     strategies: dict | None = None
+    # decision provenance from the prediction's decision_engine block -
+    # absent for manual API opens, which are honestly recorded as "manual"
+    timeframe: str | None = None
+    decision_mode: str | None = None
+    champion_model_id: str | None = None
+    champion_model_type: str | None = None
+    strategy_used: str | None = None
+    confidence: float | None = None
+    required_confidence: float | None = None
+    risk_allowed: bool | None = None
+    risk_reason: str | None = None
+    decision_reasons: list[str] | None = None
+    model_votes: list[dict] | None = None
+
+
+def _decision_fields(t: Trade) -> dict:
+    """Decision-provenance fields shared by /positions and /history rows."""
+    return {
+        "timeframe": t.timeframe,
+        "decision_mode": t.decision_mode,
+        "champion_model_id": t.champion_model_id,
+        "champion_model_type": t.champion_model_type,
+        "strategy_used": t.strategy_used,
+        "confidence": t.confidence,
+        "required_confidence": t.required_confidence,
+        "risk_allowed": t.risk_allowed,
+        "risk_reason": t.risk_reason,
+        "decision_reasons": t.decision_reasons,
+        "model_votes": t.model_votes,
+        "regime": t.regime,
+        "close_reason": t.close_reason,
+        "feature_id": t.feature_id,
+    }
 
 BINANCE_FAPI = "https://fapi.binance.com"
 
@@ -138,6 +171,20 @@ async def open_trade(
         regime=context.regime if context else None,
         strategy_snapshot=json.dumps(context.strategies) if context and context.strategies else None,
         feature_id=feature_id,
+        timeframe=context.timeframe if context else None,
+        # No decision context means nothing automated decided this - a
+        # direct API/UI call - so label it "manual" rather than leaving the
+        # journal ambiguous about who opened it.
+        decision_mode=(context.decision_mode if context and context.decision_mode else "manual"),
+        champion_model_id=context.champion_model_id if context else None,
+        champion_model_type=context.champion_model_type if context else None,
+        strategy_used=context.strategy_used if context else None,
+        confidence=context.confidence if context else None,
+        required_confidence=context.required_confidence if context else None,
+        risk_allowed=context.risk_allowed if context else None,
+        risk_reason=context.risk_reason if context else None,
+        decision_reasons=context.decision_reasons if context else None,
+        model_votes=context.model_votes if context else None,
     )
 
     db.add(trade)
@@ -198,6 +245,7 @@ def _close_trade_core(trade: Trade, exit_price: float, db: Session, reason: str 
     trade.pnl = pnl
     trade.status = "CLOSED"
     trade.closed_at = datetime.now(timezone.utc)
+    trade.close_reason = reason
 
     p = get_portfolio(db)
     p.balance += pnl
@@ -316,6 +364,7 @@ async def positions(db: Session = Depends(get_db)):
             "sl": t.sl,
             "tp": t.tp,
             "opened_at": _iso_utc(t.opened_at),
+            **_decision_fields(t),
         })
 
     return {"positions": result}
@@ -379,6 +428,9 @@ async def history(db: Session = Depends(get_db)):
                 "pnl": round(t.pnl, 2) if t.pnl else 0,
                 "opened_at": _iso_utc(t.opened_at),
                 "closed_at": _iso_utc(t.closed_at),
+                "sl": t.sl,
+                "tp": t.tp,
+                **_decision_fields(t),
             }
             for t in trades
         ]

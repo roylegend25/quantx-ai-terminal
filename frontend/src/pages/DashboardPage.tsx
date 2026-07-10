@@ -2,6 +2,9 @@ import { Flame } from "lucide-react";
 import Card from "../components/Layout/Card";
 import PredictionChart from "../components/Charts/PredictionChart";
 import PredictionGauge from "../components/Dashboard/PredictionGauge";
+import DecisionEngineCard from "../components/Dashboard/DecisionEngineCard";
+import DecisionReasoningCard from "../components/Dashboard/DecisionReasoningCard";
+import ModelVotesPanel from "../components/Dashboard/ModelVotesPanel";
 import AccountOverviewCard from "../components/Dashboard/AccountOverviewCard";
 import RiskStatusCard from "../components/Dashboard/RiskStatusCard";
 import OpenPositionsCard from "../components/Dashboard/OpenPositionsCard";
@@ -18,6 +21,13 @@ type Props = AppData & { navigate: (key: NavKey) => void };
 export default function DashboardPage(props: Props) {
   const { dashboard, symbol, prediction } = props;
   const ticker = dashboard?.symbols?.[symbol]?.ticker;
+  const decisionEngine = prediction?.decision_engine ?? null;
+  // Paper trades for this symbol, drawn as entry/exit/SL/TP markers on the
+  // chart - open positions and closed history both.
+  const symbolTrades = [
+    ...props.positions.filter((p: any) => p.symbol === symbol).map((p: any) => ({ ...p, status: "OPEN", mark: p.mark })),
+    ...props.history.filter((t: any) => t.symbol === symbol),
+  ];
 
   return (
     <div className="dash-grid">
@@ -30,6 +40,7 @@ export default function DashboardPage(props: Props) {
           candles={props.candles}
           ticker={ticker}
           prediction={prediction}
+          trades={symbolTrades}
         />
 
         <div className="stack-col">
@@ -37,6 +48,25 @@ export default function DashboardPage(props: Props) {
           <AccountOverviewCard portfolio={props.portfolio} positions={props.positions} />
           <RiskStatusCard portfolio={props.portfolio} positions={props.positions} history={props.history} />
         </div>
+      </div>
+
+      <div className="dash-row-decision">
+        <Card title="Active Decision Engine">
+          <DecisionEngineCard
+            status={props.championStatus}
+            decision={decisionEngine}
+            symbol={symbol}
+            interval={props.interval}
+          />
+        </Card>
+
+        <Card title="Why Bot Decided This">
+          <DecisionReasoningCard decision={decisionEngine} regime={prediction?.regime} />
+        </Card>
+
+        <Card title="Model & Strategy Votes">
+          <ModelVotesPanel votes={decisionEngine?.model_votes} finalDirection={decisionEngine?.final_direction} />
+        </Card>
       </div>
 
       <div className="dash-row-2">

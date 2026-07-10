@@ -41,11 +41,12 @@ class TradingEngine:
                     )
 
     async def _run_symbol_cycle(self, client: httpx.AsyncClient, symbol: str):
-        prediction = (
+        prediction_response = (
             await client.get(
                 f"http://127.0.0.1:8000/api/prediction/{symbol}"
             )
-        ).json()["prediction"]
+        ).json()
+        prediction = prediction_response["prediction"]
 
         portfolio = (
             await client.get(
@@ -122,6 +123,8 @@ class TradingEngine:
                 signal_time=signal_time,
                 open_positions=len(positions),
                 equity=portfolio.get("equity"),
+                timeframe=prediction_response.get("timeframe"),
+                decision_engine=prediction.get("decision_engine"),
             )
 
             log_event(

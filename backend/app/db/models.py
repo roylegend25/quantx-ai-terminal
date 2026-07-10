@@ -20,6 +20,21 @@ class Trade(Base):
     regime = Column(String, nullable=True)
     strategy_snapshot = Column(Text, nullable=True)
     feature_id = Column(Integer, nullable=True, index=True)
+    # --- decision provenance (why this trade was opened/closed) - all
+    # nullable: rows from before this existed, and manual API opens without
+    # a decision context, honestly stay NULL rather than getting backfilled.
+    timeframe = Column(String, nullable=True)
+    decision_mode = Column(String, nullable=True)  # champion_ml | strategy_ensemble | fallback | manual
+    champion_model_id = Column(String, nullable=True)
+    champion_model_type = Column(String, nullable=True)
+    strategy_used = Column(String, nullable=True)
+    confidence = Column(Float, nullable=True)
+    required_confidence = Column(Float, nullable=True)
+    risk_allowed = Column(Boolean, nullable=True)
+    risk_reason = Column(Text, nullable=True)
+    decision_reasons = Column(JSON, nullable=True)
+    model_votes = Column(JSON, nullable=True)
+    close_reason = Column(Text, nullable=True)
 
 
 class PredictionFeature(Base):

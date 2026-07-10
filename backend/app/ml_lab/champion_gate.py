@@ -108,32 +108,43 @@ def status(db: Session | None = None) -> dict:
 
 def maybe_predict(features: dict, data_quality: dict | None = None, db: Session | None = None) -> dict:
     """Returns {"used": True, p_up, direction, confidence, ...} when every
-    gate passes, else {"used": False, "reason": ...}. Never raises."""
+    gate passes, else {"used": False, "reason": ...}. Never raises.
+
+    `expected` marks the not-used cases where the Champion was configured to
+    drive predictions but couldn't (bad data, missing file, missing features):
+    that is a *fallback* to the strategy ensemble, as opposed to the normal
+    disabled/no-champion states where the ensemble is simply the engine."""
     owns_session = db is None
     db = db or SessionLocal()
     try:
         try:
             if not get_settings(db=db)["inference"]["champion_enabled"]:
-                return {"used": False, "reason": "Champion inference is disabled in the lab settings"}
+                return {
+                    "used": False,
+                    "expected": False,
+                    "reason": "Champion inference is disabled in the lab settings",
+                }
 
             if data_quality is not None and data_quality.get("reliable") is False:
                 return {
                     "used": False,
+                    "expected": True,
                     "reason": data_quality.get("reason") or "Market data quality below the usable threshold",
                 }
 
             champion, bundle, reason = _champion_bundle(db)
             if bundle is None:
-                return {"used": False, "reason": reason}
+                return {"used": False, "expected": champion is not None, "reason": reason}
 
             vector, missing = vector_from_features(features, bundle["feature_names"])
             if vector is None:
-                return {"used": False, "reason": f"Live feature snapshot is missing {missing}"}
+                return {"used": False, "expected": True, "reason": f"Live feature snapshot is missing {missing}"}
 
             p_up = float(bundle["model"].predict_proba([vector])[0][1])
             return {
                 "used": True,
                 "model_name": champion["model_name"],
+                "algorithm": champion.get("algorithm") or champion["model_name"],
                 "version": champion["version"],
                 "model_id": champion["model_id"],
                 "p_up": round(p_up, 4),
@@ -141,7 +152,7 @@ def maybe_predict(features: dict, data_quality: dict | None = None, db: Session 
                 "confidence": round(abs(p_up - 0.5) * 200, 1),
             }
         except Exception as exc:  # a gate bug must never take down predictions
-            return {"used": False, "reason": f"Champion gate error: {exc!r}"}
+            return {"used": False, "expected": True, "reason": f"Champion gate error: {exc!r}"}
     finally:
         if owns_session:
             db.close()

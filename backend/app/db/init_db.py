@@ -12,13 +12,28 @@ def _migrate_trade_columns():
         return
 
     existing = {col["name"] for col in inspector.get_columns("trades")}
+    new_columns = {
+        "regime": "VARCHAR",
+        "strategy_snapshot": "TEXT",
+        "feature_id": "INTEGER",
+        # decision provenance - why the bot opened/closed this trade
+        "timeframe": "VARCHAR",
+        "decision_mode": "VARCHAR",
+        "champion_model_id": "VARCHAR",
+        "champion_model_type": "VARCHAR",
+        "strategy_used": "VARCHAR",
+        "confidence": "FLOAT",
+        "required_confidence": "FLOAT",
+        "risk_allowed": "BOOLEAN",
+        "risk_reason": "TEXT",
+        "decision_reasons": "TEXT",
+        "model_votes": "TEXT",
+        "close_reason": "TEXT",
+    }
     with engine.begin() as conn:
-        if "regime" not in existing:
-            conn.execute(text("ALTER TABLE trades ADD COLUMN regime VARCHAR"))
-        if "strategy_snapshot" not in existing:
-            conn.execute(text("ALTER TABLE trades ADD COLUMN strategy_snapshot TEXT"))
-        if "feature_id" not in existing:
-            conn.execute(text("ALTER TABLE trades ADD COLUMN feature_id INTEGER"))
+        for name, sql_type in new_columns.items():
+            if name not in existing:
+                conn.execute(text(f"ALTER TABLE trades ADD COLUMN {name} {sql_type}"))
 
 def _migrate_prediction_feature_columns():
     """Add columns introduced after the prediction_features table already

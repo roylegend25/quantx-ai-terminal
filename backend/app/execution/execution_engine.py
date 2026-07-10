@@ -157,6 +157,8 @@ class ExecutionEngine:
         open_positions: int = 0,
         equity: float | None = None,
         exchange: str = "binance",
+        timeframe: str | None = None,
+        decision_engine: dict | None = None,
     ) -> ExecutionResult:
         start = time.perf_counter()
         order_id = uuid.uuid4().hex[:12]
@@ -278,11 +280,33 @@ class ExecutionEngine:
                 if feature_id is not None:
                     params["feature_id"] = feature_id
 
+                # Decision provenance riding along with the fill: which
+                # engine (Champion ML vs strategy ensemble) decided this,
+                # why, and what every model voted - stored on the Trade row
+                # so the journal can answer "why was this opened".
+                de = decision_engine or {}
+                active_model = de.get("active_model") or {}
+                context = {
+                    "regime": regime,
+                    "strategies": strategies,
+                    "timeframe": timeframe,
+                    "decision_mode": de.get("mode"),
+                    "champion_model_id": active_model.get("model_id"),
+                    "champion_model_type": active_model.get("model_type"),
+                    "strategy_used": de.get("strategy_used"),
+                    "confidence": de.get("final_confidence"),
+                    "required_confidence": de.get("required_confidence"),
+                    "risk_allowed": de.get("risk_allowed"),
+                    "risk_reason": de.get("risk_reason"),
+                    "decision_reasons": de.get("top_reasons"),
+                    "model_votes": de.get("model_votes"),
+                }
+
                 async with httpx.AsyncClient(timeout=15, headers=self._token_header()) as client:
                     r = await client.post(
                         f"{PAPER_API}/api/paper/open",
                         params=params,
-                        json={"regime": regime, "strategies": strategies},
+                        json=context,
                     )
                     r.raise_for_status()
                     return r.json()

@@ -26,6 +26,7 @@ import {
 import type { Candle } from "../../hooks/useAppData";
 import { api } from "../../services/api";
 import { fmtNum, fmtUsd } from "../../lib/format";
+import { formatCompactLocalDateTime } from "../../utils/dateTime";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import ProChartCanvas, {
   type HistoryPoint,
@@ -41,6 +42,9 @@ type Props = {
   candles: Candle[];
   ticker: any;
   prediction: any;
+  /** Paper trades (open + closed) for this symbol - drawn as entry/exit/
+   *  SL/TP markers with decision-provenance tooltips. */
+  trades?: any[];
 };
 
 const TIMEFRAME_CONFIG: Record<string, { label: string; ms: number }> = {
@@ -162,7 +166,7 @@ function candlesMatchTimeframe(candles: Candle[], tfMs: number): boolean {
   return Math.min(d1, d2) === tfMs;
 }
 
-function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, candles, ticker, prediction }: Props) {
+function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, candles, ticker, prediction, trades }: Props) {
   const isMobile = useMediaQuery("(max-width: 640px)");
   const isTabletPortrait = useMediaQuery("(min-width: 768px) and (max-width: 1024px)");
   const isTabletLandscape = useMediaQuery("(min-width: 1025px) and (max-width: 1366px)");
@@ -396,12 +400,9 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
   const targetPct = lastClose && typeof target === "number" ? ((target - lastClose) / lastClose) * 100 : NaN;
   const stopPct = lastClose && typeof stop === "number" ? ((stop - lastClose) / lastClose) * 100 : NaN;
 
-  const updatedAgo = useMemo(() => {
+  const updatedAt = useMemo(() => {
     if (typeof prediction?.computed_at !== "number") return null;
-    const diffSec = Math.max(0, Math.floor((Date.now() - prediction.computed_at) / 1000));
-    if (diffSec < 60) return "just now";
-    if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
-    return `${Math.floor(diffSec / 3600)}h ago`;
+    return formatCompactLocalDateTime(prediction.computed_at);
   }, [prediction?.computed_at]);
 
   // Debug info: mirrors ProChartCanvas's buildCone() gate exactly (a forecast
@@ -753,6 +754,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
           timeframeMs={tfConfig.ms}
           prediction={prediction}
           history={historyData.points}
+          trades={trades ?? []}
           liquidityClusters={liquidity}
           indicators={prefs.indicators}
           showAiOverlay={prefs.aiOverlay}
@@ -809,7 +811,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
         <div className="pc-tile">
           <span className="tile-label">Prediction Horizon</span>
           <b className="tile-value">{horizonText}</b>
-          <span className="pc-tile-sub">{updatedAgo ? `Updated ${updatedAgo}` : "—"}</span>
+          <span className="pc-tile-sub">{updatedAt ? `Updated ${updatedAt}` : "—"}</span>
         </div>
       </div>
 

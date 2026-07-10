@@ -88,12 +88,36 @@ export type LiquidityCluster = {
   dominant_side: string;
 };
 
+/** One paper trade (open or closed) as delivered by /api/paper/positions /
+ *  /api/paper/history, including decision provenance for the tooltip. */
+export type TradeMarker = {
+  id: number;
+  side: string;
+  status: string;
+  entry: number | null;
+  exit?: number | null;
+  sl?: number | null;
+  tp?: number | null;
+  pnl?: number | null;
+  opened_at?: string | null;
+  closed_at?: string | null;
+  decision_mode?: string | null;
+  champion_model_type?: string | null;
+  strategy_used?: string | null;
+  confidence?: number | null;
+  risk_reason?: string | null;
+  decision_reasons?: string[] | null;
+  close_reason?: string | null;
+  regime?: string | null;
+};
+
 type Props = {
   symbol: string;
   candles: Candle[];
   timeframeMs: number;
   prediction: any;
   history: HistoryPoint[];
+  trades: TradeMarker[];
   liquidityClusters: LiquidityCluster[];
   indicators: IndicatorId[];
   /** Bars the forecast cone projects ahead - timeframe-aware, matches the
@@ -1002,6 +1026,116 @@ function ProChartCanvas(props: Props) {
         }
       }
 
+      // ---- paper trade markers: entry / exit / SL / TP, each hoverable for
+      // the decision provenance stored on the trade (model, strategy,
+      // confidence, reasons, result). Only real recorded trades are drawn.
+      type TradeHit = { t: TradeMarker; x: number; y: number; kind: "entry" | "exit" | "sl" | "tp" };
+      let hoveredTrade: TradeHit | null = null;
+      if (p.trades && p.trades.length) {
+        const ptrT = pointerRef.current;
+        const hits: TradeHit[] = [];
+        const xyFor = (ms: number, price: number | null | undefined): [number, number] | null => {
+          if (!Number.isFinite(ms) || typeof price !== "number" || !Number.isFinite(price)) return null;
+          const idx = idxForTime(ms);
+          if (idx < viewStart - 2 || idx > view.end + 2) return null;
+          const y = yAt(price);
+          if (y < 0 || y > priceBottom) return null;
+          return [xAt(idx), y];
+        };
+        const consider = (t: TradeMarker, x: number, y: number, kind: TradeHit["kind"]) => {
+          if (ptrT.inside && Math.abs(ptrT.x - x) < 9 && Math.abs(ptrT.y - y) < 9) hits.push({ t, x, y, kind });
+        };
+
+        for (const t of p.trades) {
+          const openMs = t.opened_at ? Date.parse(t.opened_at) : NaN;
+          const closeMs = t.closed_at ? Date.parse(t.closed_at) : NaN;
+          const long = t.side === "LONG";
+          const won = (t.pnl ?? 0) >= 0;
+
+          const entryXY = xyFor(openMs, t.entry);
+          const exitXY = t.status === "CLOSED" ? xyFor(closeMs, t.exit) : null;
+
+          // faint connector from entry to exit for closed trades
+          if (entryXY && exitXY) {
+            g.strokeStyle = won ? "rgba(0, 245, 160, 0.35)" : "rgba(255, 93, 115, 0.35)";
+            g.lineWidth = 1;
+            g.setLineDash([3, 3]);
+            g.beginPath();
+            g.moveTo(entryXY[0], entryXY[1]);
+            g.lineTo(exitXY[0], exitXY[1]);
+            g.stroke();
+            g.setLineDash([]);
+          }
+
+          if (entryXY) {
+            const [x, y] = entryXY;
+            g.fillStyle = long ? T.green : T.red;
+            g.strokeStyle = "#0b0e1d";
+            g.lineWidth = 1;
+            g.beginPath();
+            if (long) {
+              g.moveTo(x, y - 5.5);
+              g.lineTo(x - 5, y + 4);
+              g.lineTo(x + 5, y + 4);
+            } else {
+              g.moveTo(x, y + 5.5);
+              g.lineTo(x - 5, y - 4);
+              g.lineTo(x + 5, y - 4);
+            }
+            g.closePath();
+            g.fill();
+            g.stroke();
+            consider(t, x, y, "entry");
+          }
+
+          if (exitXY) {
+            const [x, y] = exitXY;
+            g.fillStyle = won ? T.green : T.red;
+            g.strokeStyle = "#0b0e1d";
+            g.lineWidth = 1;
+            g.beginPath();
+            g.rect(x - 4, y - 4, 8, 8);
+            g.fill();
+            g.stroke();
+            consider(t, x, y, "exit");
+          }
+
+          // SL/TP shown while the position is live (they are still armed)
+          if (t.status === "OPEN") {
+            const diamond = (x: number, y: number, color: string) => {
+              g.strokeStyle = color;
+              g.lineWidth = 1.5;
+              g.beginPath();
+              g.moveTo(x, y - 4.5);
+              g.lineTo(x + 4.5, y);
+              g.lineTo(x, y + 4.5);
+              g.lineTo(x - 4.5, y);
+              g.closePath();
+              g.stroke();
+            };
+            const slXY = xyFor(openMs, t.sl);
+            const tpXY = xyFor(openMs, t.tp);
+            if (slXY) {
+              diamond(slXY[0], slXY[1], T.red);
+              consider(t, slXY[0], slXY[1], "sl");
+            }
+            if (tpXY) {
+              diamond(tpXY[0], tpXY[1], T.green);
+              consider(t, tpXY[0], tpXY[1], "tp");
+            }
+          }
+        }
+
+        hoveredTrade = hits.length ? hits[hits.length - 1] : null;
+        if (hoveredTrade) {
+          g.strokeStyle = "#fff";
+          g.lineWidth = 1.5;
+          g.beginPath();
+          g.arc(hoveredTrade.x, hoveredTrade.y, 7, 0, Math.PI * 2);
+          g.stroke();
+        }
+      }
+
       // ---- forecast cone + future prediction line
       if (anim.cone && anim.cone.predicted.length) {
         const cone = anim.cone;
@@ -1203,7 +1337,7 @@ function ProChartCanvas(props: Props) {
         g.font = `10px ${FONT}`;
 
         // OHLC readout for the hovered candle
-        if (hoverIdx >= 0 && hoverIdx < cs.length && !hoveredHist) {
+        if (hoverIdx >= 0 && hoverIdx < cs.length && !hoveredHist && !hoveredTrade) {
           const cd = cs[hoverIdx];
           const chg = ((cd.close - cd.open) / cd.open) * 100;
           g.textAlign = "left";
@@ -1233,9 +1367,11 @@ function ProChartCanvas(props: Props) {
         }
       }
 
-      // prediction-history tooltip card
+      // prediction-history / trade-marker tooltip card
       if (hoveredHist) {
         drawHistoryTooltip(g, hoveredHist, W, mainBottom, T);
+      } else if (hoveredTrade) {
+        drawTradeTooltip(g, hoveredTrade, W, mainBottom, T);
       }
 
       // watermark
@@ -1587,8 +1723,22 @@ function drawAiCard(g: CanvasRenderingContext2D, prediction: any, x: number, y: 
     ["Signal", directional ? dir : "NO TRADE", directional ? (dir === "LONG" ? T.green : T.red) : T.yellow],
     ["Confidence", `${confidence.toFixed(0)}%`, confidence >= 70 ? T.green : confidence >= 50 ? T.yellow : T.red],
   ];
-  if (!directional && typeof prediction.risk?.required_confidence === "number") {
+  if (typeof prediction.risk?.required_confidence === "number") {
     rows.push(["Required", `${prediction.risk.required_confidence.toFixed(0)}%`, T.textDim]);
+  }
+  // Decision-engine provenance: who is actually driving this prediction
+  // (Champion ML vs strategy ensemble vs fallback) and the risk verdict.
+  const de = prediction.decision_engine;
+  if (de?.mode) {
+    const modeLabel =
+      de.mode === "champion_ml" ? "Champion ML" : de.mode === "fallback" ? "Fallback (ensemble)" : "Strategy Ensemble";
+    rows.push(["Mode", modeLabel, de.mode === "champion_ml" ? T.green : de.mode === "fallback" ? T.yellow : T.cyan]);
+    if (de.mode === "champion_ml" && de.active_model) {
+      rows.push(["Model", `${de.active_model.model_type ?? de.active_model.name} ${de.active_model.version ?? ""}`.trim(), T.cyan]);
+    }
+  }
+  if (typeof prediction.risk?.allowed === "boolean") {
+    rows.push(["Risk", prediction.risk.allowed ? "ALLOWED" : "BLOCKED", prediction.risk.allowed ? T.green : T.red]);
   }
   if (expectedMove !== null) rows.push(["Exp. move", `${expectedMove >= 0 ? "+" : ""}${expectedMove.toFixed(2)}%`, expectedMove >= 0 ? T.green : T.red]);
   if (rr !== null) rows.push(["R : R", `1 : ${rr.toFixed(2)}`, T.text]);
@@ -1627,7 +1777,7 @@ function drawAiCard(g: CanvasRenderingContext2D, prediction: any, x: number, y: 
   g.fillStyle = T.textDim;
   g.textAlign = "left";
   g.font = `700 9px ${FONT}`;
-  g.fillText("AI SIGNAL", x + 10, y + 14);
+  g.fillText("AI DECISION", x + 10, y + 14);
   g.font = `600 10px ${FONT}`;
   rows.forEach(([k, v, color], i) => {
     const ry = y + 29 + i * 15;
@@ -1697,6 +1847,86 @@ function drawHistoryTooltip(
   g.textAlign = "left";
   g.font = `700 9px ${FONT}`;
   g.fillText("AI PREDICTION", cx + 10, cy + 14);
+  g.font = `600 10px ${FONT}`;
+  rows.forEach(([k, v, color], i) => {
+    const ry = cy + 28 + i * 14;
+    g.fillStyle = T.textDim;
+    g.fillText(k, cx + 10, ry);
+    g.fillStyle = color;
+    g.textAlign = "right";
+    g.fillText(v, cx + cardW - 10, ry);
+    g.textAlign = "left";
+  });
+  g.font = `10px ${FONT}`;
+}
+
+const DECISION_MODE_LABEL: Record<string, string> = {
+  champion_ml: "Champion ML",
+  strategy_ensemble: "Strategy Ensemble",
+  fallback: "Fallback (ensemble)",
+  manual: "Manual",
+};
+
+function drawTradeTooltip(
+  g: CanvasRenderingContext2D,
+  hovered: { t: TradeMarker; x: number; y: number; kind: "entry" | "exit" | "sl" | "tp" },
+  W: number,
+  mainBottom: number,
+  T: Theme
+) {
+  const t = hovered.t;
+  const kindLabel =
+    hovered.kind === "entry" ? "Entry" : hovered.kind === "exit" ? "Exit" : hovered.kind === "sl" ? "Stop Loss" : "Take Profit";
+  const price =
+    hovered.kind === "entry" ? t.entry : hovered.kind === "exit" ? t.exit : hovered.kind === "sl" ? t.sl : t.tp;
+  const won = (t.pnl ?? 0) >= 0;
+  const clip = (s: string, n = 44) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+  const rows: Array<[string, string, string]> = [
+    [kindLabel, price != null ? fmtPrice(price) : "—", hovered.kind === "sl" ? T.red : hovered.kind === "tp" ? T.green : T.text],
+    ["Side", t.side, t.side === "LONG" ? T.green : T.red],
+    ["Status", t.status, t.status === "OPEN" ? T.yellow : T.text],
+  ];
+  if (t.decision_mode) {
+    rows.push(["Engine", DECISION_MODE_LABEL[t.decision_mode] ?? t.decision_mode, t.decision_mode === "champion_ml" ? T.green : T.cyan]);
+  }
+  if (t.champion_model_type) rows.push(["Model", t.champion_model_type, T.cyan]);
+  if (t.strategy_used) rows.push(["Strategy", t.strategy_used.replace(/_/g, " "), T.cyan]);
+  if (t.confidence != null) rows.push(["Confidence", `${t.confidence.toFixed(0)}%`, T.text]);
+  if (t.regime) rows.push(["Regime", t.regime.replace(/_/g, " "), T.text]);
+  const openReason = t.decision_reasons?.[0];
+  if (openReason) rows.push(["Reason", clip(openReason), T.textDim]);
+  if (t.risk_reason) rows.push(["Risk", clip(t.risk_reason), T.textDim]);
+  if (t.status === "CLOSED") {
+    rows.push(["Result", `${won ? "+" : ""}${(t.pnl ?? 0).toFixed(2)} USDT`, won ? T.green : T.red]);
+    if (t.close_reason) rows.push(["Closed", clip(t.close_reason.replace(/_/g, " ")), T.textDim]);
+  }
+
+  g.font = `600 10px ${FONT}`;
+  let wMax = 96;
+  for (const [k, v] of rows) {
+    const w = g.measureText(`${k}    ${v}`).width;
+    if (w > wMax) wMax = w;
+  }
+  const cardW = wMax + 34;
+  const cardH = rows.length * 14 + 24;
+  let cx = hovered.x + 14;
+  let cy = hovered.y - cardH / 2;
+  if (cx + cardW > W - 8) cx = hovered.x - cardW - 14;
+  cy = Math.max(8, Math.min(cy, mainBottom - cardH - 8));
+
+  g.fillStyle = "rgba(13, 16, 33, 0.94)";
+  g.strokeStyle = `rgba(${T.cyanRgb}, 0.45)`;
+  g.lineWidth = 1;
+  g.beginPath();
+  g.roundRect(cx, cy, cardW, cardH, 8);
+  g.fill();
+  g.stroke();
+
+  g.fillStyle = T.textDim;
+  g.textAlign = "left";
+  g.font = `700 9px ${FONT}`;
+  g.fillText("PAPER TRADE", cx + 10, cy + 14);
   g.font = `600 10px ${FONT}`;
   rows.forEach(([k, v, color], i) => {
     const ry = cy + 28 + i * 14;

@@ -4925,3 +4925,323 @@ progress.disabled::-webkit-progress-value {
   overflow: hidden;
 }
 .notif-drop-body em { font-style: normal; font-size: 10.5px; color: #6d7290; }
+
+/* ============================================================
+   Decision engine row (dashboard): Active Decision Engine /
+   Why Bot Decided This / Model & Strategy Votes
+   ============================================================ */
+
+.dash-row-decision {
+  display: grid;
+  grid-template-columns: 1.25fr 1.25fr 1fr;
+  gap: 20px;
+  align-items: stretch;
+}
+
+@media (max-width: 1400px) {
+  .dash-row-decision {
+    grid-template-columns: 1fr 1fr;
+  }
+  .dash-row-decision > :last-child {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 900px) {
+  .dash-row-decision {
+    grid-template-columns: 1fr;
+  }
+  .dash-row-decision > :last-child {
+    grid-column: auto;
+  }
+}
+
+/* explicit flex-direction: .card > :last-child would otherwise recompose */
+.dec-engine,
+.dec-reasoning,
+.votes-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dec-mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.dec-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+}
+.dec-mode-badge.green {
+  color: var(--c-green);
+  border-color: rgba(0, 245, 160, 0.35);
+  background: rgba(0, 245, 160, 0.08);
+}
+.dec-mode-badge.yellow {
+  color: var(--c-yellow);
+  border-color: rgba(255, 209, 102, 0.35);
+  background: rgba(255, 209, 102, 0.08);
+}
+.dec-mode-badge.cyan {
+  color: var(--c-cyan);
+  border-color: rgba(var(--c-cyan-rgb), 0.35);
+  background: rgba(var(--c-cyan-rgb), 0.08);
+}
+
+.chip.cyan {
+  color: var(--c-cyan);
+  border-color: rgba(var(--c-cyan-rgb), 0.3);
+}
+
+.dec-empty {
+  display: flex;
+  flex-direction: row;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px dashed rgba(255, 209, 102, 0.35);
+  background: rgba(255, 209, 102, 0.05);
+}
+.dec-empty b {
+  font-size: 13px;
+}
+
+.dec-metrics {
+  margin-top: 2px;
+}
+
+.dec-small {
+  font-size: 12.5px;
+}
+
+.dec-reason {
+  margin: 0;
+}
+.dec-reason-warn {
+  color: var(--c-yellow);
+}
+
+/* ---- Why Bot Decided This ---- */
+
+.dec-verdict {
+  display: flex;
+  flex-direction: row;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+}
+.dec-verdict b {
+  font-size: 13.5px;
+}
+.dec-verdict.green {
+  border-color: rgba(0, 245, 160, 0.35);
+  background: rgba(0, 245, 160, 0.06);
+  color: var(--c-green);
+}
+.dec-verdict.red {
+  border-color: rgba(255, 93, 115, 0.35);
+  background: rgba(255, 93, 115, 0.06);
+  color: var(--c-red);
+}
+.dec-verdict.yellow {
+  border-color: rgba(255, 209, 102, 0.35);
+  background: rgba(255, 209, 102, 0.06);
+  color: var(--c-yellow);
+}
+.dec-verdict .regime-desc {
+  margin-top: 2px;
+}
+
+.dec-kv-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 12px;
+}
+
+.dec-reasons ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12.5px;
+  color: var(--ink, #cfd3ea);
+}
+.dec-reasons li.red {
+  display: list-item;
+}
+
+.dec-blockers .chip-row {
+  margin-top: 6px;
+}
+.dec-blockers .chip {
+  text-transform: none;
+  font-size: 11.5px;
+}
+
+/* ---- Model & Strategy Votes ---- */
+
+.vote-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.03);
+}
+.vote-row.vote-unavailable {
+  opacity: 0.65;
+  border-style: dashed;
+}
+
+.vote-head {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.vote-name {
+  font-size: 12.5px;
+  font-weight: 700;
+  text-transform: capitalize;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.vote-driver {
+  font-size: 10px;
+  padding: 2px 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.vote-head .chip {
+  font-size: 11px;
+  padding: 3px 10px;
+}
+
+.vote-bar-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+.vote-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+}
+.vote-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+.vote-bar-fill.fill-pos {
+  background: var(--c-green);
+}
+.vote-bar-fill.fill-neg {
+  background: var(--c-red);
+}
+.vote-meta {
+  font-size: 11px;
+  color: #8b90ad;
+  white-space: nowrap;
+}
+.vote-reason {
+  margin: 0;
+  font-size: 11.5px;
+  color: #8b90ad;
+}
+.votes-final {
+  margin: 2px 0 0;
+}
+
+/* ---- Trade journal expandable decision details ---- */
+
+.journal-row {
+  cursor: pointer;
+}
+.journal-row:hover td {
+  background: rgba(255, 255, 255, 0.03);
+}
+.journal-row-open td {
+  background: rgba(255, 255, 255, 0.04);
+}
+.journal-chevron {
+  display: inline-flex;
+  align-items: center;
+  color: #8b90ad;
+}
+
+.journal-detail-row td {
+  padding: 0 12px 14px;
+}
+.journal-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+.journal-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+.journal-detail-grid .tile-value {
+  font-size: 12.5px;
+  white-space: normal;
+}
+.journal-detail-reasons ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12.5px;
+}
+
+/* ============================================================
+   Timezone-aware timestamps: Local/UTC toggle + <time> cells
+   ============================================================ */
+
+.mll-header-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mll-time-toggle button {
+  font-size: 11px;
+  padding: 3px 10px;
+}
+
+/* a formatted timestamp must never wrap mid-value or clip inside a table
+   cell - the .table-wrap container scrolls horizontally instead */
+.data-table td time,
+.mll-mini-grid time,
+.notif-drop-body time {
+  white-space: nowrap;
+}

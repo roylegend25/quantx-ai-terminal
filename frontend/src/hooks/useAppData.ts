@@ -60,6 +60,10 @@ export function useAppData(authed: boolean | null) {
   const [executionStatus, setExecutionStatus] = useDedupedState<any>(null);
   const [executionMetrics, setExecutionMetrics] = useDedupedState<any>(null);
   const [modelCenter, setModelCenter] = useDedupedState<any>(null);
+  // Flat GET /api/ml/champion status: which model (if any) is the live
+  // decision engine right now - drives the dashboard's Active Decision
+  // Engine card.
+  const [championStatus, setChampionStatus] = useDedupedState<any>(null);
   const [labExperiments, setLabExperiments] = useDedupedState<any[]>([]);
   const [labRun, setLabRun] = useState<any>(null);
   const [labCompare, setLabCompare] = useDedupedState<any>(null);
@@ -133,7 +137,7 @@ export function useAppData(authed: boolean | null) {
       await Promise.all([dashP, predP, candleP]);
       if (isStale()) return;
 
-      const [ob, tr, pf, pos, hist, ctx, tf, weights, bot, sys, stress, exStatus, exRisk, execStatus, execMetrics, mlModels, mlChampion, mlExperiments, mlDrift] =
+      const [ob, tr, pf, pos, hist, ctx, tf, weights, bot, sys, stress, exStatus, exRisk, execStatus, execMetrics, mlModels, mlChampion, mlExperiments, mlDrift, mlChampionStatus] =
         await Promise.all([
           api.orderbook(symbol, 10).catch(() => null),
           api.trades(symbol, 20).catch(() => ({ trades: [] })),
@@ -154,6 +158,7 @@ export function useAppData(authed: boolean | null) {
           api.modelsChampion().catch(() => null),
           api.modelsExperiments().catch(() => null),
           api.modelsDrift().catch(() => null),
+          api.mlChampion().catch(() => null),
         ]);
 
       if (isStale()) return;
@@ -179,6 +184,7 @@ export function useAppData(authed: boolean | null) {
         experiments: mlExperiments?.experiments || [],
         drift: mlDrift?.drift || {},
       });
+      setChampionStatus(mlChampionStatus);
 
       const connectedExchange = Object.entries(exStatus?.exchanges || {}).find(
         ([, v]: [string, any]) => v?.connected && v?.configured
@@ -497,6 +503,7 @@ export function useAppData(authed: boolean | null) {
     executionStatus,
     executionMetrics,
     modelCenter,
+    championStatus,
     labExperiments,
     labRun,
     labCompare,
