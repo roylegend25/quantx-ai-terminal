@@ -179,6 +179,14 @@ class ExecutionEngine:
             return result
 
         # --- safety gates (cheap, no network) --------------------------------
+        # Emergency kill switch (Phase 22): halts paper execution too, and is
+        # checked here - not only in the pre-check - so nothing that reaches
+        # the engine directly can slip past it. Imported lazily to avoid an
+        # import cycle with app.trading.execution_router.
+        from app.trading import modes
+        if modes.kill_switch_active():
+            return reject("kill switch active - all trading halted")
+
         if self._breaker.is_open:
             return reject("circuit breaker open - too many recent execution failures")
 

@@ -35,7 +35,10 @@ from app.api.logs import router as logs_router
 from app.api.risk import router as risk_router
 from app.api.data import router as data_router
 from app.api.learning import router as learning_router
+from app.api.portfolio import router as portfolio_router
+from app.api.trading_control import router as trading_control_router
 from app.data_sources.scheduler import start_data_scheduler
+from app.trading.binance_sync import start_binance_sync
 
 app = FastAPI(title="QuantX AI Terminal API", version="2.0.0")
 
@@ -45,6 +48,7 @@ async def delayed_background_start():
     start_position_manager()
     start_mlops_scheduler()
     start_data_scheduler()
+    start_binance_sync()
 
 @app.on_event("startup")
 async def startup_event():
@@ -88,6 +92,8 @@ app.include_router(logs_router, dependencies=protected)
 app.include_router(risk_router, dependencies=protected)
 app.include_router(data_router, dependencies=protected)
 app.include_router(learning_router, dependencies=protected)
+app.include_router(portfolio_router, dependencies=protected)
+app.include_router(trading_control_router, dependencies=protected)
 app.include_router(health_router)
 
 @app.get("/api/health")

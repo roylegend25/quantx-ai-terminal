@@ -225,9 +225,9 @@ export function useAppData(authed: boolean | null) {
   );
 
   const openPaperTrade = useCallback(
-    async (side: "LONG" | "SHORT") => {
+    async (side: "LONG" | "SHORT", leverage = 1) => {
       try {
-        const res = await api.openPaperTrade(symbol, side, 1000);
+        const res = await api.openPaperTrade(symbol, side, 1000, leverage);
         showToast(res?.message || `${side} opened`, "success");
       } catch (e: any) {
         showToast(e?.message || `Failed to open ${side} trade`, "error");
@@ -239,15 +239,27 @@ export function useAppData(authed: boolean | null) {
   );
 
   const closePaperTrade = useCallback(
-    async (id: number) => {
+    async (id: number, quantity?: number) => {
       try {
-        const res = await api.closePaperTrade(id);
+        const res = await api.closePaperTrade(id, quantity);
         showToast(res?.message || "Trade closed", "success");
       } catch (e: any) {
         showToast(e?.message || "Failed to close trade", "error");
       } finally {
         await load();
       }
+    },
+    [showToast, load]
+  );
+
+  const updatePositionRisk = useCallback(
+    async (id: number, patch: { stop_loss: number | null; take_profit: number | null; trailing_stop: number | null }) => {
+      // errors propagate to the Edit Risk modal, which shows the server's
+      // structured validation message inline
+      const res = await api.updatePositionRisk(id, patch);
+      showToast("Risk levels updated", "success");
+      await load();
+      return res;
     },
     [showToast, load]
   );
@@ -518,6 +530,7 @@ export function useAppData(authed: boolean | null) {
     runBacktest,
     openPaperTrade,
     closePaperTrade,
+    updatePositionRisk,
     resetPaperTrading,
     botAction,
     runStressTest,

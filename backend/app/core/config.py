@@ -40,9 +40,35 @@ class Settings(BaseSettings):
     binance_fapi_url: str = "https://fapi.binance.com"
 
     # Hard safety gate for backend/app/exchanges - adapters refuse to
-    # construct at all unless this is true. There is no live-trading flag
-    # to pair it with: no adapter implements order placement.
+    # construct at all unless this is true. Real order placement lives in
+    # the separate, independently gated app/exchanges/binance_futures_client
+    # + app/trading/execution_router stack (Phase 22), never in adapters.
     exchange_read_only: bool = True
+
+    # --- Phase 22: real Binance Futures trading (all OFF/paper by default) ---
+    # Keys are backend-only: read from env, never persisted, never returned
+    # by any endpoint.
+    binance_api_key: str = ""
+    binance_api_secret: str = ""
+    # When true, the trading client targets https://testnet.binancefuture.com
+    binance_futures_testnet: bool = True
+    # Master server-side lock. While false, BINANCE_LIVE mode can never be
+    # unlocked from the UI - requests are refused with a clear reason.
+    binance_live_enabled: bool = False
+    binance_default_leverage: float = 1.0
+    binance_max_leverage: float = 3.0
+    binance_max_notional_per_trade: float = 25.0
+    binance_max_daily_loss_usdt: float = 20.0
+    binance_allowed_symbols: Annotated[list[str], NoDecode] = Field(
+        default=["BTCUSDT", "ETHUSDT"]
+    )
+
+    @field_validator("binance_allowed_symbols", mode="before")
+    @classmethod
+    def _split_allowed_symbols(cls, v):
+        if isinstance(v, str):
+            return [s.strip().upper() for s in v.split(",") if s.strip()]
+        return v
 
     paper_database_url: str = "sqlite:////app/data/paper.db"
 

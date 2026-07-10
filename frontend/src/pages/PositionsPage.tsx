@@ -2,8 +2,10 @@ import { Fragment, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import Card from "../components/Layout/Card";
 import OpenPositionsCard from "../components/Dashboard/OpenPositionsCard";
-import { fmtLocalDateTime, fmtTradeDuration, fmtUsd, toneClass, toneOf } from "../lib/format";
+import EditRiskModal from "../components/Dashboard/EditRiskModal";
+import { fmtLocalDateTime, fmtNum, fmtTradeDuration, fmtUsd, toneClass, toneOf } from "../lib/format";
 import type { AppData } from "../hooks/useAppData";
+import type { Position } from "../lib/portfolioStats";
 import type { NavKey } from "../lib/nav";
 
 const ENGINE_LABEL: Record<string, string> = {
@@ -53,6 +55,8 @@ export default function PositionsPage(props: Props) {
   const [showResetModal, setShowResetModal] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [expandedTrade, setExpandedTrade] = useState<number | null>(null);
+  const [leverage, setLeverage] = useState(1);
+  const [editingPosition, setEditingPosition] = useState<Position | null>(null);
 
   const filteredPositions =
     symbolFilter === "ALL" ? positions : positions.filter((p) => p.symbol === symbolFilter);
@@ -77,13 +81,24 @@ export default function PositionsPage(props: Props) {
     <div className="page-grid">
       <Card title="Open a Paper Trade" wide>
         <p className="regime-desc">
-          Opens a simulated {symbol} position using the paper trading engine ($1,000 notional).
+          Opens a simulated {symbol} position using the paper trading engine ($1,000 notional
+          {leverage > 1 ? `, $${(1000 / leverage).toFixed(0)} margin at ${leverage}x` : ""}).
         </p>
         <div className="controls" style={{ marginTop: 14 }}>
-          <button className="btn-long" onClick={() => props.openPaperTrade("LONG")}>
+          <label className="filter-select-wrap">
+            <span className="tile-label">Leverage</span>
+            <select className="filter-select" value={leverage} onChange={(e) => setLeverage(Number(e.target.value))}>
+              {[1, 2, 3, 5, 10, 20].map((l) => (
+                <option key={l} value={l}>
+                  {l}x
+                </option>
+              ))}
+            </select>
+          </label>
+          <button className="btn-long" onClick={() => props.openPaperTrade("LONG", leverage)}>
             Open Long
           </button>
-          <button className="btn-short" onClick={() => props.openPaperTrade("SHORT")}>
+          <button className="btn-short" onClick={() => props.openPaperTrade("SHORT", leverage)}>
             Open Short
           </button>
           <button className="btn-danger" onClick={() => setShowResetModal(true)}>
@@ -96,11 +111,30 @@ export default function PositionsPage(props: Props) {
         <div className="kv-grid">
           <div>
             <span className="tile-label">Open Positions</span>
-            <b className="tile-value">{positions.length}</b>
+            <b
+              className={`tile-value ${
+                typeof props.portfolio?.max_open_positions === "number" &&
+                positions.length >= props.portfolio.max_open_positions
+                  ? "yellow"
+                  : ""
+              }`}
+            >
+              {typeof props.portfolio?.max_open_positions === "number"
+                ? `${positions.length} of ${props.portfolio.max_open_positions}`
+                : positions.length}
+            </b>
           </div>
           <div className="align-right">
             <span className="tile-label">Closed Trades</span>
             <b className="tile-value">{history.filter((t) => t.status === "CLOSED").length}</b>
+          </div>
+          <div>
+            <span className="tile-label">Total Margin Used</span>
+            <b className="tile-value">{fmtUsd(props.portfolio?.total_margin_used)}</b>
+          </div>
+          <div className="align-right">
+            <span className="tile-label">Available Margin</span>
+            <b className="tile-value">{fmtUsd(props.portfolio?.available_margin)}</b>
           </div>
         </div>
         <div className="controls" style={{ marginTop: 14 }}>
@@ -193,10 +227,19 @@ export default function PositionsPage(props: Props) {
         <OpenPositionsCard
           positions={filteredPositions}
           onClose={props.closePaperTrade}
+          onEditRisk={setEditingPosition}
           onViewAll={props.navigate}
           compact={false}
         />
       </Card>
+
+      {editingPosition && (
+        <EditRiskModal
+          position={editingPosition}
+          onSave={props.updatePositionRisk}
+          onClose={() => setEditingPosition(null)}
+        />
+      )}
 
       <Card title="Trade Journal" full>
         {filteredHistory.length === 0 && <p className="analytics-empty">No trade history yet.</p>}
@@ -293,6 +336,46 @@ export default function PositionsPage(props: Props) {
                                 <span className="tile-label">Why Trade Was Closed</span>
                                 <b className="tile-value">
                                   {t.close_reason ? t.close_reason.replace(/_/g, " ") : t.status === "OPEN" ? "Still open" : "—"}
+                                </b>
+                              </div>
+                              <div>
+                                <span className="tile-label">Leverage</span>
+                                <b className="tile-value">{t.leverage != null ? `${t.leverage}x` : "—"}</b>
+                              </div>
+                              <div>
+                                <span className="tile-label">Margin Used</span>
+                                <b className="tile-value">{t.margin_used != null ? fmtUsd(t.margin_used) : "—"}</b>
+                              </div>
+                              <div>
+                                <span className="tile-label">Notional</span>
+                                <b className="tile-value">{t.notional_value != null ? fmtUsd(t.notional_value) : "—"}</b>
+                              </div>
+                              <div>
+                                <span className="tile-label">Take Profit (last set)</span>
+                                <b className="tile-value">
+                                  <span className={t.tp != null ? "green" : ""}>{t.tp != null ? fmtNum(t.tp) : "—"}</span>
+                                </b>
+                              </div>
+                              <div>
+                                <span className="tile-label">Stop Loss (last set)</span>
+                                <b className="tile-value">
+                                  <span className={t.sl != null ? "red" : ""}>{t.sl != null ? fmtNum(t.sl) : "—"}</span>
+                                </b>
+                              </div>
+                              <div>
+                                <span className="tile-label">Est. Liquidation</span>
+                                <b className="tile-value orange">
+                                  {t.liquidation_price != null
+                                    ? fmtNum(t.liquidation_price)
+                                    : t.leverage === 1
+                                    ? "None at 1x"
+                                    : "—"}
+                                </b>
+                              </div>
+                              <div>
+                                <span className="tile-label">Realized PnL</span>
+                                <b className={`tile-value ${toneClass(toneOf(t.realized_pnl ?? t.pnl))}`}>
+                                  {fmtUsd(t.realized_pnl ?? (t.status === "CLOSED" ? t.pnl : null))}
                                 </b>
                               </div>
                             </div>

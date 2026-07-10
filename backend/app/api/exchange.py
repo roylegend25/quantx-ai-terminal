@@ -1,13 +1,24 @@
 from fastapi import APIRouter, HTTPException
 
 from app.exchanges import manager
+from app.trading import modes
 
 router = APIRouter(prefix="/api/exchange", tags=["exchange"])
 
 
 @router.get("/status")
 async def status():
-    return await manager.status_all()
+    """Safe trading status (Phase 22 shape: mode / configured / testnet /
+    live_enabled / can_trade / reason / warnings) merged with the legacy
+    per-exchange connectivity map. Never returns keys, secrets, signatures
+    or request headers - see test_exchange_trading_modes.py."""
+    legacy = await manager.status_all()
+    safe = modes.exchange_safe_status()
+    return {
+        **safe,
+        "warnings": modes.status_warnings(),
+        **legacy,
+    }
 
 
 @router.get("/balances")

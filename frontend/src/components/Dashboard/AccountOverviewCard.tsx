@@ -9,9 +9,15 @@ type Props = {
 
 function AccountOverviewCard({ portfolio, positions }: Props) {
   const margin = marginUsagePct(positions, portfolio);
-  const available = (portfolio?.equity ?? 0) - ((portfolio?.equity ?? 0) * margin) / 100;
+  const available =
+    typeof portfolio?.available_margin === "number"
+      ? portfolio.available_margin
+      : (portfolio?.equity ?? 0) - ((portfolio?.equity ?? 0) * margin) / 100;
   const dailyPnl = portfolio?.daily_pnl ?? 0;
   const dailyPct = portfolio?.balance ? (dailyPnl / portfolio.balance) * 100 : 0;
+  const maxOpen = portfolio?.max_open_positions;
+  const openCount = positions.length;
+  const atLimit = typeof maxOpen === "number" && openCount >= maxOpen;
 
   return (
     <div className="stack-card">
@@ -34,6 +40,31 @@ function AccountOverviewCard({ portfolio, positions }: Props) {
         <div className="align-right">
           <span className="tile-label">Available Margin</span>
           <b className="tile-value">{fmtUsd(available)}</b>
+        </div>
+        <div>
+          <span className="tile-label">Margin Used</span>
+          <b className="tile-value">{fmtUsd(portfolio?.total_margin_used)}</b>
+        </div>
+        <div className="align-right">
+          <span className="tile-label">Notional Exposure</span>
+          <b className="tile-value">{fmtUsd(portfolio?.total_notional_exposure)}</b>
+        </div>
+        <div>
+          <span className="tile-label">Open Positions</span>
+          <b className={`tile-value ${atLimit ? "yellow" : ""}`}>
+            {typeof maxOpen === "number" ? `${openCount} of ${maxOpen}` : openCount}
+            {atLimit ? " (limit reached)" : ""}
+          </b>
+        </div>
+        <div className="align-right">
+          <span className="tile-label" title="Distance to the closest estimated liquidation among open positions">
+            Nearest Est. Liq.
+          </span>
+          <b className="tile-value orange">
+            {typeof portfolio?.nearest_liquidation_distance_pct === "number"
+              ? fmtPct(portfolio.nearest_liquidation_distance_pct)
+              : "—"}
+          </b>
         </div>
       </div>
 

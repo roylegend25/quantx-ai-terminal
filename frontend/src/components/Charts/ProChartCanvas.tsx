@@ -109,7 +109,16 @@ export type TradeMarker = {
   decision_reasons?: string[] | null;
   close_reason?: string | null;
   regime?: string | null;
+  // leverage/risk fields for open-position level lines (null on trades
+  // opened before leverage tracking existed)
+  leverage?: number | null;
+  liquidation_price?: number | null;
+  trailing_stop?: number | null;
 };
+
+/** Hitbox of one open-position level line, recorded during draw so the
+ *  pointerup handler can turn a tap on a line into an edit-risk action. */
+type PositionLineHit = { tradeId: number; y: number; x1: number; kind: "entry" | "tp" | "sl" | "liq" };
 
 type Props = {
   symbol: string;
@@ -137,6 +146,9 @@ type Props = {
   livePrice: number | null;
   resetSignal: number;
   onExportRef?: (fn: () => void) => void;
+  /** Tap/click on an open position's entry/TP/SL/liq line opens the
+   *  edit-risk dialog for that position. */
+  onEditPosition?: (tradeId: number) => void;
 };
 const AXIS_W = 68;
 const AXIS_H = 24;
@@ -339,6 +351,9 @@ function ProChartCanvas(props: Props) {
     pinchDist: 0,
   });
   const themeRef = useRef<{ theme: Theme; at: number }>({ theme: readTheme(), at: 0 });
+  // Open-position line hitboxes, rewritten every draw; consumed by the
+  // pointerup tap-to-edit handler.
+  const posLinesRef = useRef<PositionLineHit[]>([]);
 
   // Smoothed animation state: the drawn price/cone chase their targets with
   // an exponential approach each frame, so 1s ticks morph instead of jump.
@@ -1136,6 +1151,60 @@ function ProChartCanvas(props: Props) {
         }
       }
 
+      // ---- open-position level lines: entry / TP / SL / estimated
+      // liquidation drawn across the plot from the position's open time,
+      // labeled at the line start. Tap/click a line to edit risk (hitboxes
+      // recorded for the pointerup handler). Liquidation is the paper
+      // engine's ESTIMATE - labeled as such.
+      posLinesRef.current = [];
+      if (p.trades && p.trades.length) {
+        for (const t of p.trades) {
+          if (t.status !== "OPEN") continue;
+          const openMs = t.opened_at ? Date.parse(t.opened_at) : NaN;
+          let x1 = plotL;
+          if (Number.isFinite(openMs)) {
+            const idx = idxForTime(openMs);
+            x1 = Math.max(plotL, Math.min(plotR - 60, xAt(idx)));
+          }
+          const posLine = (
+            price: number | null | undefined,
+            color: string,
+            label: string,
+            kind: PositionLineHit["kind"]
+          ) => {
+            if (typeof price !== "number" || !Number.isFinite(price)) return;
+            const y = yAt(price);
+            if (y < 0 || y > priceBottom) return;
+            g.strokeStyle = color;
+            g.lineWidth = 1.25;
+            g.setLineDash([6, 4]);
+            g.beginPath();
+            g.moveTo(x1, y);
+            g.lineTo(plotR, y);
+            g.stroke();
+            g.setLineDash([]);
+            const text = `${label} ${fmtPrice(price)}`;
+            g.font = `600 9px ${FONT}`;
+            const w = g.measureText(text).width + 10;
+            g.fillStyle = "rgba(13, 16, 33, 0.85)";
+            g.beginPath();
+            g.roundRect(x1 + 2, y - 8, w, 14, 4);
+            g.fill();
+            g.fillStyle = color;
+            g.textAlign = "left";
+            g.fillText(text, x1 + 7, y + 3);
+            g.font = `10px ${FONT}`;
+            posLinesRef.current.push({ tradeId: t.id, y, x1, kind });
+          };
+
+          const sideTag = t.side === "LONG" ? "▲" : "▼";
+          posLine(t.entry, t.side === "LONG" ? T.green : T.red, `${sideTag} ENTRY`, "entry");
+          posLine(t.tp, T.green, "TP", "tp");
+          posLine(t.sl, T.red, t.trailing_stop ? "TRAIL SL" : "SL", "sl");
+          posLine(t.liquidation_price, HISTORY_ORANGE, "EST. LIQ", "liq");
+        }
+      }
+
       // ---- forecast cone + future prediction line
       if (anim.cone && anim.cone.predicted.length) {
         const cone = anim.cone;
@@ -1402,6 +1471,11 @@ function ProChartCanvas(props: Props) {
       dirtyRef.current = true;
     };
 
+    // Tap-vs-drag discrimination for the position-line edit affordance: a
+    // pointer that never strays more than a few px from its down point is a
+    // tap, anything else is a pan/pinch.
+    const tapRef = { downX: 0, downY: 0, moved: true };
+
     const onPointerDown = (e: PointerEvent) => {
       canvas.setPointerCapture(e.pointerId);
       const d = dragRef.current;
@@ -1409,10 +1483,14 @@ function ProChartCanvas(props: Props) {
       if (d.pointers.size === 1) {
         d.active = true;
         d.lastX = e.offsetX;
+        tapRef.downX = e.offsetX;
+        tapRef.downY = e.offsetY;
+        tapRef.moved = false;
       } else if (d.pointers.size === 2) {
         const pts = [...d.pointers.values()];
         d.pinchDist = Math.abs(pts[0].x - pts[1].x);
         d.active = false;
+        tapRef.moved = true;
       }
     };
 
@@ -1438,6 +1516,9 @@ function ProChartCanvas(props: Props) {
         v.end -= dxBars;
         d.lastX = e.offsetX;
       }
+      if (!tapRef.moved && (Math.abs(e.offsetX - tapRef.downX) > 5 || Math.abs(e.offsetY - tapRef.downY) > 5)) {
+        tapRef.moved = true;
+      }
       markDirty();
     };
 
@@ -1448,6 +1529,16 @@ function ProChartCanvas(props: Props) {
         d.active = false;
         d.pinchDist = 0;
       }
+      // tap on an open-position line -> edit its risk levels (never drag-
+      // to-edit: taps only, validated in the modal + server-side)
+      const onEdit = propsRef.current.onEditPosition;
+      if (!tapRef.moved && onEdit) {
+        const hit = posLinesRef.current.find(
+          (l) => Math.abs(e.offsetY - l.y) <= 6 && e.offsetX >= l.x1
+        );
+        if (hit) onEdit(hit.tradeId);
+      }
+      tapRef.moved = true;
       markDirty();
     };
 

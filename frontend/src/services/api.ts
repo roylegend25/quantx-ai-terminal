@@ -33,6 +33,21 @@ async function putJson<T = any>(url: string, body: Record<string, unknown>): Pro
   return data;
 }
 
+async function patchJson<T = any>(url: string, body: Record<string, unknown>): Promise<T> {
+  const res = await authFetch(`${API}${url}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data?.detail || data?.message || `Request failed (${res.status})`) as Error & { field?: string };
+    if (data?.field) err.field = data.field;
+    throw err;
+  }
+  return data;
+}
+
 export const api = {
   dashboard: () => getJson("/api/dashboard"),
   prediction: (symbol: string, interval: string) =>
@@ -55,9 +70,15 @@ export const api = {
   portfolio: () => getJson("/api/paper/portfolio"),
   positions: () => getJson("/api/paper/positions"),
   history: () => getJson("/api/paper/history"),
-  openPaperTrade: (symbol: string, side: "LONG" | "SHORT", usdtSize = 1000) =>
-    postJson(`/api/paper/open?symbol=${symbol}&side=${side}&usdt_size=${usdtSize}`),
-  closePaperTrade: (id: number) => postJson(`/api/paper/close/${id}`),
+  openPaperTrade: (symbol: string, side: "LONG" | "SHORT", usdtSize = 1000, leverage = 1) =>
+    postJson(`/api/paper/open?symbol=${symbol}&side=${side}&usdt_size=${usdtSize}&leverage=${leverage}`),
+  closePaperTrade: (id: number, quantity?: number) =>
+    postJson(`/api/paper/positions/${id}/close`, {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(quantity != null ? { quantity } : {}),
+    }),
+  updatePositionRisk: (id: number, patch: { stop_loss?: number | null; take_profit?: number | null; trailing_stop?: number | null }) =>
+    patchJson(`/api/paper/positions/${id}/risk`, patch),
   resetPaperTrading: () => postJson(`/api/paper/reset`),
   runBacktest: (symbol: string, interval = "5m") =>
     getJson(`/api/backtest/run?symbol=${symbol}&interval=${interval}`),
@@ -269,6 +290,49 @@ export const api = {
       body: JSON.stringify({ algorithm }),
     }),
   learningRecommendations: () => getJson("/api/learning/recommendations"),
+  // ---- Phase 22: portfolio + real trading control ----
+  portfolioSummary: () => getJson("/api/portfolio/summary"),
+  portfolioBalances: () => getJson("/api/portfolio/balances"),
+  portfolioPositions: () => getJson("/api/portfolio/positions"),
+  portfolioOrders: () => getJson("/api/portfolio/orders"),
+  portfolioTrades: () => getJson("/api/portfolio/trades"),
+  portfolioAudit: (limit = 50) => getJson(`/api/portfolio/audit?limit=${limit}`),
+  tradingMode: () => getJson("/api/trading/mode"),
+  enablePaperMode: () => postJson("/api/trading/enable-paper"),
+  enableTestnetMode: () => postJson("/api/trading/enable-testnet"),
+  requestLiveUnlock: (confirmation: string, acknowledgements: Record<string, boolean>) =>
+    postJson("/api/trading/request-live-unlock", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmation, acknowledgements }),
+    }),
+  placeTradingOrder: (body: Record<string, unknown>) =>
+    postJson("/api/trading/place-order", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  closeTradingPosition: (body: Record<string, unknown>) =>
+    postJson("/api/trading/close-position", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  updateTradingPositionRisk: (id: number, patch: { stop_loss?: number | null; take_profit?: number | null }) =>
+    patchJson(`/api/trading/positions/${id}/risk`, patch),
+  cancelTradingOrder: (symbol: string, orderId: number) =>
+    postJson("/api/trading/cancel-order", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbol, order_id: orderId }),
+    }),
+  cancelAllTradingOrders: (symbol?: string) =>
+    postJson("/api/trading/cancel-all-orders", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbol: symbol ?? null, confirm: true }),
+    }),
+  killSwitch: (active: boolean, reason?: string, cancelOrders = true) =>
+    postJson("/api/trading/kill-switch", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ active, reason: reason ?? null, cancel_orders: cancelOrders }),
+    }),
+  tradingSync: () => postJson("/api/trading/sync"),
   riskSettingsGet: () => getJson("/api/risk/settings"),
   riskSettingsUpdate: (patch: Record<string, unknown>) => putJson("/api/risk/settings", patch),
   riskSettingsReset: () => postJson("/api/risk/settings/reset"),

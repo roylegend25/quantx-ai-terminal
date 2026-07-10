@@ -1,5 +1,6 @@
 export type NavKey =
   | "dashboard"
+  | "portfolio"
   | "predictions"
   | "positions"
   | "performance"
@@ -16,6 +17,7 @@ export type NavKey =
 
 export const NAV_ITEMS: { key: NavKey; label: string }[] = [
   { key: "dashboard", label: "Dashboard" },
+  { key: "portfolio", label: "Portfolio" },
   { key: "predictions", label: "Predictions" },
   { key: "positions", label: "Positions" },
   { key: "performance", label: "Performance" },
@@ -34,7 +36,7 @@ export const NAV_ITEMS: { key: NavKey; label: string }[] = [
 /** Purely a sidebar rendering grouping - NAV_ITEMS above stays the flat
  * source of truth (labels, icon lookups) for anything else that needs it. */
 export const NAV_SECTIONS: { label: string; keys: NavKey[] }[] = [
-  { label: "Main", keys: ["dashboard", "predictions", "positions", "performance"] },
+  { label: "Main", keys: ["dashboard", "portfolio", "predictions", "positions", "performance"] },
   { label: "Trading", keys: ["market", "bot-settings", "risk", "execution"] },
   { label: "Analysis", keys: ["backtesting", "model-center", "research-lab", "stress-test"] },
   { label: "System", keys: ["logs", "system-status"] },

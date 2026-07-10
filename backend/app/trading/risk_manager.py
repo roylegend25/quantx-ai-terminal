@@ -194,6 +194,14 @@ def evaluate_risk(
         "settings": risk,
     }
 
+    # The emergency kill switch (Phase 22) halts EVERY mode, paper included -
+    # imported lazily to keep this module import-light for pure-function
+    # callers (stress harness, unit tests of the helpers above).
+    from app.trading import modes
+    if modes.kill_switch_active():
+        result["reason"] = "Kill switch active - all trading halted"
+        return result
+
     if not risk["paper_trading_enabled"]:
         result["reason"] = "Paper trading is disabled in risk settings"
         return result

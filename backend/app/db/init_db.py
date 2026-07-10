@@ -29,6 +29,16 @@ def _migrate_trade_columns():
         "decision_reasons": "TEXT",
         "model_votes": "TEXT",
         "close_reason": "TEXT",
+        # leverage / margin / live-risk editing - nullable, never backfilled
+        "user_id": "VARCHAR",
+        "leverage": "FLOAT",
+        "margin_mode": "VARCHAR",
+        "margin_used": "FLOAT",
+        "maintenance_margin_rate": "FLOAT",
+        "liquidation_price": "FLOAT",
+        "trailing_stop": "FLOAT",
+        "realized_pnl": "FLOAT",
+        "updated_at": "DATETIME",
     }
     with engine.begin() as conn:
         for name, sql_type in new_columns.items():

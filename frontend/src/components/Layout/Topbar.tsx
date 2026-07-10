@@ -3,10 +3,13 @@ import { UserRound } from "lucide-react";
 import ThemeSwitcher from "./ThemeSwitcher";
 import NotificationBell from "./NotificationBell";
 import type { UseThemeReturn } from "../../hooks/useTheme";
+import type { NavKey } from "../../lib/nav";
 
 type Props = {
   dashboard: any;
   theme: UseThemeReturn;
+  /** Current page - closes the notification panel on navigation. */
+  activeKey: NavKey;
 };
 
 function tickerRow(label: string, value: string, tone?: "green" | "red") {
@@ -18,7 +21,7 @@ function tickerRow(label: string, value: string, tone?: "green" | "red") {
   );
 }
 
-function Topbar({ dashboard, theme }: Props) {
+function Topbar({ dashboard, theme, activeKey }: Props) {
   const [now, setNow] = useState(new Date());
 
   useEffect(() => {
@@ -58,7 +61,7 @@ function Topbar({ dashboard, theme }: Props) {
 
       <div className="topbar-actions">
         <span className="clock">{now.toUTCString().slice(17, 25)} UTC</span>
-        <NotificationBell />
+        <NotificationBell routeKey={activeKey} />
         <ThemeSwitcher theme={theme} />
         <div className="avatar">
           <UserRound size={18} />

@@ -35,6 +35,18 @@ class Trade(Base):
     decision_reasons = Column(JSON, nullable=True)
     model_votes = Column(JSON, nullable=True)
     close_reason = Column(Text, nullable=True)
+    # --- leverage / margin / risk - all nullable: rows opened before these
+    # existed honestly stay NULL and the positions API reports why instead
+    # of backfilling fabricated values.
+    user_id = Column(String, nullable=True)  # auth subject that opened the trade
+    leverage = Column(Float, nullable=True)
+    margin_mode = Column(String, nullable=True)  # isolated (only supported mode)
+    margin_used = Column(Float, nullable=True)  # initial margin committed at entry, USDT
+    maintenance_margin_rate = Column(Float, nullable=True)  # flat rate stamped at open
+    liquidation_price = Column(Float, nullable=True)  # ESTIMATED (see app/trading/margin.py)
+    trailing_stop = Column(Float, nullable=True)  # trailing distance in price units
+    realized_pnl = Column(Float, nullable=True)  # accumulates across partial closes
+    updated_at = Column(DateTime, nullable=True)
 
 
 class PredictionFeature(Base):
@@ -714,6 +726,70 @@ class Portfolio(Base):
     total_pnl = Column(Float, default=0.0)
     wins = Column(Integer, default=0)
     losses = Column(Integer, default=0)
+
+
+class TradingControl(Base):
+    """Singleton row (id=1) of runtime trading-mode state (Phase 22, see
+    app/trading/modes.py). The requested mode can only ever be one of
+    PAPER | BINANCE_TESTNET | BINANCE_LIVE; BINANCE_LIVE_LOCKED is never
+    stored - it is computed (live requested but env lock or UI unlock
+    missing). live_unlocked is set only by the explicit unlock ceremony and
+    means nothing while BINANCE_LIVE_ENABLED=false on the server."""
+    __tablename__ = "trading_control"
+
+    id = Column(Integer, primary_key=True, default=1)
+    mode = Column(String, default="PAPER")
+    live_unlocked = Column(Boolean, default=False)
+    live_unlocked_at = Column(DateTime, nullable=True)
+    kill_switch_active = Column(Boolean, default=False)
+    kill_switch_reason = Column(Text, nullable=True)
+    kill_switch_at = Column(DateTime, nullable=True)
+    updated_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+
+class ExchangePositionRow(Base):
+    """Local mirror of one open Binance Futures position (Phase 22, written
+    only by app/trading/execution_router.py sync). Binance is the source of
+    truth - these rows exist so the UI/audit trail can show what the bot
+    believed was open, and so a local-vs-exchange disagreement can raise a
+    sync warning that blocks new orders until reconciled."""
+    __tablename__ = "exchange_positions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    mode = Column(String, index=True)  # BINANCE_TESTNET | BINANCE_LIVE
+    symbol = Column(String, index=True)
+    side = Column(String)
+    quantity = Column(Float)
+    entry_price = Column(Float, nullable=True)
+    mark_price = Column(Float, nullable=True)
+    leverage = Column(Float, nullable=True)
+    margin_type = Column(String, nullable=True)
+    liquidation_price = Column(Float, nullable=True)
+    unrealized_pnl = Column(Float, nullable=True)
+    margin_used = Column(Float, nullable=True)
+    notional = Column(Float, nullable=True)
+    stop_loss_order_id = Column(String, nullable=True)
+    take_profit_order_id = Column(String, nullable=True)
+    exchange_position_id = Column(String, nullable=True)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class TradingAuditLog(Base):
+    """Append-only audit trail of every real-trading lifecycle event (Phase
+    22): order requested/accepted/rejected/filled/canceled, TP/SL updates,
+    position syncs, mode changes, live unlock, kill switch. Persisted (the
+    /api/logs ring buffer is in-memory only) and never contains API secrets
+    - see app/trading/modes.py:audit()."""
+    __tablename__ = "trading_audit_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event = Column(String, index=True)
+    mode = Column(String, index=True, nullable=True)
+    symbol = Column(String, index=True, nullable=True)
+    detail = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
 
 class RiskSettings(Base):

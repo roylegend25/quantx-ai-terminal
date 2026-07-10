@@ -1,5 +1,8 @@
+import { useState } from "react";
 import { Flame } from "lucide-react";
 import Card from "../components/Layout/Card";
+import EditRiskModal from "../components/Dashboard/EditRiskModal";
+import type { Position } from "../lib/portfolioStats";
 import PredictionChart from "../components/Charts/PredictionChart";
 import PredictionGauge from "../components/Dashboard/PredictionGauge";
 import DecisionEngineCard from "../components/Dashboard/DecisionEngineCard";
@@ -22,6 +25,11 @@ export default function DashboardPage(props: Props) {
   const { dashboard, symbol, prediction } = props;
   const ticker = dashboard?.symbols?.[symbol]?.ticker;
   const decisionEngine = prediction?.decision_engine ?? null;
+  const [editingPosition, setEditingPosition] = useState<Position | null>(null);
+  const editPositionById = (id: number) => {
+    const p = props.positions.find((x: Position) => x.id === id);
+    if (p) setEditingPosition(p);
+  };
   // Paper trades for this symbol, drawn as entry/exit/SL/TP markers on the
   // chart - open positions and closed history both.
   const symbolTrades = [
@@ -41,6 +49,7 @@ export default function DashboardPage(props: Props) {
           ticker={ticker}
           prediction={prediction}
           trades={symbolTrades}
+          onEditPosition={editPositionById}
         />
 
         <div className="stack-col">
@@ -74,6 +83,7 @@ export default function DashboardPage(props: Props) {
           <OpenPositionsCard
             positions={props.positions}
             onClose={props.closePaperTrade}
+            onEditRisk={setEditingPosition}
             onViewAll={props.navigate}
           />
         </Card>
@@ -102,6 +112,14 @@ export default function DashboardPage(props: Props) {
           <RecentTradesCard trades={props.trades} />
         </Card>
       </div>
+
+      {editingPosition && (
+        <EditRiskModal
+          position={editingPosition}
+          onSave={props.updatePositionRisk}
+          onClose={() => setEditingPosition(null)}
+        />
+      )}
     </div>
   );
 }

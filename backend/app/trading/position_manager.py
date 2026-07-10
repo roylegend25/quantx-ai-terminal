@@ -11,20 +11,39 @@ _TOKEN = None
 logger = get_logger("quantx.position_manager")
 
 
-def should_close_position(side: str, mark: float, sl: float | None, tp: float | None) -> tuple[bool, str]:
-    """Pure SL/TP decision, extracted so it can be exercised directly (e.g.
-    by the stress-test harness) without running the live polling loop."""
+def should_close_position(
+    side: str,
+    mark: float,
+    sl: float | None,
+    tp: float | None,
+    liquidation_price: float | None = None,
+    trailing: bool = False,
+) -> tuple[bool, str]:
+    """Pure SL/TP/liquidation decision, extracted so it can be exercised
+    directly (e.g. by the stress-test harness) without running the live
+    polling loop. Returns the canonical close-reason code persisted on the
+    trade: LIQUIDATION | STOP_LOSS | TRAILING_STOP | TAKE_PROFIT.
+
+    Liquidation is checked first: on a mark that gapped through several
+    levels the worst outcome wins. `trailing` marks the SL as managed by a
+    trailing-stop ratchet, so a stop hit is reported as TRAILING_STOP."""
+    stop_reason = "TRAILING_STOP" if trailing else "STOP_LOSS"
+
     if side == "LONG":
+        if liquidation_price and mark <= float(liquidation_price):
+            return True, "LIQUIDATION"
         if sl and mark <= float(sl):
-            return True, "SL hit"
+            return True, stop_reason
         if tp and mark >= float(tp):
-            return True, "TP hit"
+            return True, "TAKE_PROFIT"
 
     if side == "SHORT":
+        if liquidation_price and mark >= float(liquidation_price):
+            return True, "LIQUIDATION"
         if sl and mark >= float(sl):
-            return True, "SL hit"
+            return True, stop_reason
         if tp and mark <= float(tp):
-            return True, "TP hit"
+            return True, "TAKE_PROFIT"
 
     return False, ""
 
@@ -50,10 +69,14 @@ async def manage_positions():
                     sl = pos.get("sl")
                     tp = pos.get("tp")
 
-                    should_close, reason = should_close_position(side, mark, sl, tp)
+                    should_close, reason = should_close_position(
+                        side, mark, sl, tp,
+                        liquidation_price=pos.get("liquidation_price"),
+                        trailing=bool(pos.get("trailing_stop")),
+                    )
 
                     if should_close:
-                        await client.post(f"{API}/api/paper/close/{trade_id}")
+                        await client.post(f"{API}/api/paper/close/{trade_id}", params={"reason": reason})
                         log_event(
                             logger,
                             message="position_closed_auto",

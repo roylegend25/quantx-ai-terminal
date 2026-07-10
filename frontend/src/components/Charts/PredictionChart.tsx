@@ -45,6 +45,8 @@ type Props = {
   /** Paper trades (open + closed) for this symbol - drawn as entry/exit/
    *  SL/TP markers with decision-provenance tooltips. */
   trades?: any[];
+  /** Tap on an open position's entry/TP/SL/liq chart line -> edit risk. */
+  onEditPosition?: (tradeId: number) => void;
 };
 
 const TIMEFRAME_CONFIG: Record<string, { label: string; ms: number }> = {
@@ -166,7 +168,7 @@ function candlesMatchTimeframe(candles: Candle[], tfMs: number): boolean {
   return Math.min(d1, d2) === tfMs;
 }
 
-function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, candles, ticker, prediction, trades }: Props) {
+function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, candles, ticker, prediction, trades, onEditPosition }: Props) {
   const isMobile = useMediaQuery("(max-width: 640px)");
   const isTabletPortrait = useMediaQuery("(min-width: 768px) and (max-width: 1024px)");
   const isTabletLandscape = useMediaQuery("(min-width: 1025px) and (max-width: 1366px)");
@@ -772,6 +774,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
           livePrice={livePrice}
           resetSignal={resetSignal}
           onExportRef={handleExportRef}
+          onEditPosition={onEditPosition}
         />
       </div>
 

@@ -9,6 +9,7 @@ import { useAuth } from "./hooks/useAuth";
 import { useTheme } from "./hooks/useTheme";
 import type { NavKey } from "./lib/nav";
 
+const PortfolioPage = lazy(() => import("./pages/PortfolioPage"));
 const PredictionsPage = lazy(() => import("./pages/PredictionsPage"));
 const PositionsPage = lazy(() => import("./pages/PositionsPage"));
 const PerformancePage = lazy(() => import("./pages/PerformancePage"));
@@ -49,6 +50,8 @@ function App() {
     switch (active) {
       case "dashboard":
         return <DashboardPage {...data} navigate={setActive} />;
+      case "portfolio":
+        return <PortfolioPage {...data} />;
       case "predictions":
         return <PredictionsPage {...data} />;
       case "positions":
@@ -92,7 +95,7 @@ function App() {
       />
 
       <main className="main">
-        <Topbar dashboard={data.dashboard} theme={theme} />
+        <Topbar dashboard={data.dashboard} theme={theme} activeKey={active} />
 
         {data.toast && <div className={`toast ${data.toastTone === "error" ? "toast-error" : ""}`}>{data.toast}</div>}
 

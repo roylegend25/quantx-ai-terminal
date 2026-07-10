@@ -9,6 +9,12 @@ export type Portfolio = {
   losses?: number;
   open_positions?: number;
   sharpe_ratio?: number;
+  max_open_positions?: number;
+  total_margin_used?: number;
+  available_margin?: number;
+  margin_usage_pct?: number | null;
+  total_notional_exposure?: number;
+  nearest_liquidation_distance_pct?: number | null;
 };
 
 export type Position = {
@@ -19,6 +25,21 @@ export type Position = {
   mark: number;
   qty: number;
   pnl: number;
+  // leverage/margin/risk fields - null on positions opened before leverage
+  // tracking existed (field_notes says why)
+  sl?: number | null;
+  tp?: number | null;
+  leverage?: number | null;
+  margin_mode?: string | null;
+  margin_used?: number | null;
+  notional_value?: number | null;
+  maintenance_margin?: number | null;
+  liquidation_price?: number | null;
+  distance_to_liquidation_pct?: number | null;
+  risk_reward_ratio?: number | null;
+  unrealized_pnl_pct?: number | null;
+  trailing_stop?: number | null;
+  field_notes?: Record<string, string> | null;
 };
 
 export type Trade = {
@@ -109,8 +130,13 @@ export function historicalVaR95(history: Trade[]): number | null {
   return value < 0 ? Math.abs(value) : 0;
 }
 
-/** Approximate margin usage from open position notional vs equity (no leverage data from backend). */
+/** Margin usage %. Prefers the server-computed figure (real per-position
+ *  margin incl. leverage); falls back to the old notional/equity estimate
+ *  for responses that predate it. */
 export function marginUsagePct(positions: Position[], portfolio: Portfolio | null): number {
+  if (typeof portfolio?.margin_usage_pct === "number") {
+    return Math.max(0, Math.min(100, portfolio.margin_usage_pct));
+  }
   const equity = portfolio?.equity;
   if (!equity || equity <= 0 || !positions.length) return 0;
   const notional = positions.reduce((sum, p) => sum + Math.abs((p.mark || p.entry || 0) * p.qty), 0);

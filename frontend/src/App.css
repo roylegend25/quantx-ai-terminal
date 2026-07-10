@@ -4837,6 +4837,16 @@ progress.disabled::-webkit-progress-value {
 .mll-notif-dot.sev-error { background: var(--c-red, #ff5d73); }
 
 /* ------------------------------- topbar bell ---------------------------- */
+/* Layer scale for the notification panel and its backdrop - small, named
+   tokens (mirrors the color-token pattern in :root) instead of arbitrary
+   numbers sprinkled through the file. Sits above cards/charts/sidebar
+   (all <=90 elsewhere in this file) and below the app's critical modals
+   (.modal-overlay / .pc-fullscreen, both 200). */
+:root {
+  --z-popover: 60;
+  --z-sheet-backdrop: 150;
+  --z-sheet: 160;
+}
 
 .notif-bell { position: relative; }
 .notif-bell .icon-btn { position: relative; }
@@ -4858,31 +4868,109 @@ progress.disabled::-webkit-progress-value {
   line-height: 1;
   pointer-events: none;
 }
-.notif-dropdown {
+
+/* Locks the page behind the mobile sheet - toggled on <body> only while
+   the sheet is open (see NotificationBell.tsx). */
+body.notif-scroll-lock {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* ---- desktop / iPad-landscape popover (>=768px) ---- */
+
+.notif-popover {
   position: absolute;
   top: calc(100% + 10px);
   right: 0;
-  width: 360px;
-  max-width: 88vw;
-  max-height: 62vh;
-  overflow-y: auto;
+  /* Never wider than the viewport minus a comfortable margin - the classic
+     "clamp instead of collision-detect" way to guarantee no overflow. */
+  width: min(400px, calc(100vw - 32px));
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
   background: #14172b;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 14px;
   box-shadow: 0 16px 44px rgba(0, 0, 0, 0.55);
-  z-index: 60;
-  padding: 10px;
+  z-index: var(--z-popover);
+  overflow: hidden;
 }
-.notif-drop-head {
+
+/* ---- mobile bottom sheet (<768px) ---- */
+
+.notif-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: var(--z-sheet-backdrop);
+}
+
+.notif-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  max-height: min(80dvh, 760px);
+  display: flex;
+  flex-direction: column;
+  background: #14172b;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-top-left-radius: 22px;
+  border-top-right-radius: 22px;
+  box-shadow: 0 -16px 44px rgba(0, 0, 0, 0.55);
+  z-index: var(--z-sheet);
+  padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  touch-action: none; /* the drag handle owns vertical gestures on the sheet itself */
+}
+
+.notif-sheet-handle {
+  display: block;
+  width: 40px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  margin: 10px auto 2px;
+  flex: 0 0 auto;
+}
+
+/* ---- shared header (both variants) ---- */
+
+.notif-panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  flex: 0 0 auto;
   font-size: 13px;
   color: #e6e8f5;
-  padding: 2px 4px 10px;
+  padding: 12px 14px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-  margin-bottom: 8px;
+}
+.notif-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.notif-count-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(255, 93, 115, 0.16);
+  color: var(--c-red, #ff5d73);
+  font-size: 10.5px;
+  font-weight: 800;
+}
+.notif-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
 }
 .notif-readall {
   display: inline-flex;
@@ -4895,15 +4983,42 @@ progress.disabled::-webkit-progress-value {
   padding: 3px 8px;
   font-size: 11px;
   cursor: pointer;
+  white-space: nowrap;
 }
 .notif-readall:hover { color: #e6e8f5; border-color: rgba(124, 92, 255, 0.5); }
-.notif-empty { color: #6d7290; font-size: 12px; padding: 10px 6px; margin: 0; }
-.notif-drop-list { display: flex; flex-direction: column; gap: 4px; }
-.notif-drop-item {
+.notif-close { width: 32px; height: 32px; }
+
+/* ---- scrollable body (the only thing that scrolls) ---- */
+
+.notif-panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 8px;
+  touch-action: pan-y;
+}
+
+.notif-state {
+  text-align: center;
+  padding: 22px 14px;
+}
+.notif-state svg { margin-bottom: 6px; }
+
+.notif-skeleton-list { display: flex; flex-direction: column; gap: 4px; }
+.notif-skeleton-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px; }
+
+.notif-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+
+.notif-item { border-radius: 10px; }
+.notif-item.read { opacity: 0.55; }
+.notif-item-main {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
+  min-height: 44px;
   text-align: left;
   background: none;
   border: none;
@@ -4911,20 +5026,73 @@ progress.disabled::-webkit-progress-value {
   padding: 8px;
   cursor: pointer;
 }
-.notif-drop-item:hover { background: rgba(255, 255, 255, 0.05); }
-.notif-drop-item.read { opacity: 0.55; cursor: default; }
-.notif-drop-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.notif-drop-body b { font-size: 12.5px; color: #e6e8f5; }
-.notif-drop-body i {
-  font-style: normal;
+.notif-item.read .notif-item-main { cursor: default; }
+.notif-item-main:hover { background: rgba(255, 255, 255, 0.05); }
+
+.notif-item-icon { flex: 0 0 auto; margin-top: 1px; }
+.notif-item-icon.sev-info { color: var(--c-cyan, #00f5d4); }
+.notif-item-icon.sev-success { color: var(--c-green, #00f5a0); }
+.notif-item-icon.sev-warning { color: var(--c-yellow, #ffd166); }
+.notif-item-icon.sev-error { color: var(--c-red, #ff5d73); }
+
+.notif-item-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.notif-item-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.notif-item-title-row b { font-size: 12.5px; color: #e6e8f5; }
+.notif-unread-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--c-cyan, #00f5d4);
+}
+.notif-item-desc {
   font-size: 11.5px;
   color: #9095ac;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-.notif-drop-body em { font-style: normal; font-size: 10.5px; color: #6d7290; }
+.notif-item-desc.expanded {
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+.notif-item-body time { font-size: 10.5px; color: #6d7290; white-space: nowrap; }
+
+.notif-show-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0 0 4px 42px;
+  background: none;
+  border: none;
+  color: var(--c-cyan, #00f5d4);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 2px;
+}
+
+@media (max-width: 767px) {
+  .notif-popover { display: none; }
+  /* generous mobile touch targets, per spec */
+  .notif-item-main { min-height: 44px; padding: 10px 8px; }
+  .notif-show-more { min-height: 44px; padding: 12px 2px; }
+  .notif-readall, .notif-close { min-height: 36px; }
+  .notif-panel-head { padding: 14px 16px; }
+  .notif-panel-body { padding: 8px 12px; }
+}
 
 /* ============================================================
    Decision engine row (dashboard): Active Decision Engine /
@@ -5241,7 +5409,305 @@ progress.disabled::-webkit-progress-value {
 /* a formatted timestamp must never wrap mid-value or clip inside a table
    cell - the .table-wrap container scrolls horizontally instead */
 .data-table td time,
-.mll-mini-grid time,
-.notif-drop-body time {
+.mll-mini-grid time {
   white-space: nowrap;
+}
+
+/* ============================================================
+   Open Positions: risk columns, mobile position cards,
+   Edit Risk modal / bottom sheet
+   ============================================================ */
+
+/* same utility pattern as .green/.red (never put directly on a <td> -
+   wrap in a span, see the table-cell display gotcha) */
+.orange { color: #ff9f43; display: inline-flex; gap: 6px; align-items: center; }
+.tile-value.orange { display: block; }
+
+.lev-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 7px;
+  background: rgba(124, 92, 255, 0.16);
+  border: 1px solid rgba(124, 92, 255, 0.35);
+  color: #b7a6ff;
+  font-size: 11px;
+  font-weight: 700;
+  vertical-align: middle;
+  margin-left: 6px;
+}
+
+.pos-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.pos-actions {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  align-items: center;
+}
+
+.mini-btn-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(0, 168, 255, 0.14);
+  border: 1px solid rgba(0, 168, 255, 0.35);
+}
+
+.mini-btn-edit:hover {
+  background: rgba(0, 168, 255, 0.28);
+}
+
+/* ---------- mobile stacked position cards (no clipped table) ---------- */
+
+.pos-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pos-card {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pos-card-open {
+  border-color: rgba(124, 92, 255, 0.35);
+}
+
+.pos-card-head {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font-size: 14px;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.pos-card-chevron {
+  display: inline-flex;
+  color: #8b90a8;
+}
+
+.pos-card-pnl {
+  margin-left: auto;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.pos-card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px 12px;
+}
+
+.pos-card .pos-actions {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 10px;
+}
+
+/* ---------- Edit Risk modal ---------- */
+
+.risk-modal {
+  max-width: 480px;
+  border-color: rgba(0, 168, 255, 0.4);
+}
+
+.risk-modal h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.risk-modal-context {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.risk-modal-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.risk-modal-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.risk-modal-fields input {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  color: inherit;
+  padding: 9px 12px;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.risk-modal-fields input:focus {
+  outline: none;
+  border-color: rgba(0, 168, 255, 0.6);
+}
+
+.risk-modal-fields small {
+  color: #8b90a8;
+  font-size: 11.5px;
+}
+
+.risk-modal-summary {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  margin: 14px 0 4px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.risk-modal-error {
+  color: var(--c-red);
+  font-size: 12.5px;
+  margin: 10px 0 0;
+}
+
+.risk-modal .modal-actions {
+  margin-top: 18px;
+  align-items: center;
+}
+
+.risk-modal .modal-actions .link-btn {
+  margin-right: auto;
+  padding: 0;
+}
+
+/* bottom sheet on phones, respecting iOS safe areas */
+@media (max-width: 640px) {
+  .modal-overlay:has(.risk-modal) {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .risk-modal {
+    max-width: none;
+    width: 100%;
+    border-radius: 18px 18px 0 0;
+    border-bottom: 0;
+    padding: 20px 18px calc(20px + env(safe-area-inset-bottom, 0px));
+    max-height: 88vh;
+    overflow-y: auto;
+  }
+
+  .risk-modal-context {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* ---------- Phase 22: Portfolio tab / live trading controls ---------- */
+
+/* .card > :last-child recomposes its last child to flex-column + flex: 1;
+   this row must stay a horizontal, content-sized flex row, so match that
+   selector's specificity and re-assert the row axis. */
+.card > .portfolio-header-row {
+  flex: initial;
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.portfolio-header-row .regime-desc {
+  margin: 0;
+  flex: 1 1 260px;
+}
+
+.live-danger-card {
+  border: 1px solid rgba(255, 93, 115, 0.55) !important;
+  box-shadow: 0 0 0 1px rgba(255, 93, 115, 0.25), 0 0 24px rgba(255, 93, 115, 0.12);
+}
+
+.portfolio-warnings {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.portfolio-warnings p {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--c-yellow, #ffd166);
+  font-size: 12.5px;
+}
+
+.live-unlock-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.live-unlock-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 13px;
+  color: #c7c9d9;
+  cursor: pointer;
+}
+
+.live-unlock-check input {
+  margin-top: 2px;
+  accent-color: var(--c-red, #ff5d73);
+}
+
+.live-unlock-phrase {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 420px;
+}
+
+.live-unlock-phrase input {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 93, 115, 0.4);
+  border-radius: 10px;
+  padding: 9px 12px;
+  color: inherit;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+
+.btn-danger.mini {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+@media (max-width: 767px) {
+  .portfolio-header-row {
+    flex-direction: column;
+  }
 }

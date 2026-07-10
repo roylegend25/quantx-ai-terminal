@@ -17,11 +17,13 @@ import {
   Zap,
   Boxes,
   Microscope,
+  Wallet,
 } from "lucide-react";
 import { NAV_ITEMS, NAV_SECTIONS, type NavKey } from "../../lib/nav";
 
 const ICONS: Record<NavKey, ComponentType<{ size?: number }>> = {
   dashboard: LayoutDashboard,
+  portfolio: Wallet,
   predictions: Brain,
   positions: Rows3,
   performance: ChartLine,
