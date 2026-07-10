@@ -13,7 +13,8 @@ import {
 } from "lucide-react";
 import Card from "../components/Layout/Card";
 import ExchangeStatusCard from "../components/Dashboard/ExchangeStatusCard";
-import { fmtDuration, fmtNum, fmtPct, fmtRelativeTime } from "../lib/format";
+import { fmtDuration, fmtNum, fmtPct } from "../lib/format";
+import LocalTime from "../components/LocalTime";
 import type { AppData } from "../hooks/useAppData";
 
 type Props = AppData;
@@ -72,15 +73,15 @@ export default function SystemStatusPage(props: Props) {
         <div className="analytics-grid">
           <div className="analytics-tile">
             <span className="tile-label">Last Prediction</span>
-            <b className="tile-value">{fmtRelativeTime(s?.last_prediction_time)}</b>
+            <b className="tile-value"><LocalTime value={s?.last_prediction_time} label="Last prediction" /></b>
           </div>
           <div className="analytics-tile">
             <span className="tile-label">Last Paper Trade</span>
-            <b className="tile-value">{fmtRelativeTime(s?.last_paper_trade_time)}</b>
+            <b className="tile-value"><LocalTime value={s?.last_paper_trade_time} label="Last paper trade" /></b>
           </div>
           <div className="analytics-tile">
             <span className="tile-label">Last Model Training</span>
-            <b className="tile-value">{fmtRelativeTime(s?.last_model_training_time)}</b>
+            <b className="tile-value"><LocalTime value={s?.last_model_training_time} label="Last model training" /></b>
           </div>
           <div className="analytics-tile">
             <span className="tile-label">Uptime</span>

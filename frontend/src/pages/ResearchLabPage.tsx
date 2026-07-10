@@ -30,7 +30,8 @@ import {
   YAxis,
 } from "recharts";
 import Card from "../components/Layout/Card";
-import { fmtDuration, fmtNum, fmtPct, fmtRelativeTime } from "../lib/format";
+import { fmtDuration, fmtNum, fmtPct } from "../lib/format";
+import LocalTime from "../components/LocalTime";
 import { api } from "../services/api";
 import type { AppData } from "../hooks/useAppData";
 
@@ -345,8 +346,8 @@ export default function ResearchLabPage({
                     <td className={c.quality_score == null ? "" : c.quality_score >= 80 ? "green" : c.quality_score >= 40 ? "" : "red"}>
                       {c.quality_score != null ? `${fmtNum(c.quality_score, 1)}/100` : "—"}
                     </td>
-                    <td>{c.last_timestamp ? fmtRelativeTime(c.last_timestamp) : "—"}</td>
-                    <td>{c.last_checked ? fmtRelativeTime(c.last_checked) : "—"}</td>
+                    <td>{c.last_timestamp ? <LocalTime value={c.last_timestamp} label="Last candle" /> : "—"}</td>
+                    <td>{c.last_checked ? <LocalTime value={c.last_checked} label="Last checked" /> : "—"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1067,8 +1068,8 @@ export default function ResearchLabPage({
                         <td>{t.side}</td>
                         <td>{fmtNum(t.entry_price, 4)}</td>
                         <td>{fmtNum(t.exit_price, 4)}</td>
-                        <td>{fmtRelativeTime(t.entry_time)}</td>
-                        <td>{fmtRelativeTime(t.exit_time)}</td>
+                        <td><LocalTime value={t.entry_time} label="Entry" /></td>
+                        <td><LocalTime value={t.exit_time} label="Exit" /></td>
                         <td className={t.pnl >= 0 ? "green" : "red"}>{fmtNum(t.pnl, 2)}</td>
                         <td>{fmtNum(t.r_multiple, 2)}</td>
                         <td>{t.exit_reason}</td>
@@ -1298,7 +1299,7 @@ export default function ResearchLabPage({
               </div>
               <div className="analytics-tile">
                 <span className="tile-label">Last Evaluated</span>
-                <b className="tile-value">{fmtRelativeTime(learningPerformance.evaluated_at)}</b>
+                <b className="tile-value"><LocalTime value={learningPerformance.evaluated_at} label="Evaluated" /></b>
               </div>
             </div>
 
@@ -1425,7 +1426,7 @@ export default function ResearchLabPage({
                     <td>{fmtPct(e.results?.metrics?.total_return_pct, 2)}</td>
                     <td>{fmtNum(e.results?.metrics?.sharpe_ratio, 2)}</td>
                     <td>{e.results?.metrics?.total_trades ?? 0}</td>
-                    <td>{fmtRelativeTime(e.created_at)}</td>
+                    <td><LocalTime value={e.created_at} label="Created" /></td>
                   </tr>
                 ))}
               </tbody>

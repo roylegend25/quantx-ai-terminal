@@ -1,7 +1,8 @@
 import { useEffect } from "react";
 import Card from "../components/Layout/Card";
 import PortfolioAnalytics from "../components/Dashboard/PortfolioAnalytics";
-import { fmtNum, fmtPct, fmtRelativeTime } from "../lib/format";
+import { fmtNum, fmtPct } from "../lib/format";
+import LocalTime from "../components/LocalTime";
 import type { AppData } from "../hooks/useAppData";
 
 export default function PerformancePage(props: AppData) {
@@ -27,7 +28,7 @@ export default function PerformancePage(props: AppData) {
         {byTimeframe.length ? (
           <>
             <p className="regime-desc">
-              From the learning loop's last evaluation ({fmtRelativeTime(learningPerformance.evaluated_at)}) —
+              From the learning loop's last evaluation (<LocalTime value={learningPerformance.evaluated_at} label="Evaluated" />) —
               predictions resolved against recorded outcomes only.
             </p>
             <div className="table-wrap" style={{ marginTop: 12 }}>

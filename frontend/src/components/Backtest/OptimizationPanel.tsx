@@ -10,7 +10,8 @@ import {
   Waves,
 } from "lucide-react";
 import Card from "../Layout/Card";
-import { fmtNum, fmtPct, fmtRelativeTime } from "../../lib/format";
+import { fmtNum, fmtPct } from "../../lib/format";
+import LocalTime from "../LocalTime";
 
 type TabKey = "optimizer" | "walkforward" | "montecarlo" | "models" | "importance" | "recommendations";
 
@@ -405,7 +406,7 @@ function ModelsTab({ rows }: { rows: any[] | null }) {
               <td>{fmtNum(r.sharpe_ratio, 2)}</td>
               <td>{fmtNum(r.profit_factor, 2)}</td>
               <td>{fmtPct(r.max_drawdown_pct, 2)}</td>
-              <td>{r.trained_at ? fmtRelativeTime(r.trained_at) : "—"}</td>
+              <td>{r.trained_at ? <LocalTime value={r.trained_at} label="Trained" /> : "—"}</td>
             </tr>
           ))}
         </tbody>
@@ -482,7 +483,7 @@ function ImportanceTab({ shap, drift }: { shap: any | null; drift: any | null })
                   </small>
                 </b>
                 <span className="tile-label" style={{ marginBottom: 0 }}>
-                  {d.latest.method} · {fmtRelativeTime(d.latest.checked_at)}
+                  {d.latest.method} · <LocalTime value={d.latest.checked_at} variant="compact" label="Checked" />
                 </span>
               </div>
             ))}

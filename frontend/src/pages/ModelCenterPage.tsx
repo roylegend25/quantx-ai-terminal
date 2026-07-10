@@ -33,10 +33,11 @@ import {
   ProgressBar,
   SkeletonTiles,
   StatusPill,
-  fmtAgo,
   fmtBytes,
   fmtDurationS,
 } from "../components/MLLab/widgets";
+import LocalTime from "../components/LocalTime";
+import { getBrowserTimeZone, setTimeDisplayMode, useTimeDisplayMode } from "../utils/dateTime";
 import {
   ConfusionMatrix,
   CurvePanel,
@@ -47,6 +48,25 @@ import {
   TrainingCurveChart,
   C,
 } from "../components/MLLab/charts";
+
+/** Time-display preference (spec: "Time display - Local time / UTC").
+ *  Persisted in localStorage; every <LocalTime> re-renders on toggle. */
+function TimeDisplayToggle() {
+  const mode = useTimeDisplayMode();
+  return (
+    <span
+      className="mll-seg mll-time-toggle"
+      title={`Timestamps are shown in ${mode === "utc" ? "UTC" : `your local timezone (${getBrowserTimeZone()})`}`}
+    >
+      <button className={mode === "local" ? "active" : ""} onClick={() => setTimeDisplayMode("local")}>
+        Local
+      </button>
+      <button className={mode === "utc" ? "active" : ""} onClick={() => setTimeDisplayMode("utc")}>
+        UTC
+      </button>
+    </span>
+  );
+}
 
 const TABS = [
   { id: "overview", label: "Overview", icon: Gauge },
@@ -93,7 +113,7 @@ export default function ModelCenterPage(props: AppData) {
 
   return (
     <div className="page-grid mll-page">
-      <Card title="AI Model Laboratory" full right={<BrainCircuit size={16} className="cyan" />}>
+      <Card title="AI Model Laboratory" full right={<span className="mll-header-right"><TimeDisplayToggle /><BrainCircuit size={16} className="cyan" /></span>}>
         <div className="mll-tabs">
           {TABS.map(({ id, label, icon: Icon }) => (
             <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>
@@ -197,7 +217,7 @@ function OverviewTab({ lab }: { lab: ReturnType<typeof useMLLab> }) {
           <div className="mll-panel">
             <div className="mll-panel-title">
               {explanation.symbol} {explanation.timeframe} · <StatusPill status={explanation.direction} />
-              <span className="mll-dim" style={{ marginLeft: 8 }}>{fmtAgo(explanation.timestamp)}</span>
+              <span className="mll-dim" style={{ marginLeft: 8 }}><LocalTime value={explanation.timestamp} label="Predicted" /></span>
             </div>
             <div className="mll-mini-grid">
               <span>Confidence <b>{fmtPct(explanation.confidence, 1)}</b></span>
@@ -231,8 +251,8 @@ function ChampionKpis({ champion }: { champion: any }) {
   return (
     <div className="mll-kpi-grid">
       <KpiTile label="Champion" value={champion.model_name} sub={champion.algorithm} tone="cyan" />
-      <KpiTile label="Version" value={champion.version} sub={`promoted ${fmtAgo(champion.promoted_at)}`} />
-      <KpiTile label="Trained" value={fmtAgo(champion.trained_at)} sub={champion.trained_at?.slice(0, 10)} />
+      <KpiTile label="Version" value={champion.version} sub={<>promoted <LocalTime value={champion.promoted_at} variant="compact" label="Promoted" /></>} />
+      <KpiTile label="Trained" value={<LocalTime value={champion.trained_at} variant="compact" label="Trained" />} sub={<LocalTime value={champion.trained_at} label="Trained" />} />
       <KpiTile label="Dataset Size" value={champion.training_samples ?? "—"} sub={champion.dataset_source || "pre-lab pipeline"} />
       <KpiTile label="Holdout Trades" value={champion.total_trades ?? "—"} sub="threshold-crossing signals" />
       <KpiTile label="Win Rate" value={champion.win_rate != null ? fmtPct(champion.win_rate, 1) : "—"} tone={champion.win_rate >= 50 ? "green" : "red"} />
@@ -353,7 +373,7 @@ function ScheduleTab({ lab, busy, act }: { lab: ReturnType<typeof useMLLab>; bus
             </button>
           </div>
           <div className="mll-mini-grid" style={{ marginTop: 10 }}>
-            <span>Last scheduled run <b>{stored?.last_scheduled_run ? fmtAgo(stored.last_scheduled_run) : "never"}</b></span>
+            <span>Last scheduled run <b>{stored?.last_scheduled_run ? <LocalTime value={stored.last_scheduled_run} label="Last scheduled run" /> : "never"}</b></span>
             <span>Interval <b>{lab.schedule?.interval_hours ? `${lab.schedule.interval_hours}h` : "—"}</b></span>
             <span>Scheduler <b className={lab.schedule?.scheduler_running ? "green" : "red"}>{lab.schedule?.scheduler_running ? "running" : "stopped"}</b></span>
             <span>Due now <b>{lab.schedule?.due_now ? "yes" : "no"}</b></span>
@@ -495,7 +515,7 @@ function HpoResults({ lab }: { lab: ReturnType<typeof useMLLab> }) {
       <div className="mll-seg">
         {lab.hpoResults.slice(0, 6).map((r, i) => (
           <button key={r.job_id} className={hpoView === i ? "active" : ""} onClick={() => setHpoView(i)}>
-            {r.algorithm} · {r.method} · {fmtAgo(r.created_at)}
+            {r.algorithm} · {r.method} · <LocalTime value={r.created_at} variant="compact" label="Created" />
           </button>
         ))}
       </div>
@@ -613,7 +633,7 @@ function JobsTab({ lab, busy, act }: { lab: ReturnType<typeof useMLLab>; busy: s
                       : j.error || "—"}
                   </td>
                   <td className="mll-dim">{(j as any).params?.trigger || "manual"}</td>
-                  <td>{fmtAgo(j.finished_at)}</td>
+                  <td>{j.finished_at ? <LocalTime value={j.finished_at} label="Finished" /> : "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -733,7 +753,7 @@ function ChampionTab({ lab, busy, act }: { lab: ReturnType<typeof useMLLab>; bus
                           <td><StatusPill status={v.status} /></td>
                           <td>{pct01(v.val_accuracy)}</td>
                           <td>{v.win_rate != null ? fmtPct(v.win_rate, 1) : "—"}</td>
-                          <td>{fmtAgo(v.promoted_at)}</td>
+                          <td><LocalTime value={v.promoted_at} label="Promoted" /></td>
                         </tr>
                       ))}
                     </tbody>
@@ -799,7 +819,7 @@ function ChallengersTab({ lab, busy, act, setTab }: { lab: ReturnType<typeof use
                 <span>PF <b className={m.profit_factor >= 1 ? "green" : "red"}>{m.profit_factor != null ? fmtNum(m.profit_factor, 2) : "—"}</b></span>
                 <span>Sharpe <b>{m.sharpe_ratio != null ? fmtNum(m.sharpe_ratio, 2) : "—"}</b></span>
                 <span>Win Rate <b>{m.win_rate != null ? fmtPct(m.win_rate, 1) : "—"}</b></span>
-                <span>Age <b>{fmtAgo(m.trained_at)}</b></span>
+                <span>Trained <b><LocalTime value={m.trained_at} variant="compact" label="Trained" /></b></span>
               </div>
               <PromotionExplanation model={m} open={explain === m.model_id} onToggle={() => setExplain(explain === m.model_id ? null : m.model_id)} />
               <div className="mll-btn-row">
@@ -920,7 +940,7 @@ function RegistryTab({ lab, busy, act }: { lab: ReturnType<typeof useMLLab>; bus
                   <td><b>{m.model_name}</b><div className="mll-dim" style={{ fontSize: 11 }}>{m.algorithm}</div></td>
                   <td>{m.version}</td>
                   <td><StatusPill status={m.status} /></td>
-                  <td>{fmtAgo(m.trained_at)}</td>
+                  <td><LocalTime value={m.trained_at} label="Created" /></td>
                   <td>{pct01(m.val_accuracy ?? m.train_accuracy)}</td>
                   <td>{pct01(m.oos_accuracy)}</td>
                   <td className="mll-dim" title={m.dataset_spec ? JSON.stringify(m.dataset_spec) : undefined}>{m.dataset_source || m.dataset_version || "—"}</td>
@@ -1004,7 +1024,7 @@ function NotificationRow({ n, busy, act, markRead }: { n: MLNotificationItem; bu
         <div className="mll-notif-head">
           <b>{n.title}</b>
           <span className="mll-tag">{EVENT_LABELS[n.event] || n.event}</span>
-          <span className="mll-dim">{fmtAgo(n.created_at)}</span>
+          <span className="mll-dim"><LocalTime value={n.created_at} variant="compact" label="Created" /></span>
         </div>
         {n.message && <p className="mll-dim">{n.message}</p>}
       </div>
@@ -1321,7 +1341,7 @@ function MonitoringTab({ lab, busy, act }: { lab: ReturnType<typeof useMLLab>; b
             <tbody>
               {inferenceItems.slice(0, 25).map((it: any) => (
                 <tr key={it.id}>
-                  <td>{fmtAgo(it.timestamp)}</td>
+                  <td><LocalTime value={it.timestamp} label="Predicted" /></td>
                   <td>{it.symbol}</td>
                   <td>{it.timeframe}</td>
                   <td><StatusPill status={it.signal || "—"} /></td>

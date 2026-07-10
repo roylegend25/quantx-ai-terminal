@@ -1,3 +1,5 @@
+import { formatLocalDateTime, parseTimestamp } from "../utils/dateTime";
+
 export function fmtUsd(n?: number | null, digits = 2): string {
   if (typeof n !== "number" || Number.isNaN(n)) return "—";
   const sign = n < 0 ? "-" : "";
@@ -56,19 +58,14 @@ export function fmtDuration(seconds?: number | null): string {
   return `${total}s`;
 }
 
-const localDateTimeFormatter = new Intl.DateTimeFormat([], {
-  month: "short",
-  day: "numeric",
-  hour: "2-digit",
-  minute: "2-digit",
-});
-
-/** Compact date + time in the viewer's local timezone, e.g. "Jul 4, 2:30 PM". */
+/** Compact date + time in the viewer's local timezone (honoring the
+ *  Local/UTC time-display preference). Delegates to utils/dateTime so
+ *  naive-UTC backend strings, unix s/ms, and invalid values are all
+ *  handled in one place. Kept as "—" for null to preserve this helper's
+ *  long-standing table-cell contract. */
 export function fmtLocalDateTime(iso?: string | number | null): string {
   if (iso === null || iso === undefined) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return localDateTimeFormatter.format(d);
+  return formatLocalDateTime(iso);
 }
 
 /** Duration between two ISO timestamps, in the same clean minutes/hours
@@ -76,19 +73,8 @@ export function fmtLocalDateTime(iso?: string | number | null): string {
 export function fmtTradeDuration(openedIso?: string | null, closedIso?: string | null): string {
   if (!openedIso) return "—";
   if (!closedIso) return "Open";
-  const start = new Date(openedIso).getTime();
-  const end = new Date(closedIso).getTime();
-  if (Number.isNaN(start) || Number.isNaN(end)) return "—";
+  const start = parseTimestamp(openedIso)?.getTime();
+  const end = parseTimestamp(closedIso)?.getTime();
+  if (start === undefined || end === undefined) return "—";
   return fmtDuration(Math.max(0, (end - start) / 1000));
-}
-
-export function fmtRelativeTime(iso?: string | null): string {
-  if (!iso) return "—";
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return "—";
-  const diffSeconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
-  if (diffSeconds < 60) return "just now";
-  if (diffSeconds < 3600) return `${Math.floor(diffSeconds / 60)}m ago`;
-  if (diffSeconds < 86400) return `${Math.floor(diffSeconds / 3600)}h ago`;
-  return `${Math.floor(diffSeconds / 86400)}d ago`;
 }

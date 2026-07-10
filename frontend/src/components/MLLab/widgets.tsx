@@ -87,18 +87,6 @@ export function fmtBytes(n?: number | null): string {
   return `${n} B`;
 }
 
-export function fmtAgo(iso?: string | null): string {
-  if (!iso) return "—";
-  const diff = Date.now() - new Date(iso).getTime();
-  if (!Number.isFinite(diff)) return "—";
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 48) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
-
 export function fmtDurationS(s?: number | null): string {
   if (typeof s !== "number" || !Number.isFinite(s)) return "—";
   if (s < 60) return `${s.toFixed(1)}s`;

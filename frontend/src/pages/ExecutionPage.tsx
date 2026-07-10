@@ -10,7 +10,8 @@ import {
   Zap,
 } from "lucide-react";
 import Card from "../components/Layout/Card";
-import { fmtNum, fmtPct, fmtRelativeTime } from "../lib/format";
+import { fmtNum, fmtPct } from "../lib/format";
+import LocalTime from "../components/LocalTime";
 import type { AppData } from "../hooks/useAppData";
 
 type Props = AppData;
@@ -121,7 +122,7 @@ export default function ExecutionPage({ executionStatus, executionMetrics }: Pro
             </div>
             <div>
               <span className="tile-label">When</span>
-              <b className="tile-value">{fmtRelativeTime(last.recorded_at)}</b>
+              <b className="tile-value"><LocalTime value={last.recorded_at} label="Recorded" /></b>
             </div>
             <div className="align-right">
               <span className="tile-label">Reason</span>
@@ -216,7 +217,7 @@ export default function ExecutionPage({ executionStatus, executionMetrics }: Pro
               <tbody>
                 {recent.map((r) => (
                   <tr key={r.order_id}>
-                    <td>{fmtRelativeTime(r.recorded_at)}</td>
+                    <td><LocalTime value={r.recorded_at} label="Recorded" /></td>
                     <td><b>{r.symbol}</b></td>
                     <td className={r.side === "LONG" ? "green" : "red"}>{r.side}</td>
                     <td>{r.order_type}</td>
