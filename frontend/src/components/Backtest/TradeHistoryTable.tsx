@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { FileDown, ListOrdered, Search } from "lucide-react";
 import Card from "../Layout/Card";
+import AutoCardTable, { type AutoCardColumn } from "../Responsive/AutoCardTable";
 import { fmtNum, fmtPct } from "../../lib/format";
 import {
   downloadBlob,
@@ -107,53 +108,51 @@ export default function TradeHistoryTable({ trades, symbol, strategy, runId, dir
         <p className="analytics-empty">No trades match the current search/filter.</p>
       ) : (
         <>
-          <div className="table-wrap">
-            <table className="data-table bt-trades-table">
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Time</th>
-                  <th>Symbol</th>
-                  <th>Direction</th>
-                  <th>Entry</th>
-                  <th>Exit</th>
-                  <th>PnL</th>
-                  <th>Return %</th>
-                  <th>R</th>
-                  <th>Holding</th>
-                  <th>Confidence</th>
-                  <th>Regime</th>
-                  <th>Reason</th>
-                  <th>Strategy</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pageRows.map((t, i) => {
-                  const d = t.entry_time ? new Date(t.entry_time) : null;
-                  const ret = tradeReturnPct(t);
-                  const win = (Number(t.pnl) || 0) >= 0;
-                  return (
-                    <tr key={`${t.entry_time}-${i}`}>
-                      <td>{d ? d.toLocaleDateString([], { month: "short", day: "numeric", year: "2-digit" }) : "—"}</td>
-                      <td>{d ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}</td>
-                      <td>{symbol}</td>
-                      <td><span className={t.side === "LONG" ? "green" : "red"}>{t.side}</span></td>
-                      <td>{fmtNum(t.entry_price, 2)}</td>
-                      <td>{fmtNum(t.exit_price, 2)}</td>
-                      <td><span className={win ? "green" : "red"}>{fmtNum(t.pnl, 2)}</span></td>
-                      <td><span className={ret != null && ret >= 0 ? "green" : "red"}>{fmtPct(ret, 2)}</span></td>
-                      <td>{fmtNum(t.r_multiple, 2)}</td>
-                      <td>{fmtHolding(t.entry_time, t.exit_time)}</td>
-                      <td>{t.confidence != null ? fmtNum(t.confidence, 0) : "—"}</td>
-                      <td className="bt-regime-cell">{(t.regime || "—").replace(/_/g, " ")}</td>
-                      <td className="bt-regime-cell">{t.exit_reason.replace(/_/g, " ")}</td>
-                      <td className="bt-regime-cell">{strategy}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <AutoCardTable
+            columns={
+              [
+                {
+                  key: "date",
+                  label: "Date",
+                  render: (t) => {
+                    const d = t.entry_time ? new Date(t.entry_time) : null;
+                    return d ? d.toLocaleDateString([], { month: "short", day: "numeric", year: "2-digit" }) : "—";
+                  },
+                },
+                {
+                  key: "time",
+                  label: "Time",
+                  render: (t) => {
+                    const d = t.entry_time ? new Date(t.entry_time) : null;
+                    return d ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—";
+                  },
+                },
+                { key: "symbol", label: "Symbol", render: () => <b>{symbol}</b> },
+                { key: "direction", label: "Direction", render: (t) => <span className={t.side === "LONG" ? "green" : "red"}>{t.side}</span> },
+                { key: "entry", label: "Entry", render: (t) => fmtNum(t.entry_price, 2) },
+                { key: "exit", label: "Exit", render: (t) => fmtNum(t.exit_price, 2) },
+                { key: "pnl", label: "PnL", render: (t) => <span className={(Number(t.pnl) || 0) >= 0 ? "green" : "red"}>{fmtNum(t.pnl, 2)}</span> },
+                {
+                  key: "return",
+                  label: "Return %",
+                  render: (t) => {
+                    const ret = tradeReturnPct(t);
+                    return <span className={ret != null && ret >= 0 ? "green" : "red"}>{fmtPct(ret, 2)}</span>;
+                  },
+                },
+                { key: "r", label: "R", render: (t) => fmtNum(t.r_multiple, 2) },
+                { key: "holding", label: "Holding", render: (t) => fmtHolding(t.entry_time, t.exit_time) },
+                { key: "confidence", label: "Confidence", render: (t) => (t.confidence != null ? fmtNum(t.confidence, 0) : "—") },
+                { key: "regime", label: "Regime", render: (t) => (t.regime || "—").replace(/_/g, " ") },
+                { key: "reason", label: "Reason", render: (t) => t.exit_reason.replace(/_/g, " ") },
+                { key: "strategy", label: "Strategy", render: () => strategy },
+              ] as AutoCardColumn<BtTrade>[]
+            }
+            rows={pageRows}
+            keyField={(t) => `${t.entry_time}-${t.exit_time}-${t.entry_price}`}
+            titleColumn="symbol"
+            statusColumn="direction"
+          />
           {pages > 1 && (
             <div className="bt-pager">
               <button type="button" className="bt-chip" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>

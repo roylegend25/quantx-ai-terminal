@@ -1,12 +1,14 @@
 import { lazy, Suspense, useCallback, useState } from "react";
 import "./App.css";
 import Sidebar from "./components/Layout/Sidebar";
+import MobileBottomNav from "./components/Layout/MobileBottomNav";
 import Topbar from "./components/Layout/Topbar";
 import LoginPage from "./components/Auth/LoginPage";
 import DashboardPage from "./pages/DashboardPage";
 import { useAppData } from "./hooks/useAppData";
 import { useAuth } from "./hooks/useAuth";
 import { useTheme } from "./hooks/useTheme";
+import { useMediaQuery } from "./hooks/useMediaQuery";
 import type { NavKey } from "./lib/nav";
 
 const PortfolioPage = lazy(() => import("./pages/PortfolioPage"));
@@ -36,6 +38,7 @@ function App() {
   const [active, setActive] = useState<NavKey>("dashboard");
   const data = useAppData(authed);
   const theme = useTheme();
+  const isPhoneNav = useMediaQuery("(max-width: 767px)");
 
   const handleStopBot = useCallback(() => {
     data.botAction("stop");
@@ -92,18 +95,30 @@ function App() {
     }
   }
 
+  const botStatusLabel = (data.botStatus?.status || data.dashboard?.bot?.status || "").toUpperCase();
+
   return (
     <div className="app">
-      <Sidebar
-        active={active}
-        onNavigate={setActive}
-        botStatus={data.botStatus}
-        dashboard={data.dashboard}
-        onStopBot={handleStopBot}
-        onLogout={logout}
-      />
+      {isPhoneNav ? (
+        <MobileBottomNav
+          active={active}
+          onNavigate={setActive}
+          onStopBot={handleStopBot}
+          onLogout={logout}
+          isBotLive={botStatusLabel === "RUNNING"}
+        />
+      ) : (
+        <Sidebar
+          active={active}
+          onNavigate={setActive}
+          botStatus={data.botStatus}
+          dashboard={data.dashboard}
+          onStopBot={handleStopBot}
+          onLogout={logout}
+        />
+      )}
 
-      <main className="main">
+      <main className={isPhoneNav ? "main main-has-bottom-nav" : "main"}>
         <Topbar dashboard={data.dashboard} theme={theme} activeKey={active} />
 
         {data.toast && <div className={`toast ${data.toastTone === "error" ? "toast-error" : ""}`}>{data.toast}</div>}

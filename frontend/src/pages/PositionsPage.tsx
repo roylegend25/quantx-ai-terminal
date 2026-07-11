@@ -1,8 +1,8 @@
-import { Fragment, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { useState } from "react";
 import Card from "../components/Layout/Card";
 import OpenPositionsCard from "../components/Dashboard/OpenPositionsCard";
 import EditRiskModal from "../components/Dashboard/EditRiskModal";
+import AutoCardTable, { type AutoCardColumn } from "../components/Responsive/AutoCardTable";
 import { fmtLocalDateTime, fmtNum, fmtTradeDuration, fmtUsd, toneClass, toneOf } from "../lib/format";
 import type { AppData } from "../hooks/useAppData";
 import type { Position } from "../lib/portfolioStats";
@@ -48,13 +48,132 @@ function computeRiskGate(prediction: any, openCount: number, executionStatus: an
   return { allowed: false, reason: "Waiting for prediction data" };
 }
 
+function JournalDetail({ t }: { t: any }) {
+  return (
+    <div className="journal-detail">
+      <div className="journal-detail-grid">
+        <div>
+          <span className="tile-label">Decision Engine</span>
+          <b className="tile-value">{t.decision_mode ? ENGINE_LABEL[t.decision_mode] ?? t.decision_mode : "Not recorded"}</b>
+        </div>
+        <div>
+          <span className="tile-label">Model</span>
+          <b className="tile-value">{t.champion_model_type ?? "—"}</b>
+        </div>
+        <div>
+          <span className="tile-label">Strategy</span>
+          <b className="tile-value">{t.strategy_used ? t.strategy_used.replace(/_/g, " ") : "—"}</b>
+        </div>
+        <div>
+          <span className="tile-label">Confidence</span>
+          <b className="tile-value">
+            {typeof t.confidence === "number" ? `${t.confidence.toFixed(1)}%` : "—"}
+            {typeof t.required_confidence === "number" ? ` (needs ${t.required_confidence.toFixed(1)}%)` : ""}
+          </b>
+        </div>
+        <div>
+          <span className="tile-label">Market Regime</span>
+          <b className="tile-value">{t.regime ? t.regime.replace(/_/g, " ") : "—"}</b>
+        </div>
+        <div>
+          <span className="tile-label">Timeframe</span>
+          <b className="tile-value">{t.timeframe ?? "—"}</b>
+        </div>
+        <div>
+          <span className="tile-label">Risk Reason</span>
+          <b className="tile-value">{t.risk_reason ?? "—"}</b>
+        </div>
+        <div>
+          <span className="tile-label">Why Trade Was Closed</span>
+          <b className="tile-value">
+            {t.close_reason ? t.close_reason.replace(/_/g, " ") : t.status === "OPEN" ? "Still open" : "—"}
+          </b>
+        </div>
+        <div>
+          <span className="tile-label">Leverage</span>
+          <b className="tile-value">{t.leverage != null ? `${t.leverage}x` : "—"}</b>
+        </div>
+        <div>
+          <span className="tile-label">Margin Used</span>
+          <b className="tile-value">{t.margin_used != null ? fmtUsd(t.margin_used) : "—"}</b>
+        </div>
+        <div>
+          <span className="tile-label">Notional</span>
+          <b className="tile-value">{t.notional_value != null ? fmtUsd(t.notional_value) : "—"}</b>
+        </div>
+        <div>
+          <span className="tile-label">Take Profit (last set)</span>
+          <b className="tile-value">
+            <span className={t.tp != null ? "green" : ""}>{t.tp != null ? fmtNum(t.tp) : "—"}</span>
+          </b>
+        </div>
+        <div>
+          <span className="tile-label">Stop Loss (last set)</span>
+          <b className="tile-value">
+            <span className={t.sl != null ? "red" : ""}>{t.sl != null ? fmtNum(t.sl) : "—"}</span>
+          </b>
+        </div>
+        <div>
+          <span className="tile-label">Est. Liquidation</span>
+          <b className="tile-value orange">
+            {t.liquidation_price != null ? fmtNum(t.liquidation_price) : t.leverage === 1 ? "None at 1x" : "—"}
+          </b>
+        </div>
+        <div>
+          <span className="tile-label">Realized PnL</span>
+          <b className={`tile-value ${toneClass(toneOf(t.realized_pnl ?? t.pnl))}`}>
+            {fmtUsd(t.realized_pnl ?? (t.status === "CLOSED" ? t.pnl : null))}
+          </b>
+        </div>
+      </div>
+      <div className="journal-detail-reasons">
+        <span className="tile-label">Why Trade Was Opened</span>
+        {Array.isArray(t.decision_reasons) && t.decision_reasons.length > 0 ? (
+          <ul>
+            {t.decision_reasons.map((r: string, i: number) => (
+              <li key={i}>{r}</li>
+            ))}
+          </ul>
+        ) : (
+          <p className="regime-desc">
+            {t.decision_mode === "manual"
+              ? "Opened manually from the UI/API - no automated decision context."
+              : "No decision context recorded for this trade (opened before decision tracking existed)."}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const JOURNAL_COLUMNS: AutoCardColumn<any>[] = [
+  { key: "symbol", label: "Symbol", render: (t) => <b>{t.symbol}</b> },
+  { key: "side", label: "Side", render: (t) => <span className={t.side === "LONG" ? "green" : "red"}>{t.side}</span> },
+  { key: "status", label: "Status", render: (t) => t.status },
+  { key: "entry", label: "Entry", render: (t) => t.entry ?? "—" },
+  { key: "exit", label: "Exit", render: (t) => t.exit ?? "—" },
+  { key: "pnl", label: "PnL", render: (t) => <span className={toneClass(toneOf(t.pnl))}>{fmtUsd(t.pnl)}</span> },
+  {
+    key: "engine",
+    label: "Engine",
+    render: (t) => (
+      <span className={t.decision_mode === "champion_ml" ? "green" : ""}>
+        {t.decision_mode ? ENGINE_LABEL[t.decision_mode] ?? t.decision_mode : "—"}
+      </span>
+    ),
+  },
+  { key: "confidence", label: "Confidence", render: (t) => (typeof t.confidence === "number" ? `${t.confidence.toFixed(0)}%` : "—") },
+  { key: "opened", label: "Opened Time", render: (t) => fmtLocalDateTime(t.opened_at) },
+  { key: "closed", label: "Closed Time", render: (t) => (t.closed_at ? fmtLocalDateTime(t.closed_at) : "Open") },
+  { key: "duration", label: "Duration", render: (t) => fmtTradeDuration(t.opened_at, t.closed_at) },
+];
+
 export default function PositionsPage(props: Props) {
   const { positions, history, symbol, prediction, botStatus, executionStatus } = props;
 
   const [symbolFilter, setSymbolFilter] = useState<SymbolFilter>("ALL");
   const [showResetModal, setShowResetModal] = useState(false);
   const [resetting, setResetting] = useState(false);
-  const [expandedTrade, setExpandedTrade] = useState<number | null>(null);
   const [leverage, setLeverage] = useState(1);
   const [editingPosition, setEditingPosition] = useState<Position | null>(null);
 
@@ -242,169 +361,15 @@ export default function PositionsPage(props: Props) {
       )}
 
       <Card title="Trade Journal" full>
-        {filteredHistory.length === 0 && <p className="analytics-empty">No trade history yet.</p>}
-        {filteredHistory.length > 0 && (
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th></th>
-                  <th>Symbol</th>
-                  <th>Side</th>
-                  <th>Status</th>
-                  <th>Entry</th>
-                  <th>Exit</th>
-                  <th>PnL</th>
-                  <th>Engine</th>
-                  <th>Confidence</th>
-                  <th>Opened Time</th>
-                  <th>Closed Time</th>
-                  <th>Duration</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredHistory.slice(0, 30).map((t) => (
-                  <Fragment key={t.id}>
-                    <tr
-                      className={`journal-row${expandedTrade === t.id ? " journal-row-open" : ""}`}
-                      onClick={() => setExpandedTrade(expandedTrade === t.id ? null : t.id)}
-                    >
-                      <td>
-                        <span className="journal-chevron">
-                          {expandedTrade === t.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                        </span>
-                      </td>
-                      <td>
-                        <b>{t.symbol}</b>
-                      </td>
-                      <td className={t.side === "LONG" ? "green" : "red"}>{t.side}</td>
-                      <td>{t.status}</td>
-                      <td>{t.entry ?? "—"}</td>
-                      <td>{t.exit ?? "—"}</td>
-                      <td className={toneClass(toneOf(t.pnl))}>{fmtUsd(t.pnl)}</td>
-                      <td>
-                        <span className={t.decision_mode === "champion_ml" ? "green" : ""}>
-                          {t.decision_mode ? ENGINE_LABEL[t.decision_mode] ?? t.decision_mode : "—"}
-                        </span>
-                      </td>
-                      <td>{typeof t.confidence === "number" ? `${t.confidence.toFixed(0)}%` : "—"}</td>
-                      <td>{fmtLocalDateTime(t.opened_at)}</td>
-                      <td>{t.closed_at ? fmtLocalDateTime(t.closed_at) : "Open"}</td>
-                      <td>{fmtTradeDuration(t.opened_at, t.closed_at)}</td>
-                    </tr>
-                    {expandedTrade === t.id && (
-                      <tr className="journal-detail-row">
-                        <td colSpan={12}>
-                          <div className="journal-detail">
-                            <div className="journal-detail-grid">
-                              <div>
-                                <span className="tile-label">Decision Engine</span>
-                                <b className="tile-value">
-                                  {t.decision_mode ? ENGINE_LABEL[t.decision_mode] ?? t.decision_mode : "Not recorded"}
-                                </b>
-                              </div>
-                              <div>
-                                <span className="tile-label">Model</span>
-                                <b className="tile-value">{t.champion_model_type ?? "—"}</b>
-                              </div>
-                              <div>
-                                <span className="tile-label">Strategy</span>
-                                <b className="tile-value">{t.strategy_used ? t.strategy_used.replace(/_/g, " ") : "—"}</b>
-                              </div>
-                              <div>
-                                <span className="tile-label">Confidence</span>
-                                <b className="tile-value">
-                                  {typeof t.confidence === "number" ? `${t.confidence.toFixed(1)}%` : "—"}
-                                  {typeof t.required_confidence === "number"
-                                    ? ` (needs ${t.required_confidence.toFixed(1)}%)`
-                                    : ""}
-                                </b>
-                              </div>
-                              <div>
-                                <span className="tile-label">Market Regime</span>
-                                <b className="tile-value">{t.regime ? t.regime.replace(/_/g, " ") : "—"}</b>
-                              </div>
-                              <div>
-                                <span className="tile-label">Timeframe</span>
-                                <b className="tile-value">{t.timeframe ?? "—"}</b>
-                              </div>
-                              <div>
-                                <span className="tile-label">Risk Reason</span>
-                                <b className="tile-value">{t.risk_reason ?? "—"}</b>
-                              </div>
-                              <div>
-                                <span className="tile-label">Why Trade Was Closed</span>
-                                <b className="tile-value">
-                                  {t.close_reason ? t.close_reason.replace(/_/g, " ") : t.status === "OPEN" ? "Still open" : "—"}
-                                </b>
-                              </div>
-                              <div>
-                                <span className="tile-label">Leverage</span>
-                                <b className="tile-value">{t.leverage != null ? `${t.leverage}x` : "—"}</b>
-                              </div>
-                              <div>
-                                <span className="tile-label">Margin Used</span>
-                                <b className="tile-value">{t.margin_used != null ? fmtUsd(t.margin_used) : "—"}</b>
-                              </div>
-                              <div>
-                                <span className="tile-label">Notional</span>
-                                <b className="tile-value">{t.notional_value != null ? fmtUsd(t.notional_value) : "—"}</b>
-                              </div>
-                              <div>
-                                <span className="tile-label">Take Profit (last set)</span>
-                                <b className="tile-value">
-                                  <span className={t.tp != null ? "green" : ""}>{t.tp != null ? fmtNum(t.tp) : "—"}</span>
-                                </b>
-                              </div>
-                              <div>
-                                <span className="tile-label">Stop Loss (last set)</span>
-                                <b className="tile-value">
-                                  <span className={t.sl != null ? "red" : ""}>{t.sl != null ? fmtNum(t.sl) : "—"}</span>
-                                </b>
-                              </div>
-                              <div>
-                                <span className="tile-label">Est. Liquidation</span>
-                                <b className="tile-value orange">
-                                  {t.liquidation_price != null
-                                    ? fmtNum(t.liquidation_price)
-                                    : t.leverage === 1
-                                    ? "None at 1x"
-                                    : "—"}
-                                </b>
-                              </div>
-                              <div>
-                                <span className="tile-label">Realized PnL</span>
-                                <b className={`tile-value ${toneClass(toneOf(t.realized_pnl ?? t.pnl))}`}>
-                                  {fmtUsd(t.realized_pnl ?? (t.status === "CLOSED" ? t.pnl : null))}
-                                </b>
-                              </div>
-                            </div>
-                            <div className="journal-detail-reasons">
-                              <span className="tile-label">Why Trade Was Opened</span>
-                              {Array.isArray(t.decision_reasons) && t.decision_reasons.length > 0 ? (
-                                <ul>
-                                  {t.decision_reasons.map((r: string, i: number) => (
-                                    <li key={i}>{r}</li>
-                                  ))}
-                                </ul>
-                              ) : (
-                                <p className="regime-desc">
-                                  {t.decision_mode === "manual"
-                                    ? "Opened manually from the UI/API - no automated decision context."
-                                    : "No decision context recorded for this trade (opened before decision tracking existed)."}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <AutoCardTable
+          columns={JOURNAL_COLUMNS}
+          rows={filteredHistory.slice(0, 30)}
+          keyField={(t) => t.id}
+          titleColumn="symbol"
+          statusColumn="status"
+          renderDetail={(t) => <JournalDetail t={t} />}
+          emptyMessage="No trade history yet."
+        />
       </Card>
     </div>
   );

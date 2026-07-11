@@ -1,6 +1,7 @@
 import { useState } from "react";
 import Card from "../components/Layout/Card";
 import EditRiskModal from "../components/Dashboard/EditRiskModal";
+import AutoCardTable from "../components/Responsive/AutoCardTable";
 import type { Position } from "../lib/portfolioStats";
 import { fmtLocalDateTime, fmtNum, fmtPct, fmtUsd, toneClass, toneOf } from "../lib/format";
 import type { AppData } from "../hooks/useAppData";
@@ -145,98 +146,56 @@ export default function PaperTradingPage(props: AppData) {
       </Card>
 
       <Card title={`Paper Open Positions (${positions.length})`} full>
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Symbol</th>
-                <th>Side</th>
-                <th>Size</th>
-                <th>Entry</th>
-                <th>Mark</th>
-                <th>Est. Liq.</th>
-                <th>Margin</th>
-                <th>Lev.</th>
-                <th>uPnL</th>
-                <th>TP</th>
-                <th>SL</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {positions.length === 0 && (
-                <tr>
-                  <td colSpan={12}>No open paper positions</td>
-                </tr>
-              )}
-              {positions.map((p: any) => (
-                <tr key={p.id}>
-                  <td><b>{p.symbol}</b></td>
-                  <td><span className={p.side === "LONG" ? "green" : "red"}>{p.side}</span></td>
-                  <td>{fmtNum(p.qty, 6)}</td>
-                  <td>{fmtNum(p.entry)}</td>
-                  <td>{fmtNum(p.mark)}</td>
-                  <td>{p.liquidation_price != null ? fmtNum(p.liquidation_price) : "—"}</td>
-                  <td>{fmtUsd(p.margin_used)}</td>
-                  <td>{p.leverage != null ? `${p.leverage}x` : "—"}</td>
-                  <td><span className={toneClass(toneOf(p.pnl))}>{fmtUsd(p.pnl)}</span></td>
-                  <td>{p.tp != null ? fmtNum(p.tp) : "—"}</td>
-                  <td>{p.sl != null ? fmtNum(p.sl) : "—"}</td>
-                  <td>
-                    <div className="controls" style={{ gap: 6 }}>
-                      <button className="mini-btn" title="Edit Paper TP/SL" onClick={() => setEditingPosition(p)}>
-                        TP/SL
-                      </button>
-                      <button className="btn-danger mini" onClick={() => props.closePaperTrade(p.id)}>
-                        Close
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <AutoCardTable
+          columns={[
+            { key: "symbol", label: "Symbol", render: (p: any) => <b>{p.symbol}</b> },
+            { key: "side", label: "Side", render: (p: any) => <span className={p.side === "LONG" ? "green" : "red"}>{p.side}</span> },
+            { key: "size", label: "Size", render: (p: any) => fmtNum(p.qty, 6) },
+            { key: "entry", label: "Entry", render: (p: any) => fmtNum(p.entry) },
+            { key: "mark", label: "Mark", render: (p: any) => fmtNum(p.mark) },
+            { key: "liq", label: "Est. Liq.", render: (p: any) => (p.liquidation_price != null ? fmtNum(p.liquidation_price) : "—") },
+            { key: "margin", label: "Margin", render: (p: any) => fmtUsd(p.margin_used) },
+            { key: "lev", label: "Lev.", render: (p: any) => (p.leverage != null ? `${p.leverage}x` : "—") },
+            { key: "pnl", label: "uPnL", render: (p: any) => <span className={toneClass(toneOf(p.pnl))}>{fmtUsd(p.pnl)}</span> },
+            { key: "tp", label: "TP", render: (p: any) => (p.tp != null ? fmtNum(p.tp) : "—") },
+            { key: "sl", label: "SL", render: (p: any) => (p.sl != null ? fmtNum(p.sl) : "—") },
+          ]}
+          rows={positions}
+          keyField={(p: any) => p.id}
+          titleColumn="symbol"
+          statusColumn="side"
+          renderActions={(p: any) => (
+            <>
+              <button className="mini-btn" title="Edit Paper TP/SL" onClick={() => setEditingPosition(p)}>
+                TP/SL
+              </button>
+              <button className="btn-danger mini" onClick={() => props.closePaperTrade(p.id)}>
+                Close
+              </button>
+            </>
+          )}
+          emptyMessage="No open paper positions"
+        />
       </Card>
 
       <Card title="Paper Trade History" full>
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Symbol</th>
-                <th>Side</th>
-                <th>Entry → Exit</th>
-                <th>Qty</th>
-                <th>Strategy / Model</th>
-                <th>Close Reason</th>
-                <th>Realized PnL</th>
-              </tr>
-            </thead>
-            <tbody>
-              {history.length === 0 && (
-                <tr>
-                  <td colSpan={8}>No paper trades yet</td>
-                </tr>
-              )}
-              {history.slice(0, 30).map((t: any) => (
-                <tr key={t.id}>
-                  <td>{fmtLocalDateTime(t.closed_at ?? t.opened_at)}</td>
-                  <td><b>{t.symbol}</b></td>
-                  <td><span className={t.side === "LONG" ? "green" : "red"}>{t.side}</span></td>
-                  <td>
-                    {fmtNum(t.entry)} → {t.exit != null ? fmtNum(t.exit) : "open"}
-                  </td>
-                  <td>{fmtNum(t.qty, 6)}</td>
-                  <td>{t.strategy_used || t.champion_model_type || t.decision_mode || "—"}</td>
-                  <td>{t.close_reason || "—"}</td>
-                  <td><span className={toneClass(toneOf(t.pnl))}>{fmtUsd(t.pnl)}</span></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <AutoCardTable
+          columns={[
+            { key: "time", label: "Time", render: (t: any) => fmtLocalDateTime(t.closed_at ?? t.opened_at) },
+            { key: "symbol", label: "Symbol", render: (t: any) => <b>{t.symbol}</b> },
+            { key: "side", label: "Side", render: (t: any) => <span className={t.side === "LONG" ? "green" : "red"}>{t.side}</span> },
+            { key: "entryExit", label: "Entry → Exit", render: (t: any) => `${fmtNum(t.entry)} → ${t.exit != null ? fmtNum(t.exit) : "open"}` },
+            { key: "qty", label: "Qty", render: (t: any) => fmtNum(t.qty, 6) },
+            { key: "strategy", label: "Strategy / Model", render: (t: any) => t.strategy_used || t.champion_model_type || t.decision_mode || "—" },
+            { key: "closeReason", label: "Close Reason", render: (t: any) => t.close_reason || "—" },
+            { key: "pnl", label: "Realized PnL", render: (t: any) => <span className={toneClass(toneOf(t.pnl))}>{fmtUsd(t.pnl)}</span> },
+          ]}
+          rows={history.slice(0, 30)}
+          keyField={(t: any) => t.id}
+          titleColumn="symbol"
+          statusColumn="side"
+          emptyMessage="No paper trades yet"
+        />
       </Card>
 
       {editingPosition && (

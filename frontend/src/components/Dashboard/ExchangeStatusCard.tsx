@@ -1,6 +1,31 @@
 import { memo } from "react";
 import { CheckCircle2, Lock, ShieldAlert, ShieldCheck, XCircle } from "lucide-react";
 import { fmtNum, fmtPct, fmtUsd } from "../../lib/format";
+import AutoCardTable, { type AutoCardColumn } from "../Responsive/AutoCardTable";
+
+const BALANCE_COLUMNS: AutoCardColumn<any>[] = [
+  { key: "asset", label: "Asset", render: (b) => <b>{b.asset}</b> },
+  { key: "balance", label: "Balance", render: (b) => fmtNum(b.balance, 4) },
+  { key: "available", label: "Available", render: (b) => fmtNum(b.available, 4) },
+];
+
+const POSITION_COLUMNS: AutoCardColumn<any>[] = [
+  { key: "symbol", label: "Symbol", render: (p) => <b>{p.symbol}</b> },
+  { key: "side", label: "Side", render: (p) => <span className={p.side === "LONG" ? "green" : "red"}>{p.side}</span> },
+  { key: "size", label: "Size", render: (p) => fmtNum(p.size, 4) },
+  { key: "entry", label: "Entry", render: (p) => fmtNum(p.entry_price, 2) },
+  { key: "mark", label: "Mark", render: (p) => fmtNum(p.mark_price, 2) },
+  { key: "pnl", label: "Unrealized PnL", render: (p) => <span className={p.unrealized_pnl >= 0 ? "green" : "red"}>{fmtUsd(p.unrealized_pnl)}</span> },
+];
+
+const ORDER_COLUMNS: AutoCardColumn<any>[] = [
+  { key: "symbol", label: "Symbol", render: (o) => <b>{o.symbol}</b> },
+  { key: "side", label: "Side", render: (o) => <span className={o.side === "BUY" || o.side === "LONG" ? "green" : "red"}>{o.side}</span> },
+  { key: "type", label: "Type", render: (o) => o.type },
+  { key: "price", label: "Price", render: (o) => (o.price != null ? fmtNum(o.price, 2) : "—") },
+  { key: "qty", label: "Qty", render: (o) => (o.qty != null ? fmtNum(o.qty, 4) : "—") },
+  { key: "status", label: "Status", render: (o) => o.status },
+];
 
 type Props = {
   exchangeStatus: any;
@@ -137,104 +162,37 @@ function ExchangeStatusCard({
 
       <div className="analytics-section">
         <span className="tile-label">Balances{primary ? ` (${primary})` : ""}</span>
-        {exchangeBalances.length === 0 ? (
-          <p className="analytics-empty">No balances - connect an exchange with read-only API keys.</p>
-        ) : (
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Asset</th>
-                  <th>Balance</th>
-                  <th>Available</th>
-                </tr>
-              </thead>
-              <tbody>
-                {exchangeBalances.map((b) => (
-                  <tr key={b.asset}>
-                    <td>
-                      <b>{b.asset}</b>
-                    </td>
-                    <td>{fmtNum(b.balance, 4)}</td>
-                    <td>{fmtNum(b.available, 4)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <AutoCardTable
+          columns={BALANCE_COLUMNS}
+          rows={exchangeBalances}
+          keyField={(b) => b.asset}
+          titleColumn="asset"
+          emptyMessage="No balances - connect an exchange with read-only API keys."
+        />
       </div>
 
       <div className="analytics-section">
         <span className="tile-label">Positions{primary ? ` (${primary})` : ""}</span>
-        {exchangePositions.length === 0 ? (
-          <p className="analytics-empty">No open exchange positions.</p>
-        ) : (
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Symbol</th>
-                  <th>Side</th>
-                  <th>Size</th>
-                  <th>Entry</th>
-                  <th>Mark</th>
-                  <th>Unrealized PnL</th>
-                </tr>
-              </thead>
-              <tbody>
-                {exchangePositions.map((p) => (
-                  <tr key={p.symbol}>
-                    <td>
-                      <b>{p.symbol}</b>
-                    </td>
-                    <td className={p.side === "LONG" ? "green" : "red"}>{p.side}</td>
-                    <td>{fmtNum(p.size, 4)}</td>
-                    <td>{fmtNum(p.entry_price, 2)}</td>
-                    <td>{fmtNum(p.mark_price, 2)}</td>
-                    <td className={p.unrealized_pnl >= 0 ? "green" : "red"}>{fmtUsd(p.unrealized_pnl)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <AutoCardTable
+          columns={POSITION_COLUMNS}
+          rows={exchangePositions}
+          keyField={(p) => p.symbol}
+          titleColumn="symbol"
+          statusColumn="side"
+          emptyMessage="No open exchange positions."
+        />
       </div>
 
       <div className="analytics-section">
         <span className="tile-label">Open Orders{primary ? ` (${primary})` : ""}</span>
-        {exchangeOpenOrders.length === 0 ? (
-          <p className="analytics-empty">No open orders.</p>
-        ) : (
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Symbol</th>
-                  <th>Side</th>
-                  <th>Type</th>
-                  <th>Price</th>
-                  <th>Qty</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {exchangeOpenOrders.map((o) => (
-                  <tr key={o.order_id}>
-                    <td>
-                      <b>{o.symbol}</b>
-                    </td>
-                    <td className={o.side === "BUY" || o.side === "LONG" ? "green" : "red"}>{o.side}</td>
-                    <td>{o.type}</td>
-                    <td>{o.price != null ? fmtNum(o.price, 2) : "—"}</td>
-                    <td>{o.qty != null ? fmtNum(o.qty, 4) : "—"}</td>
-                    <td>{o.status}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <AutoCardTable
+          columns={ORDER_COLUMNS}
+          rows={exchangeOpenOrders}
+          keyField={(o) => o.order_id}
+          titleColumn="symbol"
+          statusColumn="status"
+          emptyMessage="No open orders."
+        />
       </div>
     </div>
   );

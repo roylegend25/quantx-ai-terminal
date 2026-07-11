@@ -12,6 +12,7 @@ import {
 import Card from "../components/Layout/Card";
 import { fmtNum, fmtPct } from "../lib/format";
 import LocalTime from "../components/LocalTime";
+import AutoCardTable, { type AutoCardColumn } from "../components/Responsive/AutoCardTable";
 import type { AppData } from "../hooks/useAppData";
 
 type Props = AppData;
@@ -35,6 +36,36 @@ function StatusIcon({ status }: { status: string }) {
   if (status === "PARTIAL") return <AlertTriangle size={14} className="yellow" />;
   return <XCircle size={14} className="red" />;
 }
+
+const EXECUTION_COLUMNS: AutoCardColumn<any>[] = [
+  { key: "time", label: "Time", render: (r) => <LocalTime value={r.recorded_at} label="Recorded" /> },
+  { key: "symbol", label: "Symbol", render: (r) => <b>{r.symbol}</b> },
+  { key: "side", label: "Side", render: (r) => <span className={r.side === "LONG" ? "green" : "red"}>{r.side}</span> },
+  { key: "type", label: "Type", render: (r) => r.order_type },
+  {
+    key: "status",
+    label: "Status",
+    render: (r) => (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+        <StatusIcon status={r.status} /> {r.status}
+      </span>
+    ),
+  },
+  {
+    key: "filled",
+    label: "Filled",
+    render: (r) => (r.filled_qty != null ? `${fmtNum(r.filled_qty, 4)}/${fmtNum(r.requested_qty, 4)}` : "—"),
+  },
+  { key: "fillPrice", label: "Fill Price", render: (r) => (r.avg_fill_price != null ? fmtNum(r.avg_fill_price, 2) : "—") },
+  {
+    key: "slippage",
+    label: "Slippage",
+    render: (r) => (r.actual_slippage_bps != null ? `${fmtNum(r.actual_slippage_bps, 2)} bps` : "—"),
+  },
+  { key: "latency", label: "Latency", render: (r) => `${fmtNum(r.latency_ms, 0)}ms` },
+  { key: "retries", label: "Retries", render: (r) => r.retries },
+  { key: "quality", label: "Quality", render: (r) => <QualityBadge quality={r.execution_quality} /> },
+];
 
 export default function ExecutionPage({ executionStatus, executionMetrics }: Props) {
   const breaker = executionStatus?.circuit_breaker;
@@ -194,48 +225,14 @@ export default function ExecutionPage({ executionStatus, executionMetrics }: Pro
       </Card>
 
       <Card title="Recent Executions" full>
-        {recent.length === 0 ? (
-          <p className="analytics-empty">No executions recorded yet - the scheduler routes each paper trade through this engine.</p>
-        ) : (
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Symbol</th>
-                  <th>Side</th>
-                  <th>Type</th>
-                  <th>Status</th>
-                  <th>Filled</th>
-                  <th>Fill Price</th>
-                  <th>Slippage</th>
-                  <th>Latency</th>
-                  <th>Retries</th>
-                  <th>Quality</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recent.map((r) => (
-                  <tr key={r.order_id}>
-                    <td><LocalTime value={r.recorded_at} label="Recorded" /></td>
-                    <td><b>{r.symbol}</b></td>
-                    <td className={r.side === "LONG" ? "green" : "red"}>{r.side}</td>
-                    <td>{r.order_type}</td>
-                    <td style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <StatusIcon status={r.status} /> {r.status}
-                    </td>
-                    <td>{r.filled_qty != null ? `${fmtNum(r.filled_qty, 4)}/${fmtNum(r.requested_qty, 4)}` : "—"}</td>
-                    <td>{r.avg_fill_price != null ? fmtNum(r.avg_fill_price, 2) : "—"}</td>
-                    <td>{r.actual_slippage_bps != null ? `${fmtNum(r.actual_slippage_bps, 2)} bps` : "—"}</td>
-                    <td>{fmtNum(r.latency_ms, 0)}ms</td>
-                    <td>{r.retries}</td>
-                    <td><QualityBadge quality={r.execution_quality} /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <AutoCardTable
+          columns={EXECUTION_COLUMNS}
+          rows={recent}
+          keyField={(r) => r.order_id}
+          titleColumn="symbol"
+          statusColumn="status"
+          emptyMessage="No executions recorded yet - the scheduler routes each paper trade through this engine."
+        />
       </Card>
     </div>
   );

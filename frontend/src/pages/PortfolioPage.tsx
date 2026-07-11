@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, ArrowRight, OctagonX, RefreshCw, ShieldCheck } from "lucide-react";
 import Card from "../components/Layout/Card";
+import AutoCardTable from "../components/Responsive/AutoCardTable";
 import { api } from "../services/api";
 import { fmtNum, fmtPct, fmtUsd, toneClass, toneOf } from "../lib/format";
 import { ModeBadge, ModeToggle, useTradingStatus } from "../components/Trading/TradingShared";
@@ -164,34 +165,21 @@ export default function PortfolioPage(props: Props) {
             </div>
           </div>
 
-          <div className="table-wrap" style={{ marginTop: 12 }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Symbol</th>
-                  <th>Side</th>
-                  <th>Entry</th>
-                  <th>Mark</th>
-                  <th>uPnL</th>
-                </tr>
-              </thead>
-              <tbody>
-                {paperPositions.length === 0 && (
-                  <tr>
-                    <td colSpan={5}>No open paper positions</td>
-                  </tr>
-                )}
-                {paperPositions.slice(0, 5).map((p: any) => (
-                  <tr key={p.id}>
-                    <td><b>{p.symbol}</b></td>
-                    <td><span className={p.side === "LONG" ? "green" : "red"}>{p.side}</span></td>
-                    <td>{fmtNum(p.entry)}</td>
-                    <td>{fmtNum(p.mark)}</td>
-                    <td><span className={toneClass(toneOf(p.pnl))}>{fmtUsd(p.pnl)}</span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div style={{ marginTop: 12 }}>
+            <AutoCardTable
+              columns={[
+                { key: "symbol", label: "Symbol", render: (p: any) => <b>{p.symbol}</b> },
+                { key: "side", label: "Side", render: (p: any) => <span className={p.side === "LONG" ? "green" : "red"}>{p.side}</span> },
+                { key: "entry", label: "Entry", render: (p: any) => fmtNum(p.entry) },
+                { key: "mark", label: "Mark", render: (p: any) => fmtNum(p.mark) },
+                { key: "pnl", label: "uPnL", render: (p: any) => <span className={toneClass(toneOf(p.pnl))}>{fmtUsd(p.pnl)}</span> },
+              ]}
+              rows={paperPositions.slice(0, 5)}
+              keyField={(p: any) => p.id}
+              titleColumn="symbol"
+              statusColumn="side"
+              emptyMessage="No open paper positions"
+            />
           </div>
 
           <div className="controls" style={{ marginTop: 12 }}>
@@ -263,34 +251,21 @@ export default function PortfolioPage(props: Props) {
                 </div>
               </div>
 
-              <div className="table-wrap" style={{ marginTop: 12 }}>
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Symbol</th>
-                      <th>Side</th>
-                      <th>Entry</th>
-                      <th>Mark</th>
-                      <th>uPnL</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(!binancePositions?.positions || binancePositions.positions.length === 0) && (
-                      <tr>
-                        <td colSpan={5}>No open Binance positions</td>
-                      </tr>
-                    )}
-                    {(binancePositions?.positions || []).slice(0, 5).map((p: any, i: number) => (
-                      <tr key={p.symbol + i}>
-                        <td><b>{p.symbol}</b></td>
-                        <td><span className={p.side === "LONG" ? "green" : "red"}>{p.side}</span></td>
-                        <td>{fmtNum(p.entry_price)}</td>
-                        <td>{fmtNum(p.mark_price)}</td>
-                        <td><span className={toneClass(toneOf(p.unrealized_pnl))}>{fmtUsd(p.unrealized_pnl)}</span></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div style={{ marginTop: 12 }}>
+                <AutoCardTable
+                  columns={[
+                    { key: "symbol", label: "Symbol", render: (p: any) => <b>{p.symbol}</b> },
+                    { key: "side", label: "Side", render: (p: any) => <span className={p.side === "LONG" ? "green" : "red"}>{p.side}</span> },
+                    { key: "entry", label: "Entry", render: (p: any) => fmtNum(p.entry_price) },
+                    { key: "mark", label: "Mark", render: (p: any) => fmtNum(p.mark_price) },
+                    { key: "pnl", label: "uPnL", render: (p: any) => <span className={toneClass(toneOf(p.unrealized_pnl))}>{fmtUsd(p.unrealized_pnl)}</span> },
+                  ]}
+                  rows={(binancePositions?.positions || []).slice(0, 5).map((p: any, i: number) => ({ ...p, _key: p.symbol + i }))}
+                  keyField={(p: any) => p._key}
+                  titleColumn="symbol"
+                  statusColumn="side"
+                  emptyMessage="No open Binance positions"
+                />
               </div>
             </>
           ) : (

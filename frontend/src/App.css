@@ -27,6 +27,27 @@
   --c-cyan-rgb: 0, 245, 212;
 
   --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* Responsive tokens - named breakpoint-driven spacing/sizing so new
+     components (mobile bottom nav, auto-card tables) read the same numbers
+     the hand-written @media blocks already use, instead of re-guessing them. */
+  --mobile-padding: 14px;
+  --tablet-padding: 22px;
+  --desktop-padding: 28px;
+  --bottom-nav-height: 64px;
+  --card-radius: 20px;
+  --page-max-width: 1800px;
+}
+
+/* Utility: pairs with a fixed/sticky bottom element (bottom nav, bottom
+   sheet) so its own padding absorbs the iOS home-indicator safe area
+   instead of content sitting flush against it. */
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.safe-area-top {
+  padding-top: env(safe-area-inset-top, 0px);
 }
 
 /* ---------- Themes ----------
@@ -121,6 +142,15 @@ button, select, input {
   flex: 1;
   padding: 24px 28px 40px;
   min-width: 0;
+}
+
+/* Ultrawide desktop: cap page width instead of letting cards stretch
+   edge-to-edge on a 1900px+ monitor. Below this, .main stays fluid. */
+@media (min-width: 1900px) {
+  .main {
+    max-width: var(--page-max-width);
+    margin-inline: auto;
+  }
 }
 
 /* Lazy-loaded route placeholder — matches the typical page-grid height so
@@ -703,8 +733,14 @@ button, select, input {
     grid-column: 1 / -1;
   }
 
-  .card.wide, .card.full {
-    grid-column: 1 / -1;
+  /* !important is required: the unconditional ".page-grid > .card.wide/
+     .full" rules in the Cards section further down the file match at
+     equal specificity (0-3-0) AND appear later in source order than this
+     media block, so without !important they'd win the cascade regardless
+     of this rule matching first. Confirmed via computed grid-column on a
+     live .wide card before this fix: "span 2" instead of "1 / -1". */
+  .page-grid > .card.wide, .page-grid > .card.full {
+    grid-column: 1 / -1 !important;
   }
 
   /* ---------- Card spacing: tighter, consistent, less "tall" ---------- */
@@ -824,105 +860,35 @@ button, select, input {
     min-width: 0;
   }
 
-  /* ---------- Sidebar -> compact sticky top nav ---------- */
+  /* Sidebar doesn't mount below 768px (App.tsx swaps in MobileBottomNav
+     instead) - the bottom nav's own height/safe-area is accounted for by
+     .main-has-bottom-nav below, not by any .sidebar rule. */
 
-  .sidebar {
-    width: 100%;
-    height: auto;
-    position: sticky;
-    top: 0;
-    z-index: 40;
-    flex-direction: column;
-    padding: 10px 14px;
-    gap: 10px;
-    border-right: none;
-    border-bottom: 1px solid rgba(255,255,255,0.08);
-    /* Glass blur is one of the priciest paints on mobile GPUs; tone it down. */
-    backdrop-filter: blur(8px);
+  .main-has-bottom-nav {
+    padding-bottom: calc(32px + var(--bottom-nav-height) + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* A card-head's `right` slot (badges, mode toggles) sits beside the
+     title with no wrap - fine for a short badge, but a multi-button
+     .mode-toggle (e.g. BotTradesPage's Paper/Binance tab switch) has
+     white-space:nowrap labels that were getting clipped by the card edge
+     instead of shrinking. Let it wrap to its own full-width row and split
+     evenly, matching the "two large buttons" pattern used elsewhere. */
+  .card-head {
+    flex-wrap: wrap;
+  }
+  .card-head .mode-toggle {
+    flex: 1 1 100%;
+  }
+  .card-head .mode-toggle-btn {
+    flex: 1;
+    text-align: center;
+    white-space: normal;
+    line-height: 1.3;
   }
 
   .card, .stack-card, .chart-card, .prediction-card {
     box-shadow: 0 6px 16px rgba(0,0,0,.2);
-  }
-
-  .sidebar .brand {
-    margin-bottom: 0;
-  }
-
-  .sidebar .brand-icon {
-    width: 34px;
-    height: 34px;
-    border-radius: 10px;
-    font-size: 11px;
-  }
-
-  .sidebar .brand h1 {
-    font-size: 14px;
-  }
-
-  .sidebar .brand p {
-    display: none;
-  }
-
-  .nav-list {
-    flex-direction: row;
-    flex: 0 0 auto;
-    overflow-x: auto;
-    overflow-y: hidden;
-    gap: 8px;
-    padding-bottom: 2px;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  .nav-section {
-    display: contents;
-  }
-
-  .nav-section-label {
-    display: none;
-  }
-
-  .nav {
-    width: auto;
-    flex: 0 0 auto;
-    padding: 8px 12px;
-    font-size: 12px;
-    white-space: nowrap;
-  }
-
-  /* Bot Status card collapses to a compact row instead of a tall panel */
-  .status-box {
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    margin-top: 0;
-    padding: 8px 12px;
-    border-radius: 14px;
-    text-align: left;
-    gap: 8px 10px;
-  }
-
-  .status-box-head {
-    width: auto;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 2px;
-  }
-
-  .bot-orb,
-  .status-stats {
-    display: none;
-  }
-
-  .status-box-actions {
-    width: auto;
-    margin-top: 0;
-  }
-
-  .icon-btn.danger {
-    padding: 0 12px;
-    font-size: 12px;
   }
 
   /* ---------- Topbar / market ticker ---------- */
@@ -977,8 +943,15 @@ button, select, input {
     grid-column: auto;
   }
 
-  .card.wide, .card.full {
-    grid-column: auto;
+  /* !important required - see the tablet block's comment above. Without
+     it this loses to the unconditional 0-3-0 rules further down the file
+     (later source order at equal specificity) and a .wide/.full card
+     keeps its 2-column span, forcing an implicit 2nd track onto what
+     should be a single mobile column (confirmed via computed
+     gridTemplateColumns showing two unequal tracks on BinanceRealPage,
+     which has a .wide card). */
+  .page-grid > .card.wide, .page-grid > .card.full {
+    grid-column: auto !important;
   }
 
   .card, .stack-card, .chart-card, .prediction-card {
@@ -2171,6 +2144,10 @@ progress.disabled::-webkit-progress-value {
   gap: 14px;
 }
 
+.orderbook-3col .ob-col {
+  min-width: 0;
+}
+
 .ob-col-head {
   font-size: 11px;
   text-transform: uppercase;
@@ -2208,6 +2185,25 @@ progress.disabled::-webkit-progress-value {
 .ob-mid span {
   color: #8b90a8;
   font-size: 11px;
+}
+
+/* Tightened for narrow phones (390-430px card width leaves ~100-120px per
+   side column after the fixed-width mid divider) so price/qty pairs never
+   crowd into each other or force the column wider than its 1fr share. */
+@media (max-width: 430px) {
+  .orderbook-3col {
+    gap: 8px;
+  }
+  .ob-mid {
+    padding: 0 6px;
+  }
+  .ob-mid b {
+    font-size: 14px;
+  }
+  .book-row {
+    font-size: 11px;
+    gap: 4px;
+  }
 }
 
 /* ---------- Coming soon ---------- */
@@ -2417,11 +2413,15 @@ progress.disabled::-webkit-progress-value {
 .log-message {
   color: #f7f7ff;
   font-weight: 600;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 .log-meta {
   color: #8b90a8;
   margin-left: auto;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 @media (max-width: 767px) {
@@ -3881,8 +3881,25 @@ progress.disabled::-webkit-progress-value {
 @media (max-width: 640px) {
   .mll-kpi-grid { grid-template-columns: repeat(2, 1fr); }
   .mll-algo-grid { grid-template-columns: 1fr; }
-  .mll-tabs button { padding: 6px 10px; font-size: 11.5px; }
   .mll-form-row select { min-width: 100px; }
+
+  /* Horizontally-scrollable pill row instead of wrapping to several rows
+     of tabs, which would push the active tab's content far down the page
+     on a short phone viewport. */
+  .mll-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding-bottom: 12px;
+  }
+  .mll-tabs::-webkit-scrollbar { display: none; }
+  .mll-tabs button {
+    flex: 0 0 auto;
+    padding: 8px 12px;
+    font-size: 11.5px;
+    min-height: 40px;
+  }
 }
 
 /* =====================================================================
@@ -4267,6 +4284,16 @@ progress.disabled::-webkit-progress-value {
   width: 100%;
   min-height: 240px;
   flex: 1;
+}
+
+/* Fullscreen height is CSS-driven (not a JS window.innerHeight read baked
+   into an inline style) so it stays correct across orientation change /
+   on-screen-keyboard resize without needing a resize listener - the
+   canvas's own ResizeObserver (BacktestChart.tsx) reacts to this reflow
+   the same way it reacts to any other wrap-size change. !important is
+   required here because it must win over the wrap's inline `style={{height}}`. */
+.bt-chart-fullscreen .bt-chart-wrap {
+  height: calc(100dvh - 120px) !important;
 }
 
 .bt-chart-canvas {
@@ -4844,6 +4871,7 @@ progress.disabled::-webkit-progress-value {
    (.modal-overlay / .pc-fullscreen, both 200). */
 :root {
   --z-popover: 60;
+  --z-bottom-nav: 140;
   --z-sheet-backdrop: 150;
   --z-sheet: 160;
 }
@@ -5092,6 +5120,107 @@ body.notif-scroll-lock {
   .notif-readall, .notif-close { min-height: 36px; }
   .notif-panel-head { padding: 14px 16px; }
   .notif-panel-body { padding: 8px 12px; }
+}
+
+/* ------------------------- mobile bottom nav ----------------------------
+   Phone-only (<=767px) replacement for Sidebar - see MobileBottomNav.tsx.
+   Reuses .notif-backdrop/.notif-sheet/.notif-sheet-handle/.notif-panel-*
+   for the "More" sheet so it looks identical to the notification sheet. */
+
+body.mobilenav-scroll-lock {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+.mobile-bottom-nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: var(--z-bottom-nav);
+  display: flex;
+  align-items: stretch;
+  height: var(--bottom-nav-height);
+  background: rgba(10, 12, 20, 0.92);
+  backdrop-filter: blur(20px);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.3);
+}
+
+.mobile-bottom-nav-item {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  color: #8b90a8;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+}
+
+.mobile-bottom-nav-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.mobile-bottom-nav-item.active {
+  color: white;
+}
+
+.mobile-more-sheet .notif-panel-body.mobile-more-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-bottom: 14px;
+}
+
+.mobile-more-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mobile-more-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.mobile-more-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: #d3d5e6;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+}
+
+.mobile-more-item.active {
+  color: white;
+  background: linear-gradient(135deg, rgba(var(--c-purple-rgb), 0.35), rgba(var(--c-blue-rgb), 0.18));
+  box-shadow: inset 0 0 0 1px rgba(var(--c-purple-rgb), .4);
+}
+
+.mobile-more-item.danger {
+  color: #ff5d73;
+  background: rgba(255, 93, 115, 0.1);
+  border-color: rgba(255, 93, 115, 0.28);
 }
 
 /* ============================================================
@@ -5518,6 +5647,91 @@ body.notif-scroll-lock {
   padding-top: 10px;
 }
 
+/* ---------- Generic auto-card table (components/Responsive/AutoCardTable) ---
+   Same visual language as .pos-cards/.pos-card above, generalized to any
+   column set instead of the hand-authored position fields. ---------- */
+
+.auto-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.auto-card {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.auto-card-open {
+  border-color: rgba(124, 92, 255, 0.35);
+}
+
+.auto-card-head {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font-size: 14px;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  min-height: 44px;
+}
+
+.auto-card-head-static {
+  cursor: default;
+  min-height: auto;
+}
+
+.auto-card-chevron {
+  display: inline-flex;
+  color: #8b90a8;
+  flex-shrink: 0;
+}
+
+.auto-card-badge {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.auto-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px 12px;
+  overflow-wrap: anywhere;
+}
+
+.auto-card-detail {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 10px;
+}
+
+.auto-card-actions {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 10px;
+  flex-wrap: wrap;
+}
+
+.auto-card-row-clickable {
+  cursor: pointer;
+}
+
+.auto-card-row-clickable:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
 /* ---------- Edit Risk modal ---------- */
 
 .risk-modal {
@@ -5601,14 +5815,20 @@ body.notif-scroll-lock {
   padding: 0;
 }
 
-/* bottom sheet on phones, respecting iOS safe areas */
+/* Bottom sheet on phones, respecting iOS safe areas - applies to every
+   .modal-card (Edit Risk, Live Unlock, Server Trading Control's Enable
+   Lock/Risk Limits/Confirm modals, and the ad hoc reset-confirm dialogs in
+   PaperTradingPage/PositionsPage/BinanceRealPage), not just .risk-modal.
+   Field-grid rules that are specific to the risk-editing form stay scoped
+   to .risk-modal below so a plain 2-button confirm dialog doesn't inherit
+   layout meant for TP/SL inputs. */
 @media (max-width: 640px) {
-  .modal-overlay:has(.risk-modal) {
+  .modal-overlay:has(.modal-card) {
     align-items: flex-end;
     padding: 0;
   }
 
-  .risk-modal {
+  .modal-card {
     max-width: none;
     width: 100%;
     border-radius: 18px 18px 0 0;

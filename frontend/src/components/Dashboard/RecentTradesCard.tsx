@@ -1,4 +1,5 @@
 import { memo } from "react";
+import AutoCardTable, { type AutoCardColumn } from "../Responsive/AutoCardTable";
 
 type Trade = {
   id: number;
@@ -13,30 +14,22 @@ type Props = {
   rows?: number;
 };
 
+const COLUMNS: AutoCardColumn<Trade>[] = [
+  { key: "time", label: "Time", render: (t) => new Date(t.time).toLocaleTimeString() },
+  { key: "side", label: "Side", render: (t) => <span className={t.side === "BUY" ? "green" : "red"}>{t.side}</span> },
+  { key: "price", label: "Price", render: (t) => t.price.toFixed(1) },
+  { key: "size", label: "Size", render: (t) => t.qty.toFixed(3) },
+];
+
 function RecentTradesCard({ trades, rows = 8 }: Props) {
   return (
-    <div className="table-wrap">
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th>Time</th>
-            <th>Side</th>
-            <th>Price</th>
-            <th>Size</th>
-          </tr>
-        </thead>
-        <tbody>
-          {trades.slice(0, rows).map((t) => (
-            <tr key={t.id}>
-              <td>{new Date(t.time).toLocaleTimeString()}</td>
-              <td className={t.side === "BUY" ? "green" : "red"}>{t.side}</td>
-              <td>{t.price.toFixed(1)}</td>
-              <td>{t.qty.toFixed(3)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <AutoCardTable
+      columns={COLUMNS}
+      rows={trades.slice(0, rows)}
+      keyField={(t) => t.id}
+      titleColumn="time"
+      statusColumn="side"
+    />
   );
 }
 

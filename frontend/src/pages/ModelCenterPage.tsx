@@ -24,6 +24,7 @@ import {
   XCircle,
 } from "lucide-react";
 import Card from "../components/Layout/Card";
+import AutoCardTable from "../components/Responsive/AutoCardTable";
 import { fmtNum, fmtPct } from "../lib/format";
 import type { AppData } from "../hooks/useAppData";
 import { useMLLab, type Algorithm, type MLJob, type MLNotificationItem } from "../components/MLLab/useMLLab";
@@ -541,20 +542,22 @@ function HpoResults({ lab }: { lab: ReturnType<typeof useMLLab> }) {
           </div>
           <div className="mll-panel">
             <div className="mll-panel-title">Top {Math.min(20, hpoResult.top_trials?.length ?? 0)} trials</div>
-            <div className="table-wrap">
-              <table className="data-table">
-                <thead><tr><th>#</th><th>Val. accuracy</th><th>Parameters</th></tr></thead>
-                <tbody>
-                  {(hpoResult.top_trials || []).map((t: any) => (
-                    <tr key={t.trial}>
-                      <td>{t.trial}</td>
-                      <td><b>{fmtNum(t.value, 4)}</b></td>
-                      <td className="mll-mono mll-dim">{Object.entries(t.params).map(([k, v]) => `${k}=${v}`).join("  ")}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <AutoCardTable
+              columns={[
+                { key: "trial", label: "#", render: (t: any) => t.trial },
+                { key: "value", label: "Val. accuracy", render: (t: any) => <b>{fmtNum(t.value, 4)}</b> },
+                {
+                  key: "params",
+                  label: "Parameters",
+                  render: (t: any) => (
+                    <span className="mll-mono mll-dim">{Object.entries(t.params).map(([k, v]) => `${k}=${v}`).join("  ")}</span>
+                  ),
+                },
+              ]}
+              rows={hpoResult.top_trials || []}
+              keyField={(t: any) => t.trial}
+              titleColumn="trial"
+            />
           </div>
         </div>
       )}
@@ -613,32 +616,33 @@ function JobsTab({ lab, busy, act }: { lab: ReturnType<typeof useMLLab>; busy: s
       {doneJobs.length === 0 ? (
         <EmptySlate title="No completed jobs yet" reason="Every run appears here permanently with its full result or failure reason." />
       ) : (
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr><th>Job</th><th>Kind</th><th>Algorithm</th><th>Status</th><th>Result</th><th>Trigger</th><th>Finished</th></tr>
-            </thead>
-            <tbody>
-              {doneJobs.map((j) => (
-                <tr key={j.job_id}>
-                  <td className="mll-mono">{j.job_id}</td>
-                  <td>{j.kind}</td>
-                  <td>{j.algorithm}</td>
-                  <td><StatusPill status={j.status} /></td>
-                  <td className="mll-dim">
-                    {j.status === "succeeded"
-                      ? j.kind === "hpo"
-                        ? `best ${fmtNum(j.result?.best_value, 4)} over ${j.result?.trials_run} trials`
-                        : `${j.result?.version} · acc ${pct01(j.result?.metrics?.accuracy)}${j.result?.promotion?.promoted ? " · PROMOTED" : ""}`
-                      : j.error || "—"}
-                  </td>
-                  <td className="mll-dim">{(j as any).params?.trigger || "manual"}</td>
-                  <td>{j.finished_at ? <LocalTime value={j.finished_at} label="Finished" /> : "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <AutoCardTable
+          columns={[
+            { key: "job", label: "Job", render: (j: MLJob) => <span className="mll-mono">{j.job_id}</span> },
+            { key: "kind", label: "Kind", render: (j: MLJob) => j.kind },
+            { key: "algorithm", label: "Algorithm", render: (j: MLJob) => j.algorithm },
+            { key: "status", label: "Status", render: (j: MLJob) => <StatusPill status={j.status} /> },
+            {
+              key: "result",
+              label: "Result",
+              render: (j: MLJob) => (
+                <span className="mll-dim">
+                  {j.status === "succeeded"
+                    ? j.kind === "hpo"
+                      ? `best ${fmtNum(j.result?.best_value, 4)} over ${j.result?.trials_run} trials`
+                      : `${j.result?.version} · acc ${pct01(j.result?.metrics?.accuracy)}${j.result?.promotion?.promoted ? " · PROMOTED" : ""}`
+                    : j.error || "—"}
+                </span>
+              ),
+            },
+            { key: "trigger", label: "Trigger", render: (j: MLJob) => <span className="mll-dim">{(j as any).params?.trigger || "manual"}</span> },
+            { key: "finished", label: "Finished", render: (j: MLJob) => (j.finished_at ? <LocalTime value={j.finished_at} label="Finished" /> : "—") },
+          ]}
+          rows={doneJobs}
+          keyField={(j) => j.job_id}
+          titleColumn="job"
+          statusColumn="status"
+        />
       )}
     </div>
   );
@@ -743,22 +747,19 @@ function ChampionTab({ lab, busy, act }: { lab: ReturnType<typeof useMLLab>; bus
               {promotionHistory.length === 0 ? (
                 <p className="mll-dim">No earlier promotions recorded for this model.</p>
               ) : (
-                <div className="table-wrap">
-                  <table className="data-table">
-                    <thead><tr><th>Version</th><th>Status</th><th>Accuracy</th><th>Win Rate</th><th>Promoted</th></tr></thead>
-                    <tbody>
-                      {promotionHistory.map((v: any) => (
-                        <tr key={v.model_id}>
-                          <td>{v.version}</td>
-                          <td><StatusPill status={v.status} /></td>
-                          <td>{pct01(v.val_accuracy)}</td>
-                          <td>{v.win_rate != null ? fmtPct(v.win_rate, 1) : "—"}</td>
-                          <td><LocalTime value={v.promoted_at} label="Promoted" /></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <AutoCardTable
+                  columns={[
+                    { key: "version", label: "Version", render: (v: any) => v.version },
+                    { key: "status", label: "Status", render: (v: any) => <StatusPill status={v.status} /> },
+                    { key: "accuracy", label: "Accuracy", render: (v: any) => pct01(v.val_accuracy) },
+                    { key: "winRate", label: "Win Rate", render: (v: any) => (v.win_rate != null ? fmtPct(v.win_rate, 1) : "—") },
+                    { key: "promoted", label: "Promoted", render: (v: any) => <LocalTime value={v.promoted_at} label="Promoted" /> },
+                  ]}
+                  rows={promotionHistory}
+                  keyField={(v: any) => v.model_id}
+                  titleColumn="version"
+                  statusColumn="status"
+                />
               )}
             </div>
           </div>
@@ -929,40 +930,94 @@ function RegistryTab({ lab, busy, act }: { lab: ReturnType<typeof useMLLab>; bus
       {lab.registry.length === 0 ? (
         <EmptySlate title="Registry is empty" reason="Every training run (including failed and archived versions) is recorded here permanently." />
       ) : (
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr><th>Model</th><th>Version</th><th>Status</th><th>Created</th><th>Accuracy</th><th>OOS</th><th>Dataset</th><th>Features</th><th>Params</th><th>Git</th><th>Size</th><th></th></tr>
-            </thead>
-            <tbody>
-              {lab.registry.map((m) => (
-                <tr key={m.model_id}>
-                  <td><b>{m.model_name}</b><div className="mll-dim" style={{ fontSize: 11 }}>{m.algorithm}</div></td>
-                  <td>{m.version}</td>
-                  <td><StatusPill status={m.status} /></td>
-                  <td><LocalTime value={m.trained_at} label="Created" /></td>
-                  <td>{pct01(m.val_accuracy ?? m.train_accuracy)}</td>
-                  <td>{pct01(m.oos_accuracy)}</td>
-                  <td className="mll-dim" title={m.dataset_spec ? JSON.stringify(m.dataset_spec) : undefined}>{m.dataset_source || m.dataset_version || "—"}</td>
-                  <td>{m.feature_list?.length ?? "—"}</td>
-                  <td className="mll-dim" title={JSON.stringify(m.parameters, null, 2)}>{m.parameters ? `${Object.keys(m.parameters).length} set` : "—"}</td>
-                  <td className="mll-mono">{m.git_commit || "n/a"}</td>
-                  <td>{fmtBytes(m.model_size_bytes)}</td>
-                  <td>
-                    <div className="mll-btn-row">
-                      {m.model_path && <a className="mll-link" title="Download" href={api_download(m.model_id)} download><Download size={12} /></a>}
-                      {m.status === "Champion" ? (
-                        <button title="Rollback to previous champion" disabled={busy !== null} onClick={() => act(`rb-${m.model_id}`, () => lab.rollback(m.model_name), "Rolled back")}><RotateCw size={12} /></button>
-                      ) : (
-                        <button className="danger" title="Archive + remove file" disabled={busy !== null || m.status === "Archived"} onClick={() => act(`del-${m.model_id}`, () => lab.deleteModel(m.model_id), "Archived")}><Trash2 size={12} /></button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <AutoCardTable
+          columns={[
+            {
+              key: "model",
+              label: "Model",
+              render: (m: any) => (
+                <>
+                  <b>{m.model_name}</b>
+                  <div className="mll-dim" style={{ fontSize: 11 }}>{m.algorithm}</div>
+                </>
+              ),
+            },
+            { key: "version", label: "Version", render: (m: any) => m.version },
+            { key: "status", label: "Status", render: (m: any) => <StatusPill status={m.status} /> },
+            { key: "created", label: "Created", render: (m: any) => <LocalTime value={m.trained_at} label="Created" /> },
+            { key: "accuracy", label: "Accuracy", render: (m: any) => pct01(m.val_accuracy ?? m.train_accuracy) },
+            { key: "oos", label: "OOS", render: (m: any) => pct01(m.oos_accuracy) },
+            {
+              key: "dataset",
+              label: "Dataset",
+              hideOnCard: true,
+              render: (m: any) => (
+                <span className="mll-dim" title={m.dataset_spec ? JSON.stringify(m.dataset_spec) : undefined}>
+                  {m.dataset_source || m.dataset_version || "—"}
+                </span>
+              ),
+            },
+            { key: "features", label: "Features", hideOnCard: true, render: (m: any) => m.feature_list?.length ?? "—" },
+            {
+              key: "params",
+              label: "Params",
+              hideOnCard: true,
+              render: (m: any) => (
+                <span className="mll-dim" title={JSON.stringify(m.parameters, null, 2)}>
+                  {m.parameters ? `${Object.keys(m.parameters).length} set` : "—"}
+                </span>
+              ),
+            },
+            { key: "git", label: "Git", hideOnCard: true, render: (m: any) => <span className="mll-mono">{m.git_commit || "n/a"}</span> },
+            { key: "size", label: "Size", hideOnCard: true, render: (m: any) => fmtBytes(m.model_size_bytes) },
+          ]}
+          rows={lab.registry}
+          keyField={(m: any) => m.model_id}
+          titleColumn="model"
+          statusColumn="status"
+          renderDetail={(m: any) => (
+            <div className="auto-card-grid">
+              <div>
+                <span className="tile-label">Dataset</span>
+                <b className="tile-value">{m.dataset_source || m.dataset_version || "—"}</b>
+              </div>
+              <div>
+                <span className="tile-label">Features</span>
+                <b className="tile-value">{m.feature_list?.length ?? "—"}</b>
+              </div>
+              <div>
+                <span className="tile-label">Params</span>
+                <b className="tile-value">{m.parameters ? `${Object.keys(m.parameters).length} set` : "—"}</b>
+              </div>
+              <div>
+                <span className="tile-label">Git</span>
+                <b className="tile-value mll-mono">{m.git_commit || "n/a"}</b>
+              </div>
+              <div>
+                <span className="tile-label">Size</span>
+                <b className="tile-value">{fmtBytes(m.model_size_bytes)}</b>
+              </div>
+            </div>
+          )}
+          renderActions={(m: any) => (
+            <>
+              {m.model_path && (
+                <a className="mll-link" title="Download" href={api_download(m.model_id)} download>
+                  <Download size={12} /> Download
+                </a>
+              )}
+              {m.status === "Champion" ? (
+                <button title="Rollback to previous champion" disabled={busy !== null} onClick={() => act(`rb-${m.model_id}`, () => lab.rollback(m.model_name), "Rolled back")}>
+                  <RotateCw size={12} /> Rollback
+                </button>
+              ) : (
+                <button className="danger" title="Archive + remove file" disabled={busy !== null || m.status === "Archived"} onClick={() => act(`del-${m.model_id}`, () => lab.deleteModel(m.model_id), "Archived")}>
+                  <Trash2 size={12} /> Archive
+                </button>
+              )}
+            </>
+          )}
+        />
       )}
     </div>
   );
@@ -1156,22 +1211,20 @@ function AnalyticsTab({ lab }: { lab: ReturnType<typeof useMLLab> }) {
                     <span>Std dev <b>{wf.std_accuracy != null ? fmtNum(wf.std_accuracy, 4) : "—"}</b></span>
                     <span>Folds <b>{wf.n_folds}</b></span>
                   </div>
-                  <div className="table-wrap" style={{ marginTop: 8 }}>
-                    <table className="data-table">
-                      <thead><tr><th>Fold</th><th>Train Rows</th><th>Test Rows</th><th>Accuracy</th><th>Signals</th><th>Win Rate</th></tr></thead>
-                      <tbody>
-                        {(wf.folds || []).map((f: any) => (
-                          <tr key={f.fold}>
-                            <td>{f.fold}</td>
-                            <td>{f.train_rows}</td>
-                            <td>{f.test_rows}</td>
-                            <td className={f.accuracy >= 0.5 ? "green" : "red"}>{pct01(f.accuracy)}</td>
-                            <td>{f.signals ?? "—"}</td>
-                            <td>{f.win_rate != null ? fmtPct(f.win_rate, 1) : "—"}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <div style={{ marginTop: 8 }}>
+                    <AutoCardTable
+                      columns={[
+                        { key: "fold", label: "Fold", render: (f: any) => `#${f.fold}` },
+                        { key: "trainRows", label: "Train Rows", render: (f: any) => f.train_rows },
+                        { key: "testRows", label: "Test Rows", render: (f: any) => f.test_rows },
+                        { key: "accuracy", label: "Accuracy", render: (f: any) => <span className={f.accuracy >= 0.5 ? "green" : "red"}>{pct01(f.accuracy)}</span> },
+                        { key: "signals", label: "Signals", render: (f: any) => f.signals ?? "—" },
+                        { key: "winRate", label: "Win Rate", render: (f: any) => (f.win_rate != null ? fmtPct(f.win_rate, 1) : "—") },
+                      ]}
+                      rows={wf.folds || []}
+                      keyField={(f: any) => f.fold}
+                      titleColumn="fold"
+                    />
                   </div>
                 </>
               ) : (
@@ -1280,29 +1333,37 @@ function MonitoringTab({ lab, busy, act }: { lab: ReturnType<typeof useMLLab>; b
       </div>
 
       <div className="mll-section-title">Live Accuracy by Timeframe</div>
-      <div className="table-wrap">
-        <table className="data-table">
-          <thead>
-            <tr><th>Timeframe</th><th>Predictions</th><th>Directional Acc.</th><th>MAE</th><th>RMSE</th><th>MAPE</th><th>Calibration Err.</th><th>Profit if traded</th></tr>
-          </thead>
-          <tbody>
-            {Object.entries(liveTf).map(([tf, m]: [string, any]) => (
-              <tr key={tf}>
-                <td><b>{tf}</b></td>
-                <td>{m.predictions}</td>
-                <td className={m.directional_accuracy_pct >= 50 ? "green" : m.predictions ? "red" : ""}>
-                  {m.predictions ? fmtPct(m.directional_accuracy_pct, 1) : <span className="mll-dim" title={m.reason}>no data</span>}
-                </td>
-                <td>{m.mae != null ? fmtNum(m.mae, 2) : "—"}</td>
-                <td>{m.rmse != null ? fmtNum(m.rmse, 2) : "—"}</td>
-                <td>{m.mape_pct != null ? fmtPct(m.mape_pct, 2) : "—"}</td>
-                <td>{m.calibration_error != null ? fmtNum(m.calibration_error, 3) : "—"}</td>
-                <td className={(m.profit_if_traded_pct ?? 0) >= 0 ? "green" : "red"}>{m.profit_if_traded_pct != null ? fmtPct(m.profit_if_traded_pct, 2) : "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <AutoCardTable
+        columns={[
+          { key: "tf", label: "Timeframe", render: ([tf]: [string, any]) => <b>{tf}</b> },
+          { key: "predictions", label: "Predictions", render: ([, m]: [string, any]) => m.predictions },
+          {
+            key: "accuracy",
+            label: "Directional Acc.",
+            render: ([, m]: [string, any]) => (
+              <span className={m.directional_accuracy_pct >= 50 ? "green" : m.predictions ? "red" : ""}>
+                {m.predictions ? fmtPct(m.directional_accuracy_pct, 1) : <span className="mll-dim" title={m.reason}>no data</span>}
+              </span>
+            ),
+          },
+          { key: "mae", label: "MAE", render: ([, m]: [string, any]) => (m.mae != null ? fmtNum(m.mae, 2) : "—") },
+          { key: "rmse", label: "RMSE", render: ([, m]: [string, any]) => (m.rmse != null ? fmtNum(m.rmse, 2) : "—") },
+          { key: "mape", label: "MAPE", render: ([, m]: [string, any]) => (m.mape_pct != null ? fmtPct(m.mape_pct, 2) : "—") },
+          { key: "calibration", label: "Calibration Err.", render: ([, m]: [string, any]) => (m.calibration_error != null ? fmtNum(m.calibration_error, 3) : "—") },
+          {
+            key: "profit",
+            label: "Profit if traded",
+            render: ([, m]: [string, any]) => (
+              <span className={(m.profit_if_traded_pct ?? 0) >= 0 ? "green" : "red"}>
+                {m.profit_if_traded_pct != null ? fmtPct(m.profit_if_traded_pct, 2) : "—"}
+              </span>
+            ),
+          },
+        ]}
+        rows={Object.entries(liveTf)}
+        keyField={([tf]) => tf}
+        titleColumn="tf"
+      />
 
       <div className="mll-section-title">
         Performance History
@@ -1333,26 +1394,26 @@ function MonitoringTab({ lab, busy, act }: { lab: ReturnType<typeof useMLLab>; b
       {inferenceItems.length === 0 ? (
         <EmptySlate title="No predictions recorded" reason="Every live prediction lands here with its measured latency and later resolution." />
       ) : (
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr><th>Time</th><th>Symbol</th><th>TF</th><th>Signal</th><th>Confidence</th><th>Latency</th><th>Outcome</th></tr>
-            </thead>
-            <tbody>
-              {inferenceItems.slice(0, 25).map((it: any) => (
-                <tr key={it.id}>
-                  <td><LocalTime value={it.timestamp} label="Predicted" /></td>
-                  <td>{it.symbol}</td>
-                  <td>{it.timeframe}</td>
-                  <td><StatusPill status={it.signal || "—"} /></td>
-                  <td>{it.confidence != null ? fmtPct(it.confidence, 1) : "—"}</td>
-                  <td>{it.latency_ms != null ? `${fmtNum(it.latency_ms, 0)} ms` : <span className="mll-dim" title="Recorded before latency tracking was added">n/a</span>}</td>
-                  <td><StatusPill status={it.outcome} /></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <AutoCardTable
+          columns={[
+            { key: "time", label: "Time", render: (it: any) => <LocalTime value={it.timestamp} label="Predicted" /> },
+            { key: "symbol", label: "Symbol", render: (it: any) => it.symbol },
+            { key: "tf", label: "TF", render: (it: any) => it.timeframe },
+            { key: "signal", label: "Signal", render: (it: any) => <StatusPill status={it.signal || "—"} /> },
+            { key: "confidence", label: "Confidence", render: (it: any) => (it.confidence != null ? fmtPct(it.confidence, 1) : "—") },
+            {
+              key: "latency",
+              label: "Latency",
+              render: (it: any) =>
+                it.latency_ms != null ? `${fmtNum(it.latency_ms, 0)} ms` : <span className="mll-dim" title="Recorded before latency tracking was added">n/a</span>,
+            },
+            { key: "outcome", label: "Outcome", render: (it: any) => <StatusPill status={it.outcome} /> },
+          ]}
+          rows={inferenceItems.slice(0, 25)}
+          keyField={(it) => it.id}
+          titleColumn="symbol"
+          statusColumn="outcome"
+        />
       )}
     </div>
   );

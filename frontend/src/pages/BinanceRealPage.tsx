@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, Lock, RefreshCw } from "lucide-react";
 import Card from "../components/Layout/Card";
 import EditRiskModal, { type RiskPatch } from "../components/Dashboard/EditRiskModal";
+import AutoCardTable from "../components/Responsive/AutoCardTable";
 import { api } from "../services/api";
 import { fmtLocalDateTime, fmtNum, fmtPct, fmtUsd, toneClass, toneOf } from "../lib/format";
 import { LiveUnlockModal, ModeBadge, useTradingStatus } from "../components/Trading/TradingShared";
@@ -233,121 +234,81 @@ export default function BinanceRealPage(props: AppData) {
 
       {/* ---------------- balances ---------------- */}
       <Card title="Asset Balances">
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Asset</th>
-                <th>Available</th>
-                <th>Locked</th>
-                <th>Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(!balances?.balances || balances.balances.length === 0) && (
-                <tr>
-                  <td colSpan={4}>{balances?.available === false ? balances?.reason || "Unavailable" : "No balances"}</td>
-                </tr>
-              )}
-              {(balances?.balances || []).map((b: any) => (
-                <tr key={b.asset}>
-                  <td><b>{b.asset}</b></td>
-                  <td>{fmtNum(b.available, b.asset === "USDT" ? 2 : 6)}</td>
-                  <td>{fmtNum(b.locked, b.asset === "USDT" ? 2 : 6)}</td>
-                  <td>{fmtNum(b.total, b.asset === "USDT" ? 2 : 6)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <AutoCardTable
+          columns={[
+            { key: "asset", label: "Asset", render: (b: any) => <b>{b.asset}</b> },
+            { key: "available", label: "Available", render: (b: any) => fmtNum(b.available, b.asset === "USDT" ? 2 : 6) },
+            { key: "locked", label: "Locked", render: (b: any) => fmtNum(b.locked, b.asset === "USDT" ? 2 : 6) },
+            { key: "total", label: "Total", render: (b: any) => fmtNum(b.total, b.asset === "USDT" ? 2 : 6) },
+          ]}
+          rows={balances?.balances || []}
+          keyField={(b: any) => b.asset}
+          titleColumn="asset"
+          emptyMessage={balances?.available === false ? balances?.reason || "Unavailable" : "No balances"}
+        />
       </Card>
 
       {/* ---------------- positions ---------------- */}
       <Card title={`Real Open Positions (${positionRows.length})`} full className={isLive ? "live-danger-card" : ""}>
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Symbol</th>
-                <th>Side</th>
-                <th>Size</th>
-                <th>Entry</th>
-                <th>Mark</th>
-                <th>Liquidation</th>
-                <th>Margin</th>
-                <th>Type</th>
-                <th>Lev.</th>
-                <th>uPnL</th>
-                <th>Live TP</th>
-                <th>Live SL</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {positionRows.length === 0 && (
-                <tr>
-                  <td colSpan={13}>
-                    {positions?.available === false ? positions?.reason || "Unavailable" : "No open Binance positions"}
-                  </td>
-                </tr>
-              )}
-              {positionRows.map((p: any, i: number) => (
-                <tr key={p.symbol + i}>
-                  <td><b>{p.symbol}</b></td>
-                  <td><span className={p.side === "LONG" ? "green" : "red"}>{p.side}</span></td>
-                  <td>{fmtNum(p.quantity, 6)}</td>
-                  <td>{fmtNum(p.entry_price)}</td>
-                  <td>{fmtNum(p.mark_price)}</td>
-                  <td>{p.liquidation_price != null ? fmtNum(p.liquidation_price) : "—"}</td>
-                  <td>{fmtUsd(p.margin_used)}</td>
-                  <td>{p.margin_type || "—"}</td>
-                  <td>{p.leverage != null ? `${p.leverage}x` : "—"}</td>
-                  <td><span className={toneClass(toneOf(p.unrealized_pnl))}>{fmtUsd(p.unrealized_pnl)}</span></td>
-                  <td>{p.tp != null ? fmtNum(p.tp) : "—"}</td>
-                  <td>{p.sl != null ? fmtNum(p.sl) : "—"}</td>
-                  <td>
-                    <div className="controls" style={{ gap: 6 }}>
-                      <button
-                        className="mini-btn"
-                        disabled={busy || !isLive || p.id == null}
-                        title={!isLive ? "Locked — unlock real trading first" : p.id == null ? "Waiting for sync…" : "Edit Binance Live TP/SL"}
-                        onClick={() =>
-                          setEditing({
-                            ...p,
-                            entry: p.entry_price,
-                            mark: p.mark_price,
-                            qty: p.quantity,
-                            trailing_stop: null,
-                          })
-                        }
-                      >
-                        TP/SL
-                      </button>
-                      <button
-                        className="btn-danger mini"
-                        disabled={busy || !isLive}
-                        title={!isLive ? "Locked — unlock real trading first" : "Close on Binance"}
-                        onClick={() =>
-                          setConfirm({
-                            title: `Close REAL ${p.symbol} ${p.side}?`,
-                            body: "Sends a real reduce-only MARKET order to Binance. This uses real funds.",
-                            action: () =>
-                              run(
-                                () => api.binanceClosePosition({ symbol: p.symbol, position_id: p.id }),
-                                `${p.symbol} position closed on Binance`
-                              ),
-                          })
-                        }
-                      >
-                        Close
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <AutoCardTable
+          columns={[
+            { key: "symbol", label: "Symbol", render: (p: any) => <b>{p.symbol}</b> },
+            { key: "side", label: "Side", render: (p: any) => <span className={p.side === "LONG" ? "green" : "red"}>{p.side}</span> },
+            { key: "size", label: "Size", render: (p: any) => fmtNum(p.quantity, 6) },
+            { key: "entry", label: "Entry", render: (p: any) => fmtNum(p.entry_price) },
+            { key: "mark", label: "Mark", render: (p: any) => fmtNum(p.mark_price) },
+            { key: "liq", label: "Liquidation", render: (p: any) => (p.liquidation_price != null ? fmtNum(p.liquidation_price) : "—") },
+            { key: "margin", label: "Margin", render: (p: any) => fmtUsd(p.margin_used) },
+            { key: "type", label: "Type", render: (p: any) => p.margin_type || "—" },
+            { key: "lev", label: "Lev.", render: (p: any) => (p.leverage != null ? `${p.leverage}x` : "—") },
+            { key: "pnl", label: "uPnL", render: (p: any) => <span className={toneClass(toneOf(p.unrealized_pnl))}>{fmtUsd(p.unrealized_pnl)}</span> },
+            { key: "tp", label: "Live TP", render: (p: any) => (p.tp != null ? fmtNum(p.tp) : "—") },
+            { key: "sl", label: "Live SL", render: (p: any) => (p.sl != null ? fmtNum(p.sl) : "—") },
+          ]}
+          rows={positionRows.map((p: any, i: number) => ({ ...p, _key: p.symbol + i }))}
+          keyField={(p: any) => p._key}
+          titleColumn="symbol"
+          statusColumn="side"
+          renderActions={(p: any) => (
+            <>
+              <button
+                className="mini-btn"
+                disabled={busy || !isLive || p.id == null}
+                title={!isLive ? "Locked — unlock real trading first" : p.id == null ? "Waiting for sync…" : "Edit Binance Live TP/SL"}
+                onClick={() =>
+                  setEditing({
+                    ...p,
+                    entry: p.entry_price,
+                    mark: p.mark_price,
+                    qty: p.quantity,
+                    trailing_stop: null,
+                  })
+                }
+              >
+                TP/SL
+              </button>
+              <button
+                className="btn-danger mini"
+                disabled={busy || !isLive}
+                title={!isLive ? "Locked — unlock real trading first" : "Close on Binance"}
+                onClick={() =>
+                  setConfirm({
+                    title: `Close REAL ${p.symbol} ${p.side}?`,
+                    body: "Sends a real reduce-only MARKET order to Binance. This uses real funds.",
+                    action: () =>
+                      run(
+                        () => api.binanceClosePosition({ symbol: p.symbol, position_id: p.id }),
+                        `${p.symbol} position closed on Binance`
+                      ),
+                  })
+                }
+              >
+                Close
+              </button>
+            </>
+          )}
+          emptyMessage={positions?.available === false ? positions?.reason || "Unavailable" : "No open Binance positions"}
+        />
       </Card>
 
       {/* ---------------- open orders ---------------- */}
@@ -372,130 +333,92 @@ export default function BinanceRealPage(props: AppData) {
           ) : undefined
         }
       >
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Symbol</th>
-                <th>Side</th>
-                <th>Type</th>
-                <th>Price</th>
-                <th>Qty</th>
-                <th>Reduce Only</th>
-                <th>Status</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {orderRows.length === 0 && (
-                <tr>
-                  <td colSpan={8}>{orders?.available === false ? orders?.reason || "Unavailable" : "No open Binance orders"}</td>
-                </tr>
-              )}
-              {orderRows.map((o: any) => (
-                <tr key={o.order_id}>
-                  <td><b>{o.symbol}</b></td>
-                  <td><span className={o.side === "BUY" ? "green" : "red"}>{o.side}</span></td>
-                  <td>{o.type}</td>
-                  <td>{o.stop_price ? fmtNum(o.stop_price) : o.price ? fmtNum(o.price) : "—"}</td>
-                  <td>{o.close_position ? "ALL" : fmtNum(o.quantity, 6)}</td>
-                  <td>{o.reduce_only || o.close_position ? "Yes" : "No"}</td>
-                  <td>{o.status}</td>
-                  <td>
-                    <button
-                      className="mini-btn"
-                      disabled={busy || !isLive}
-                      title={!isLive ? "Locked — unlock real trading first" : ""}
-                      onClick={() =>
-                        setConfirm({
-                          title: `Cancel real order #${o.order_id}?`,
-                          body: `${o.type} ${o.side} on ${o.symbol} will be canceled on Binance.`,
-                          action: () => run(() => api.binanceCancelOrder(o.symbol, o.order_id), "Order canceled"),
-                        })
-                      }
-                    >
-                      Cancel
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <AutoCardTable
+          columns={[
+            { key: "symbol", label: "Symbol", render: (o: any) => <b>{o.symbol}</b> },
+            { key: "side", label: "Side", render: (o: any) => <span className={o.side === "BUY" ? "green" : "red"}>{o.side}</span> },
+            { key: "type", label: "Type", render: (o: any) => o.type },
+            { key: "price", label: "Price", render: (o: any) => (o.stop_price ? fmtNum(o.stop_price) : o.price ? fmtNum(o.price) : "—") },
+            { key: "qty", label: "Qty", render: (o: any) => (o.close_position ? "ALL" : fmtNum(o.quantity, 6)) },
+            { key: "reduceOnly", label: "Reduce Only", render: (o: any) => (o.reduce_only || o.close_position ? "Yes" : "No") },
+            { key: "status", label: "Status", render: (o: any) => o.status },
+          ]}
+          rows={orderRows}
+          keyField={(o: any) => o.order_id}
+          titleColumn="symbol"
+          statusColumn="side"
+          renderActions={(o: any) => (
+            <button
+              className="mini-btn"
+              disabled={busy || !isLive}
+              title={!isLive ? "Locked — unlock real trading first" : ""}
+              onClick={() =>
+                setConfirm({
+                  title: `Cancel real order #${o.order_id}?`,
+                  body: `${o.type} ${o.side} on ${o.symbol} will be canceled on Binance.`,
+                  action: () => run(() => api.binanceCancelOrder(o.symbol, o.order_id), "Order canceled"),
+                })
+              }
+            >
+              Cancel
+            </button>
+          )}
+          emptyMessage={orders?.available === false ? orders?.reason || "Unavailable" : "No open Binance orders"}
+        />
       </Card>
 
       {/* ---------------- income ---------------- */}
       <Card title="Income / Fees / Funding">
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Type</th>
-                <th>Symbol</th>
-                <th>Amount</th>
-              </tr>
-            </thead>
-            <tbody>
-              {incomeRows.length === 0 && (
-                <tr>
-                  <td colSpan={4}>{income?.available === false ? income?.reason || "Unavailable" : "No income rows"}</td>
-                </tr>
-              )}
-              {incomeRows.slice(0, 15).map((r: any, i: number) => (
-                <tr key={i}>
-                  <td>{fmtLocalDateTime(r.time)}</td>
-                  <td>{r.income_type}</td>
-                  <td>{r.symbol || "—"}</td>
-                  <td><span className={toneClass(toneOf(r.income))}>{fmtNum(r.income, 6)} {r.asset}</span></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <AutoCardTable
+          columns={[
+            { key: "time", label: "Time", render: (r: any) => fmtLocalDateTime(r.time) },
+            { key: "type", label: "Type", render: (r: any) => r.income_type },
+            { key: "symbol", label: "Symbol", render: (r: any) => r.symbol || "—" },
+            {
+              key: "amount",
+              label: "Amount",
+              render: (r: any) => (
+                <span className={toneClass(toneOf(r.income))}>
+                  {fmtNum(r.income, 6)} {r.asset}
+                </span>
+              ),
+            },
+          ]}
+          rows={incomeRows.slice(0, 15).map((r: any, i: number) => ({ ...r, _key: i }))}
+          keyField={(r: any) => r._key}
+          titleColumn="symbol"
+          statusColumn="type"
+          emptyMessage={income?.available === false ? income?.reason || "Unavailable" : "No income rows"}
+        />
       </Card>
 
       {/* ---------------- trade history ---------------- */}
       <Card title="Real Trade History" full>
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Label</th>
-                <th>Symbol</th>
-                <th>Side</th>
-                <th>Price</th>
-                <th>Qty</th>
-                <th>Fee</th>
-                <th>Realized PnL</th>
-              </tr>
-            </thead>
-            <tbody>
-              {tradeRows.length === 0 && (
-                <tr>
-                  <td colSpan={8}>{trades?.available === false ? trades?.reason || "Unavailable" : "No real trades yet"}</td>
-                </tr>
-              )}
-              {tradeRows.slice(0, 30).map((t: any) => (
-                <tr key={t.trade_id}>
-                  <td>{fmtLocalDateTime(t.time)}</td>
-                  <td>
-                    <span className={`badge ${t.label === "BOT_TRADE" ? "badge-green" : ""}`} style={{ fontSize: 10 }}>
-                      {t.label === "BOT_TRADE" ? "BOT" : "SYNCED"}
-                    </span>
-                  </td>
-                  <td><b>{t.symbol}</b></td>
-                  <td><span className={t.side === "BUY" ? "green" : "red"}>{t.side}</span></td>
-                  <td>{fmtNum(t.price)}</td>
-                  <td>{fmtNum(t.quantity, 6)}</td>
-                  <td>{fmtNum(t.commission, 4)} {t.commission_asset || ""}</td>
-                  <td><span className={toneClass(toneOf(t.realized_pnl))}>{fmtUsd(t.realized_pnl)}</span></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <AutoCardTable
+          columns={[
+            { key: "time", label: "Time", render: (t: any) => fmtLocalDateTime(t.time) },
+            {
+              key: "label",
+              label: "Label",
+              render: (t: any) => (
+                <span className={`badge ${t.label === "BOT_TRADE" ? "badge-green" : ""}`} style={{ fontSize: 10 }}>
+                  {t.label === "BOT_TRADE" ? "BOT" : "SYNCED"}
+                </span>
+              ),
+            },
+            { key: "symbol", label: "Symbol", render: (t: any) => <b>{t.symbol}</b> },
+            { key: "side", label: "Side", render: (t: any) => <span className={t.side === "BUY" ? "green" : "red"}>{t.side}</span> },
+            { key: "price", label: "Price", render: (t: any) => fmtNum(t.price) },
+            { key: "qty", label: "Qty", render: (t: any) => fmtNum(t.quantity, 6) },
+            { key: "fee", label: "Fee", render: (t: any) => `${fmtNum(t.commission, 4)} ${t.commission_asset || ""}` },
+            { key: "pnl", label: "Realized PnL", render: (t: any) => <span className={toneClass(toneOf(t.realized_pnl))}>{fmtUsd(t.realized_pnl)}</span> },
+          ]}
+          rows={tradeRows.slice(0, 30)}
+          keyField={(t: any) => t.trade_id}
+          titleColumn="symbol"
+          statusColumn="side"
+          emptyMessage={trades?.available === false ? trades?.reason || "Unavailable" : "No real trades yet"}
+        />
       </Card>
 
       {/* ---------------- modals ---------------- */}

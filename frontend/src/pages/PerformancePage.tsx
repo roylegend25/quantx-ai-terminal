@@ -3,7 +3,22 @@ import Card from "../components/Layout/Card";
 import PortfolioAnalytics from "../components/Dashboard/PortfolioAnalytics";
 import { fmtNum, fmtPct } from "../lib/format";
 import LocalTime from "../components/LocalTime";
+import AutoCardTable, { type AutoCardColumn } from "../components/Responsive/AutoCardTable";
 import type { AppData } from "../hooks/useAppData";
+
+const TIMEFRAME_COLUMNS: AutoCardColumn<[string, any]>[] = [
+  { key: "tf", label: "Timeframe", render: ([tf]) => tf },
+  { key: "predictions", label: "Predictions", render: ([, s]) => s.predictions },
+  { key: "hitRate", label: "Hit Rate", render: ([, s]) => <span className={s.hit_rate_pct >= 50 ? "green" : "red"}>{fmtPct(s.hit_rate_pct, 1)}</span> },
+  { key: "avgError", label: "Avg Error", render: ([, s]) => fmtPct(s.avg_error_pct, 2) },
+];
+
+const RELIABILITY_COLUMNS: AutoCardColumn<any>[] = [
+  { key: "bucket", label: "Confidence Bucket", render: (b) => b.bucket },
+  { key: "predictions", label: "Predictions", render: (b) => b.predictions },
+  { key: "hitRate", label: "Actual Hit Rate", render: (b) => fmtPct(b.hit_rate_pct, 1) },
+  { key: "statedConfidence", label: "Stated Confidence", render: (b) => fmtNum(b.avg_confidence, 1) },
+];
 
 export default function PerformancePage(props: AppData) {
   const { portfolio, positions, history, learningPerformance, loadLearning } = props;
@@ -31,27 +46,8 @@ export default function PerformancePage(props: AppData) {
               From the learning loop's last evaluation (<LocalTime value={learningPerformance.evaluated_at} label="Evaluated" />) —
               predictions resolved against recorded outcomes only.
             </p>
-            <div className="table-wrap" style={{ marginTop: 12 }}>
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Timeframe</th>
-                    <th>Predictions</th>
-                    <th>Hit Rate</th>
-                    <th>Avg Error</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {byTimeframe.map(([tf, s]) => (
-                    <tr key={tf}>
-                      <td>{tf}</td>
-                      <td>{s.predictions}</td>
-                      <td className={s.hit_rate_pct >= 50 ? "green" : "red"}>{fmtPct(s.hit_rate_pct, 1)}</td>
-                      <td>{fmtPct(s.avg_error_pct, 2)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div style={{ marginTop: 12 }}>
+              <AutoCardTable columns={TIMEFRAME_COLUMNS} rows={byTimeframe} keyField={([tf]) => tf} titleColumn="tf" />
             </div>
           </>
         ) : (
@@ -68,27 +64,8 @@ export default function PerformancePage(props: AppData) {
               How often each stated-confidence bucket was actually right. A calibrated model's hit rate tracks its
               bucket.
             </p>
-            <div className="table-wrap" style={{ marginTop: 12 }}>
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Confidence Bucket</th>
-                    <th>Predictions</th>
-                    <th>Actual Hit Rate</th>
-                    <th>Stated Confidence</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {reliability.map((b: any) => (
-                    <tr key={b.bucket}>
-                      <td>{b.bucket}</td>
-                      <td>{b.predictions}</td>
-                      <td>{fmtPct(b.hit_rate_pct, 1)}</td>
-                      <td>{fmtNum(b.avg_confidence, 1)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div style={{ marginTop: 12 }}>
+              <AutoCardTable columns={RELIABILITY_COLUMNS} rows={reliability} keyField={(b) => b.bucket} titleColumn="bucket" />
             </div>
           </>
         ) : (

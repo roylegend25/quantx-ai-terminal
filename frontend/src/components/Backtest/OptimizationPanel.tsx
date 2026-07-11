@@ -12,6 +12,7 @@ import {
 import Card from "../Layout/Card";
 import { fmtNum, fmtPct } from "../../lib/format";
 import LocalTime from "../LocalTime";
+import AutoCardTable, { type AutoCardColumn } from "../Responsive/AutoCardTable";
 
 type TabKey = "optimizer" | "walkforward" | "montecarlo" | "models" | "importance" | "recommendations";
 
@@ -90,6 +91,51 @@ function RunButton({
   );
 }
 
+const OPTIMIZER_COLUMNS: AutoCardColumn<any>[] = [
+  { key: "rank", label: "#", render: (r) => `#${r._rank}` },
+  { key: "sl", label: "SL ×", render: (r) => fmtNum(r.atr_sl_mult, 1) },
+  { key: "tp", label: "TP ×", render: (r) => fmtNum(r.atr_tp_mult, 1) },
+  { key: "minConf", label: "Min Conf", render: (r) => fmtNum(r.entry_confidence_threshold, 0) },
+  { key: "score", label: "Score", render: (r) => fmtNum(r.score, 3) },
+  {
+    key: "return",
+    label: "Return",
+    render: (r) => (
+      <span className={(r.metrics?.total_return_pct ?? 0) >= 0 ? "green" : "red"}>{fmtPct(r.metrics?.total_return_pct, 2)}</span>
+    ),
+  },
+  { key: "winRate", label: "Win Rate", render: (r) => fmtPct(r.metrics?.win_rate, 1) },
+  { key: "maxDd", label: "Max DD", render: (r) => fmtPct(r.metrics?.max_drawdown_pct, 2) },
+  { key: "trades", label: "Trades", render: (r) => r.metrics?.total_trades ?? 0 },
+];
+
+const WALKFORWARD_COLUMNS: AutoCardColumn<any>[] = [
+  { key: "window", label: "Window", render: (w) => `#${w.window}` },
+  {
+    key: "return",
+    label: "Return",
+    render: (w) => <span className={(w.metrics?.total_return_pct ?? 0) >= 0 ? "green" : "red"}>{fmtPct(w.metrics?.total_return_pct, 2)}</span>,
+  },
+  { key: "sharpe", label: "Sharpe", render: (w) => fmtNum(w.metrics?.sharpe_ratio, 2) },
+  { key: "winRate", label: "Win Rate", render: (w) => fmtPct(w.metrics?.win_rate, 1) },
+  { key: "maxDd", label: "Max DD", render: (w) => fmtPct(w.metrics?.max_drawdown_pct, 2) },
+  { key: "trades", label: "Trades", render: (w) => w.metrics?.total_trades ?? 0 },
+];
+
+const MODELS_COLUMNS: AutoCardColumn<any>[] = [
+  { key: "role", label: "Role", render: (r) => <span className={`bt-role-pill ${r.role === "champion" ? "champion" : ""}`}>{r.role}</span> },
+  { key: "model", label: "Model", render: (r) => r.model_name || "—" },
+  { key: "algorithm", label: "Algorithm", render: (r) => r.algorithm || "—" },
+  { key: "version", label: "Version", render: (r) => r.version ?? "—" },
+  { key: "valAccuracy", label: "Val Accuracy", render: (r) => fmtPct(typeof r.val_accuracy === "number" ? r.val_accuracy * 100 : null, 1) },
+  { key: "f1", label: "F1", render: (r) => fmtNum(r.f1, 3) },
+  { key: "winRate", label: "Win Rate", render: (r) => fmtPct(r.win_rate, 1) },
+  { key: "sharpe", label: "Sharpe", render: (r) => fmtNum(r.sharpe_ratio, 2) },
+  { key: "profitFactor", label: "Profit Factor", render: (r) => fmtNum(r.profit_factor, 2) },
+  { key: "maxDd", label: "Max DD", render: (r) => fmtPct(r.max_drawdown_pct, 2) },
+  { key: "trained", label: "Trained", render: (r) => (r.trained_at ? <LocalTime value={r.trained_at} label="Trained" /> : "—") },
+];
+
 // ------------------------------------------------------------- Optimizer
 
 function OptimizerTab({ optResult, busy, onOptimize }: Props) {
@@ -147,42 +193,12 @@ function OptimizerTab({ optResult, busy, onOptimize }: Props) {
           )}
 
           <div className="bt-opt-split">
-            <div className="table-wrap">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>#</th>
-                    <th>SL ×</th>
-                    <th>TP ×</th>
-                    <th>Min Conf</th>
-                    <th>Score</th>
-                    <th>Return</th>
-                    <th>Win Rate</th>
-                    <th>Max DD</th>
-                    <th>Trades</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(optResult.results || []).slice(0, 10).map((r: any, i: number) => (
-                    <tr key={i}>
-                      <td>{i + 1}</td>
-                      <td>{fmtNum(r.atr_sl_mult, 1)}</td>
-                      <td>{fmtNum(r.atr_tp_mult, 1)}</td>
-                      <td>{fmtNum(r.entry_confidence_threshold, 0)}</td>
-                      <td>{fmtNum(r.score, 3)}</td>
-                      <td>
-                        <span className={(r.metrics?.total_return_pct ?? 0) >= 0 ? "green" : "red"}>
-                          {fmtPct(r.metrics?.total_return_pct, 2)}
-                        </span>
-                      </td>
-                      <td>{fmtPct(r.metrics?.win_rate, 1)}</td>
-                      <td>{fmtPct(r.metrics?.max_drawdown_pct, 2)}</td>
-                      <td>{r.metrics?.total_trades ?? 0}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <AutoCardTable
+              columns={OPTIMIZER_COLUMNS}
+              rows={(optResult.results || []).slice(0, 10).map((r: any, i: number) => ({ ...r, _rank: i + 1 }))}
+              keyField={(r) => r._rank}
+              titleColumn="rank"
+            />
 
             {heatmap && (
               <div className="bt-param-heatmap">
@@ -260,36 +276,7 @@ function WalkForwardTab({ walkForward, runId, busy, onWalkForward }: Props) {
               validate bars) — avg return {fmtPct(r.average_metrics?.total_return_pct, 2)}, avg win rate{" "}
               {fmtPct(r.average_metrics?.win_rate, 1)}
             </p>
-            <div className="table-wrap">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Window</th>
-                    <th>Return</th>
-                    <th>Sharpe</th>
-                    <th>Win Rate</th>
-                    <th>Max DD</th>
-                    <th>Trades</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(r.windows || []).map((w: any) => (
-                    <tr key={w.window}>
-                      <td>{w.window}</td>
-                      <td>
-                        <span className={(w.metrics?.total_return_pct ?? 0) >= 0 ? "green" : "red"}>
-                          {fmtPct(w.metrics?.total_return_pct, 2)}
-                        </span>
-                      </td>
-                      <td>{fmtNum(w.metrics?.sharpe_ratio, 2)}</td>
-                      <td>{fmtPct(w.metrics?.win_rate, 1)}</td>
-                      <td>{fmtPct(w.metrics?.max_drawdown_pct, 2)}</td>
-                      <td>{w.metrics?.total_trades ?? 0}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <AutoCardTable columns={WALKFORWARD_COLUMNS} rows={r.windows || []} keyField={(w: any) => w.window} titleColumn="window" />
           </div>
         ))
       )}
@@ -374,44 +361,13 @@ function ModelsTab({ rows }: { rows: any[] | null }) {
       </p>
     );
   return (
-    <div className="table-wrap">
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th>Role</th>
-            <th>Model</th>
-            <th>Algorithm</th>
-            <th>Version</th>
-            <th>Val Accuracy</th>
-            <th>F1</th>
-            <th>Win Rate</th>
-            <th>Sharpe</th>
-            <th>Profit Factor</th>
-            <th>Max DD</th>
-            <th>Trained</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r: any) => (
-            <tr key={r.model_id || r.id}>
-              <td>
-                <span className={`bt-role-pill ${r.role === "champion" ? "champion" : ""}`}>{r.role}</span>
-              </td>
-              <td>{r.model_name || "—"}</td>
-              <td>{r.algorithm || "—"}</td>
-              <td>{r.version ?? "—"}</td>
-              <td>{fmtPct(typeof r.val_accuracy === "number" ? r.val_accuracy * 100 : null, 1)}</td>
-              <td>{fmtNum(r.f1, 3)}</td>
-              <td>{fmtPct(r.win_rate, 1)}</td>
-              <td>{fmtNum(r.sharpe_ratio, 2)}</td>
-              <td>{fmtNum(r.profit_factor, 2)}</td>
-              <td>{fmtPct(r.max_drawdown_pct, 2)}</td>
-              <td>{r.trained_at ? <LocalTime value={r.trained_at} label="Trained" /> : "—"}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <AutoCardTable
+      columns={MODELS_COLUMNS}
+      rows={rows}
+      keyField={(r) => r.model_id || r.id}
+      titleColumn="model"
+      statusColumn="role"
+    />
   );
 }
 

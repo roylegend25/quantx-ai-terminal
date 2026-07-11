@@ -30,6 +30,7 @@ import {
   YAxis,
 } from "recharts";
 import Card from "../components/Layout/Card";
+import AutoCardTable from "../components/Responsive/AutoCardTable";
 import { fmtDuration, fmtNum, fmtPct } from "../lib/format";
 import LocalTime from "../components/LocalTime";
 import { api } from "../services/api";
@@ -323,72 +324,55 @@ export default function ResearchLabPage({
         )}
 
         {coverage.length > 0 && (
-          <div className="table-wrap" style={{ marginTop: 14 }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Symbol</th>
-                  <th>Timeframe</th>
-                  <th>Rows</th>
-                  <th>Interpolated</th>
-                  <th>Quality</th>
-                  <th>Last Candle</th>
-                  <th>Last Checked</th>
-                </tr>
-              </thead>
-              <tbody>
-                {coverage.map((c: any) => (
-                  <tr key={`${c.symbol}-${c.timeframe}`}>
-                    <td>{c.symbol}</td>
-                    <td>{c.timeframe}</td>
-                    <td>{c.rows}</td>
-                    <td>{c.interpolated_rows}</td>
-                    <td className={c.quality_score == null ? "" : c.quality_score >= 80 ? "green" : c.quality_score >= 40 ? "" : "red"}>
+          <div style={{ marginTop: 14 }}>
+            <AutoCardTable
+              columns={[
+                { key: "symbol", label: "Symbol", render: (c: any) => c.symbol },
+                { key: "timeframe", label: "Timeframe", render: (c: any) => c.timeframe },
+                { key: "rows", label: "Rows", render: (c: any) => c.rows },
+                { key: "interpolated", label: "Interpolated", render: (c: any) => c.interpolated_rows },
+                {
+                  key: "quality",
+                  label: "Quality",
+                  render: (c: any) => (
+                    <span className={c.quality_score == null ? "" : c.quality_score >= 80 ? "green" : c.quality_score >= 40 ? "" : "red"}>
                       {c.quality_score != null ? `${fmtNum(c.quality_score, 1)}/100` : "—"}
-                    </td>
-                    <td>{c.last_timestamp ? <LocalTime value={c.last_timestamp} label="Last candle" /> : "—"}</td>
-                    <td>{c.last_checked ? <LocalTime value={c.last_checked} label="Last checked" /> : "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                    </span>
+                  ),
+                },
+                { key: "lastCandle", label: "Last Candle", render: (c: any) => (c.last_timestamp ? <LocalTime value={c.last_timestamp} label="Last candle" /> : "—") },
+                { key: "lastChecked", label: "Last Checked", render: (c: any) => (c.last_checked ? <LocalTime value={c.last_checked} label="Last checked" /> : "—") },
+              ]}
+              rows={coverage}
+              keyField={(c: any) => `${c.symbol}-${c.timeframe}`}
+              titleColumn="symbol"
+            />
           </div>
         )}
 
         {(dataJobs || []).length > 0 && (
-          <div className="table-wrap" style={{ marginTop: 14 }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Job</th>
-                  <th>Type</th>
-                  <th>Symbol</th>
-                  <th>TF</th>
-                  <th>Status</th>
-                  <th>Fetched</th>
-                  <th>Stored</th>
-                  <th>Quality</th>
-                  <th>Error</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(dataJobs || []).slice(0, 8).map((j: any) => (
-                  <tr key={j.job_id}>
-                    <td>{j.job_id}</td>
-                    <td>{j.data_type}</td>
-                    <td>{j.symbol || "—"}</td>
-                    <td>{j.timeframe || "—"}</td>
-                    <td className={j.status === "succeeded" ? "green" : j.status === "failed" ? "red" : ""}>{j.status}</td>
-                    <td>{j.rows_fetched}</td>
-                    <td>{j.rows_stored}</td>
-                    <td>{j.quality_score != null ? fmtNum(j.quality_score, 1) : "—"}</td>
-                    <td className="tile-label" style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {j.error || "—"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div style={{ marginTop: 14 }}>
+            <AutoCardTable
+              columns={[
+                { key: "job", label: "Job", render: (j: any) => j.job_id },
+                { key: "type", label: "Type", render: (j: any) => j.data_type },
+                { key: "symbol", label: "Symbol", render: (j: any) => j.symbol || "—" },
+                { key: "tf", label: "TF", render: (j: any) => j.timeframe || "—" },
+                {
+                  key: "status",
+                  label: "Status",
+                  render: (j: any) => <span className={j.status === "succeeded" ? "green" : j.status === "failed" ? "red" : ""}>{j.status}</span>,
+                },
+                { key: "fetched", label: "Fetched", render: (j: any) => j.rows_fetched },
+                { key: "stored", label: "Stored", render: (j: any) => j.rows_stored },
+                { key: "quality", label: "Quality", render: (j: any) => (j.quality_score != null ? fmtNum(j.quality_score, 1) : "—") },
+                { key: "error", label: "Error", render: (j: any) => <span className="tile-label">{j.error || "—"}</span> },
+              ]}
+              rows={(dataJobs || []).slice(0, 8)}
+              keyField={(j: any) => j.job_id}
+              titleColumn="job"
+              statusColumn="status"
+            />
           </div>
         )}
         {qualityReports.length === 0 && coverage.length === 0 && (
@@ -559,140 +543,95 @@ export default function ResearchLabPage({
 
         {advRun && (
           <>
-            <div className="table-wrap" style={{ marginTop: 16 }}>
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Symbol</th>
-                    <th>TF</th>
-                    <th>Data</th>
-                    <th>Trades</th>
-                    <th>Return</th>
-                    <th>OOS Return</th>
-                    <th>Sharpe</th>
-                    <th>Win Rate</th>
-                    <th>Max DD</th>
-                    <th>Consec. Losses</th>
-                    <th>Long / Short Acc.</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {advCombos.map((c: any) => (
-                    <tr key={`${c.symbol}-${c.timeframe}`}>
-                      <td>{c.symbol}</td>
-                      <td>{c.timeframe}</td>
-                      {c.ok ? (
-                        <>
-                          <td className="tile-label">
-                            {c.data?.source === "market_candles" ? "DB" : "CSV"}
-                            {c.data?.quality_score != null ? ` · Q${fmtNum(c.data.quality_score, 0)}` : ""}
-                          </td>
-                          <td>{c.metrics?.total_trades ?? 0}</td>
-                          <td className={(c.metrics?.total_return_pct ?? 0) >= 0 ? "green" : "red"}>
-                            {fmtPct(c.metrics?.total_return_pct, 2)}
-                          </td>
-                          <td>{fmtPct(c.out_of_sample_metrics?.total_return_pct, 2)}</td>
-                          <td>{fmtNum(c.metrics?.sharpe_ratio, 2)}</td>
-                          <td>{fmtPct(c.metrics?.win_rate, 1)}</td>
-                          <td>{fmtPct(c.metrics?.max_drawdown_pct, 2)}</td>
-                          <td>{c.metrics?.max_consecutive_losses ?? "—"}</td>
-                          <td>
-                            {fmtPct(c.metrics?.long_accuracy_pct, 0)} / {fmtPct(c.metrics?.short_accuracy_pct, 0)}
-                          </td>
-                        </>
+            <div style={{ marginTop: 16 }}>
+              <AutoCardTable
+                columns={[
+                  { key: "symbol", label: "Symbol", render: (c: any) => c.symbol },
+                  { key: "tf", label: "TF", render: (c: any) => c.timeframe },
+                  {
+                    key: "data",
+                    label: "Data",
+                    render: (c: any) =>
+                      c.ok ? (
+                        <span className="tile-label">
+                          {c.data?.source === "market_candles" ? "DB" : "CSV"}
+                          {c.data?.quality_score != null ? ` · Q${fmtNum(c.data.quality_score, 0)}` : ""}
+                        </span>
                       ) : (
-                        <td colSpan={9} className="tile-label">{c.error}</td>
-                      )}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                        <span className="tile-label">{c.error}</span>
+                      ),
+                  },
+                  { key: "trades", label: "Trades", render: (c: any) => (c.ok ? c.metrics?.total_trades ?? 0 : null) },
+                  {
+                    key: "return",
+                    label: "Return",
+                    render: (c: any) => (c.ok ? <span className={(c.metrics?.total_return_pct ?? 0) >= 0 ? "green" : "red"}>{fmtPct(c.metrics?.total_return_pct, 2)}</span> : null),
+                  },
+                  { key: "oosReturn", label: "OOS Return", render: (c: any) => (c.ok ? fmtPct(c.out_of_sample_metrics?.total_return_pct, 2) : null) },
+                  { key: "sharpe", label: "Sharpe", render: (c: any) => (c.ok ? fmtNum(c.metrics?.sharpe_ratio, 2) : null) },
+                  { key: "winRate", label: "Win Rate", render: (c: any) => (c.ok ? fmtPct(c.metrics?.win_rate, 1) : null) },
+                  { key: "maxDd", label: "Max DD", render: (c: any) => (c.ok ? fmtPct(c.metrics?.max_drawdown_pct, 2) : null) },
+                  { key: "consecLosses", label: "Consec. Losses", render: (c: any) => (c.ok ? c.metrics?.max_consecutive_losses ?? "—" : null) },
+                  {
+                    key: "longShortAcc",
+                    label: "Long / Short Acc.",
+                    render: (c: any) => (c.ok ? `${fmtPct(c.metrics?.long_accuracy_pct, 0)} / ${fmtPct(c.metrics?.short_accuracy_pct, 0)}` : null),
+                  },
+                ]}
+                rows={advCombos}
+                keyField={(c: any) => `${c.symbol}-${c.timeframe}`}
+                titleColumn="symbol"
+              />
             </div>
 
             {advFirstOk?.metrics?.regime_performance && (
-              <div className="table-wrap" style={{ marginTop: 14 }}>
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Regime ({advFirstOk.symbol} {advFirstOk.timeframe})</th>
-                      <th>Trades</th>
-                      <th>Win Rate</th>
-                      <th>Total PnL</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Object.entries(advFirstOk.metrics.regime_performance).map(([regime, s]: [string, any]) => (
-                      <tr key={regime}>
-                        <td>{regime}</td>
-                        <td>{s.trades}</td>
-                        <td>{fmtPct(s.win_rate, 1)}</td>
-                        <td className={s.total_pnl >= 0 ? "green" : "red"}>{fmtNum(s.total_pnl, 2)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div style={{ marginTop: 14 }}>
+                <AutoCardTable
+                  columns={[
+                    { key: "regime", label: `Regime (${advFirstOk.symbol} ${advFirstOk.timeframe})`, render: ([regime]: [string, any]) => regime },
+                    { key: "trades", label: "Trades", render: ([, s]: [string, any]) => s.trades },
+                    { key: "winRate", label: "Win Rate", render: ([, s]: [string, any]) => fmtPct(s.win_rate, 1) },
+                    { key: "totalPnl", label: "Total PnL", render: ([, s]: [string, any]) => <span className={s.total_pnl >= 0 ? "green" : "red"}>{fmtNum(s.total_pnl, 2)}</span> },
+                  ]}
+                  rows={Object.entries(advFirstOk.metrics.regime_performance)}
+                  keyField={([regime]) => regime}
+                  titleColumn="regime"
+                />
               </div>
             )}
 
             {advRun.summary?.timeframe_performance && Object.keys(advRun.summary.timeframe_performance).length > 1 && (
-              <div className="table-wrap" style={{ marginTop: 14 }}>
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Timeframe</th>
-                      <th>Avg Return</th>
-                      <th>Avg Sharpe</th>
-                      <th>Avg Win Rate</th>
-                      <th>Avg Max DD</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Object.entries(advRun.summary.timeframe_performance).map(([tf, m]: [string, any]) => (
-                      <tr key={tf}>
-                        <td>{tf}</td>
-                        <td>{fmtPct(m?.total_return_pct, 2)}</td>
-                        <td>{fmtNum(m?.sharpe_ratio, 2)}</td>
-                        <td>{fmtPct(m?.win_rate, 1)}</td>
-                        <td>{fmtPct(m?.max_drawdown_pct, 2)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div style={{ marginTop: 14 }}>
+                <AutoCardTable
+                  columns={[
+                    { key: "tf", label: "Timeframe", render: ([tf]: [string, any]) => tf },
+                    { key: "avgReturn", label: "Avg Return", render: ([, m]: [string, any]) => fmtPct(m?.total_return_pct, 2) },
+                    { key: "avgSharpe", label: "Avg Sharpe", render: ([, m]: [string, any]) => fmtNum(m?.sharpe_ratio, 2) },
+                    { key: "avgWinRate", label: "Avg Win Rate", render: ([, m]: [string, any]) => fmtPct(m?.win_rate, 1) },
+                    { key: "avgMaxDd", label: "Avg Max DD", render: ([, m]: [string, any]) => fmtPct(m?.max_drawdown_pct, 2) },
+                  ]}
+                  rows={Object.entries(advRun.summary.timeframe_performance)}
+                  keyField={([tf]) => tf}
+                  titleColumn="tf"
+                />
               </div>
             )}
 
             {advFirstOk?.strategy_contribution && (
-              <div className="table-wrap" style={{ marginTop: 14 }}>
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Strategy Contribution</th>
-                      <th>Trades</th>
-                      <th>Return</th>
-                      <th>Win Rate</th>
-                      <th>Profit Factor</th>
-                      <th>Sharpe</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Object.entries(advFirstOk.strategy_contribution).map(([name, m]: [string, any]) => (
-                      <tr key={name}>
-                        <td>{name}</td>
-                        {m?.error ? (
-                          <td colSpan={5} className="tile-label">{m.error}</td>
-                        ) : (
-                          <>
-                            <td>{m?.total_trades ?? 0}</td>
-                            <td>{fmtPct(m?.total_return_pct, 2)}</td>
-                            <td>{fmtPct(m?.win_rate, 1)}</td>
-                            <td>{fmtNum(m?.profit_factor, 2)}</td>
-                            <td>{fmtNum(m?.sharpe_ratio, 2)}</td>
-                          </>
-                        )}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div style={{ marginTop: 14 }}>
+                <AutoCardTable
+                  columns={[
+                    { key: "name", label: "Strategy Contribution", render: ([name]: [string, any]) => name },
+                    { key: "trades", label: "Trades", render: ([, m]: [string, any]) => (m?.error ? <span className="tile-label">{m.error}</span> : m?.total_trades ?? 0) },
+                    { key: "return", label: "Return", render: ([, m]: [string, any]) => (m?.error ? null : fmtPct(m?.total_return_pct, 2)) },
+                    { key: "winRate", label: "Win Rate", render: ([, m]: [string, any]) => (m?.error ? null : fmtPct(m?.win_rate, 1)) },
+                    { key: "profitFactor", label: "Profit Factor", render: ([, m]: [string, any]) => (m?.error ? null : fmtNum(m?.profit_factor, 2)) },
+                    { key: "sharpe", label: "Sharpe", render: ([, m]: [string, any]) => (m?.error ? null : fmtNum(m?.sharpe_ratio, 2)) },
+                  ]}
+                  rows={Object.entries(advFirstOk.strategy_contribution)}
+                  keyField={([name]) => name}
+                  titleColumn="name"
+                />
               </div>
             )}
 
@@ -751,42 +690,28 @@ export default function ResearchLabPage({
 
       {advMonteCarlo?.ok && (
         <Card title="Advanced Monte Carlo" full right={<Dices size={16} />}>
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Symbol</th>
-                  <th>TF</th>
-                  <th>Risk of Ruin</th>
-                  <th>Worst DD</th>
-                  <th>Median Final</th>
-                  <th>90% CI</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(advMonteCarlo.results || []).map((r: any) => (
-                  <tr key={`${r.symbol}-${r.timeframe}`}>
-                    <td>{r.symbol}</td>
-                    <td>{r.timeframe}</td>
-                    {r.ok !== false ? (
-                      <>
-                        <td>{fmtPct(r.risk_of_ruin_pct, 2)}</td>
-                        <td>{fmtPct(r.worst_drawdown_pct, 2)}</td>
-                        <td>{fmtNum(r.median_final_balance, 0)}</td>
-                        <td>
-                          {r.final_balance_confidence_interval_90pct
-                            ? `${fmtNum(r.final_balance_confidence_interval_90pct[0], 0)} – ${fmtNum(r.final_balance_confidence_interval_90pct[1], 0)}`
-                            : "—"}
-                        </td>
-                      </>
-                    ) : (
-                      <td colSpan={4} className="tile-label">{r.error}</td>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <AutoCardTable
+            columns={[
+              { key: "symbol", label: "Symbol", render: (r: any) => r.symbol },
+              { key: "tf", label: "TF", render: (r: any) => r.timeframe },
+              { key: "riskOfRuin", label: "Risk of Ruin", render: (r: any) => (r.ok !== false ? fmtPct(r.risk_of_ruin_pct, 2) : <span className="tile-label">{r.error}</span>) },
+              { key: "worstDd", label: "Worst DD", render: (r: any) => (r.ok !== false ? fmtPct(r.worst_drawdown_pct, 2) : null) },
+              { key: "medianFinal", label: "Median Final", render: (r: any) => (r.ok !== false ? fmtNum(r.median_final_balance, 0) : null) },
+              {
+                key: "ci90",
+                label: "90% CI",
+                render: (r: any) =>
+                  r.ok === false
+                    ? null
+                    : r.final_balance_confidence_interval_90pct
+                    ? `${fmtNum(r.final_balance_confidence_interval_90pct[0], 0)} – ${fmtNum(r.final_balance_confidence_interval_90pct[1], 0)}`
+                    : "—",
+              },
+            ]}
+            rows={advMonteCarlo.results || []}
+            keyField={(r: any) => `${r.symbol}-${r.timeframe}`}
+            titleColumn="symbol"
+          />
         </Card>
       )}
       <Card title="Backtest Runner" full right={<Beaker size={16} />}>
@@ -1045,82 +970,42 @@ export default function ResearchLabPage({
           </Card>
 
           <Card title="Trade List" full right={<ListOrdered size={16} />}>
-            {!run.trades?.length ? (
-              <p className="analytics-empty">No trades were generated for this configuration.</p>
-            ) : (
-              <div className="table-wrap">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Side</th>
-                      <th>Entry</th>
-                      <th>Exit</th>
-                      <th>Entry Time</th>
-                      <th>Exit Time</th>
-                      <th>PnL</th>
-                      <th>R</th>
-                      <th>Reason</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {run.trades.slice(0, 200).map((t: any, i: number) => (
-                      <tr key={i}>
-                        <td>{t.side}</td>
-                        <td>{fmtNum(t.entry_price, 4)}</td>
-                        <td>{fmtNum(t.exit_price, 4)}</td>
-                        <td><LocalTime value={t.entry_time} label="Entry" /></td>
-                        <td><LocalTime value={t.exit_time} label="Exit" /></td>
-                        <td className={t.pnl >= 0 ? "green" : "red"}>{fmtNum(t.pnl, 2)}</td>
-                        <td>{fmtNum(t.r_multiple, 2)}</td>
-                        <td>{t.exit_reason}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+            <AutoCardTable
+              columns={[
+                { key: "side", label: "Side", render: (t: any) => t.side },
+                { key: "entry", label: "Entry", render: (t: any) => fmtNum(t.entry_price, 4) },
+                { key: "exit", label: "Exit", render: (t: any) => fmtNum(t.exit_price, 4) },
+                { key: "entryTime", label: "Entry Time", render: (t: any) => <LocalTime value={t.entry_time} label="Entry" /> },
+                { key: "exitTime", label: "Exit Time", render: (t: any) => <LocalTime value={t.exit_time} label="Exit" /> },
+                { key: "pnl", label: "PnL", render: (t: any) => <span className={t.pnl >= 0 ? "green" : "red"}>{fmtNum(t.pnl, 2)}</span> },
+                { key: "r", label: "R", render: (t: any) => fmtNum(t.r_multiple, 2) },
+                { key: "reason", label: "Reason", render: (t: any) => t.exit_reason },
+              ]}
+              rows={run.trades.slice(0, 200).map((t: any, i: number) => ({ ...t, _idx: i }))}
+              keyField={(t: any) => t._idx}
+              titleColumn="side"
+              emptyMessage="No trades were generated for this configuration."
+            />
           </Card>
         </>
       )}
 
       {labCompare?.ok && (
         <Card title="Strategy Comparison" full right={<GitCompare size={16} />}>
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Strategy</th>
-                  <th>Total Return</th>
-                  <th>Sharpe</th>
-                  <th>Win Rate</th>
-                  <th>Profit Factor</th>
-                  <th>Max Drawdown</th>
-                  <th>Trades</th>
-                </tr>
-              </thead>
-              <tbody>
-                {labCompare.results.map((r: any) => (
-                  <tr key={r.strategy}>
-                    <td>{STRATEGIES.find((s) => s.value === r.strategy)?.label || r.strategy}</td>
-                    {r.ok ? (
-                      <>
-                        <td>{fmtPct(r.metrics?.total_return_pct, 2)}</td>
-                        <td>{fmtNum(r.metrics?.sharpe_ratio, 2)}</td>
-                        <td>{fmtPct(r.metrics?.win_rate, 1)}</td>
-                        <td>{fmtNum(r.metrics?.profit_factor, 2)}</td>
-                        <td>{fmtPct(r.metrics?.max_drawdown_pct, 2)}</td>
-                        <td>{r.metrics?.total_trades ?? 0}</td>
-                      </>
-                    ) : (
-                      <td colSpan={6} className="tile-label">
-                        {r.error || "Not available"}
-                      </td>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <AutoCardTable
+            columns={[
+              { key: "strategy", label: "Strategy", render: (r: any) => STRATEGIES.find((s) => s.value === r.strategy)?.label || r.strategy },
+              { key: "totalReturn", label: "Total Return", render: (r: any) => (r.ok ? fmtPct(r.metrics?.total_return_pct, 2) : <span className="tile-label">{r.error || "Not available"}</span>) },
+              { key: "sharpe", label: "Sharpe", render: (r: any) => (r.ok ? fmtNum(r.metrics?.sharpe_ratio, 2) : null) },
+              { key: "winRate", label: "Win Rate", render: (r: any) => (r.ok ? fmtPct(r.metrics?.win_rate, 1) : null) },
+              { key: "profitFactor", label: "Profit Factor", render: (r: any) => (r.ok ? fmtNum(r.metrics?.profit_factor, 2) : null) },
+              { key: "maxDrawdown", label: "Max Drawdown", render: (r: any) => (r.ok ? fmtPct(r.metrics?.max_drawdown_pct, 2) : null) },
+              { key: "trades", label: "Trades", render: (r: any) => (r.ok ? r.metrics?.total_trades ?? 0 : null) },
+            ]}
+            rows={labCompare.results}
+            keyField={(r: any) => r.strategy}
+            titleColumn="strategy"
+          />
         </Card>
       )}
 
@@ -1165,29 +1050,19 @@ export default function ResearchLabPage({
             {labWalkForward.windows_run} windows of {labWalkForward.validate_bars} bars each, stepping forward from{" "}
             {labWalkForward.train_bars}-bar training windows.
           </p>
-          <div className="table-wrap" style={{ marginTop: 12 }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Window</th>
-                  <th>Total Return</th>
-                  <th>Sharpe</th>
-                  <th>Win Rate</th>
-                  <th>Trades</th>
-                </tr>
-              </thead>
-              <tbody>
-                {labWalkForward.windows.map((w: any) => (
-                  <tr key={w.window}>
-                    <td>{w.window}</td>
-                    <td>{fmtPct(w.metrics?.total_return_pct, 2)}</td>
-                    <td>{fmtNum(w.metrics?.sharpe_ratio, 2)}</td>
-                    <td>{fmtPct(w.metrics?.win_rate, 1)}</td>
-                    <td>{w.metrics?.total_trades ?? 0}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div style={{ marginTop: 12 }}>
+            <AutoCardTable
+              columns={[
+                { key: "window", label: "Window", render: (w: any) => w.window },
+                { key: "totalReturn", label: "Total Return", render: (w: any) => fmtPct(w.metrics?.total_return_pct, 2) },
+                { key: "sharpe", label: "Sharpe", render: (w: any) => fmtNum(w.metrics?.sharpe_ratio, 2) },
+                { key: "winRate", label: "Win Rate", render: (w: any) => fmtPct(w.metrics?.win_rate, 1) },
+                { key: "trades", label: "Trades", render: (w: any) => w.metrics?.total_trades ?? 0 },
+              ]}
+              rows={labWalkForward.windows}
+              keyField={(w: any) => w.window}
+              titleColumn="window"
+            />
           </div>
         </Card>
       )}
@@ -1219,39 +1094,27 @@ export default function ResearchLabPage({
               </div>
             </div>
           )}
-          <div className="table-wrap" style={{ marginTop: 14 }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>SL Mult</th>
-                  <th>TP Mult</th>
-                  <th>Entry Threshold</th>
-                  <th>Score</th>
-                  <th>Total Return</th>
-                  <th>Sharpe</th>
-                  <th>Win Rate</th>
-                  <th>Max Drawdown</th>
-                  <th>Trades</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(optResult.results || []).slice(0, 20).map((r: any, i: number) => (
-                  <tr key={i}>
-                    <td>{fmtNum(r.atr_sl_mult, 1)}</td>
-                    <td>{fmtNum(r.atr_tp_mult, 1)}</td>
-                    <td>{fmtNum(r.entry_confidence_threshold, 0)}</td>
-                    <td>{fmtNum(r.score, 3)}</td>
-                    <td className={(r.metrics?.total_return_pct ?? 0) >= 0 ? "green" : "red"}>
-                      {fmtPct(r.metrics?.total_return_pct, 2)}
-                    </td>
-                    <td>{fmtNum(r.metrics?.sharpe_ratio, 2)}</td>
-                    <td>{fmtPct(r.metrics?.win_rate, 1)}</td>
-                    <td>{fmtPct(r.metrics?.max_drawdown_pct, 2)}</td>
-                    <td>{r.metrics?.total_trades ?? 0}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div style={{ marginTop: 14 }}>
+            <AutoCardTable
+              columns={[
+                { key: "slMult", label: "SL Mult", render: (r: any) => fmtNum(r.atr_sl_mult, 1) },
+                { key: "tpMult", label: "TP Mult", render: (r: any) => fmtNum(r.atr_tp_mult, 1) },
+                { key: "entryThreshold", label: "Entry Threshold", render: (r: any) => fmtNum(r.entry_confidence_threshold, 0) },
+                { key: "score", label: "Score", render: (r: any) => fmtNum(r.score, 3) },
+                {
+                  key: "totalReturn",
+                  label: "Total Return",
+                  render: (r: any) => <span className={(r.metrics?.total_return_pct ?? 0) >= 0 ? "green" : "red"}>{fmtPct(r.metrics?.total_return_pct, 2)}</span>,
+                },
+                { key: "sharpe", label: "Sharpe", render: (r: any) => fmtNum(r.metrics?.sharpe_ratio, 2) },
+                { key: "winRate", label: "Win Rate", render: (r: any) => fmtPct(r.metrics?.win_rate, 1) },
+                { key: "maxDrawdown", label: "Max Drawdown", render: (r: any) => fmtPct(r.metrics?.max_drawdown_pct, 2) },
+                { key: "trades", label: "Trades", render: (r: any) => r.metrics?.total_trades ?? 0 },
+              ]}
+              rows={(optResult.results || []).slice(0, 20).map((r: any, i: number) => ({ ...r, _idx: i }))}
+              keyField={(r: any) => r._idx}
+              titleColumn="score"
+            />
           </div>
         </Card>
       )}
@@ -1304,56 +1167,35 @@ export default function ResearchLabPage({
             </div>
 
             {learningPerformance.by_timeframe && Object.keys(learningPerformance.by_timeframe).length > 0 && (
-              <div className="table-wrap" style={{ marginTop: 14 }}>
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Timeframe</th>
-                      <th>Predictions</th>
-                      <th>Hit Rate</th>
-                      <th>Avg Error</th>
-                      <th>Avg Confidence</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Object.entries(learningPerformance.by_timeframe).map(([tf, s]: [string, any]) => (
-                      <tr key={tf}>
-                        <td>{tf}</td>
-                        <td>{s.predictions}</td>
-                        <td className={s.hit_rate_pct >= 50 ? "green" : "red"}>{fmtPct(s.hit_rate_pct, 1)}</td>
-                        <td>{fmtPct(s.avg_error_pct, 2)}</td>
-                        <td>{fmtNum(s.avg_confidence, 1)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div style={{ marginTop: 14 }}>
+                <AutoCardTable
+                  columns={[
+                    { key: "tf", label: "Timeframe", render: ([tf]: [string, any]) => tf },
+                    { key: "predictions", label: "Predictions", render: ([, s]: [string, any]) => s.predictions },
+                    { key: "hitRate", label: "Hit Rate", render: ([, s]: [string, any]) => <span className={s.hit_rate_pct >= 50 ? "green" : "red"}>{fmtPct(s.hit_rate_pct, 1)}</span> },
+                    { key: "avgError", label: "Avg Error", render: ([, s]: [string, any]) => fmtPct(s.avg_error_pct, 2) },
+                    { key: "avgConfidence", label: "Avg Confidence", render: ([, s]: [string, any]) => fmtNum(s.avg_confidence, 1) },
+                  ]}
+                  rows={Object.entries(learningPerformance.by_timeframe)}
+                  keyField={([tf]) => tf}
+                  titleColumn="tf"
+                />
               </div>
             )}
 
             {(learningPerformance.confidence_reliability || []).some((b: any) => b.predictions > 0) && (
-              <div className="table-wrap" style={{ marginTop: 14 }}>
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Confidence Bucket</th>
-                      <th>Predictions</th>
-                      <th>Actual Hit Rate</th>
-                      <th>Stated Confidence</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(learningPerformance.confidence_reliability || [])
-                      .filter((b: any) => b.predictions > 0)
-                      .map((b: any) => (
-                        <tr key={b.bucket}>
-                          <td>{b.bucket}</td>
-                          <td>{b.predictions}</td>
-                          <td>{fmtPct(b.hit_rate_pct, 1)}</td>
-                          <td>{fmtNum(b.avg_confidence, 1)}</td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
+              <div style={{ marginTop: 14 }}>
+                <AutoCardTable
+                  columns={[
+                    { key: "bucket", label: "Confidence Bucket", render: (b: any) => b.bucket },
+                    { key: "predictions", label: "Predictions", render: (b: any) => b.predictions },
+                    { key: "hitRate", label: "Actual Hit Rate", render: (b: any) => fmtPct(b.hit_rate_pct, 1) },
+                    { key: "statedConfidence", label: "Stated Confidence", render: (b: any) => fmtNum(b.avg_confidence, 1) },
+                  ]}
+                  rows={(learningPerformance.confidence_reliability || []).filter((b: any) => b.predictions > 0)}
+                  keyField={(b: any) => b.bucket}
+                  titleColumn="bucket"
+                />
               </div>
             )}
           </>
@@ -1364,25 +1206,17 @@ export default function ResearchLabPage({
         )}
 
         {learningWeights?.live_weights && (
-          <div className="table-wrap" style={{ marginTop: 14 }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Strategy</th>
-                  <th>Live Weight</th>
-                  <th>Candidate Weight (shadow)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Object.keys(learningWeights.live_weights).map((name) => (
-                  <tr key={name}>
-                    <td>{name}</td>
-                    <td>{fmtNum(learningWeights.live_weights[name], 3)}</td>
-                    <td>{fmtNum(learningWeights.candidate_weights?.[name], 3)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div style={{ marginTop: 14 }}>
+            <AutoCardTable
+              columns={[
+                { key: "strategy", label: "Strategy", render: (name: string) => name },
+                { key: "liveWeight", label: "Live Weight", render: (name: string) => fmtNum(learningWeights.live_weights[name], 3) },
+                { key: "candidateWeight", label: "Candidate Weight (shadow)", render: (name: string) => fmtNum(learningWeights.candidate_weights?.[name], 3) },
+              ]}
+              rows={Object.keys(learningWeights.live_weights)}
+              keyField={(name) => name}
+              titleColumn="strategy"
+            />
           </div>
         )}
 
@@ -1401,38 +1235,21 @@ export default function ResearchLabPage({
       </Card>
 
       <Card title="Experiment History" full right={<History size={16} />}>
-        {!labExperiments?.length ? (
-          <p className="analytics-empty">No backtests run yet - configure one above and hit Run.</p>
-        ) : (
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Strategy</th>
-                  <th>Symbol</th>
-                  <th>Timeframe</th>
-                  <th>Total Return</th>
-                  <th>Sharpe</th>
-                  <th>Trades</th>
-                  <th>Created</th>
-                </tr>
-              </thead>
-              <tbody>
-                {labExperiments.map((e: any) => (
-                  <tr key={e.experiment_id}>
-                    <td>{STRATEGIES.find((s) => s.value === e.strategy)?.label || e.strategy}</td>
-                    <td>{e.symbol}</td>
-                    <td>{e.timeframe}</td>
-                    <td>{fmtPct(e.results?.metrics?.total_return_pct, 2)}</td>
-                    <td>{fmtNum(e.results?.metrics?.sharpe_ratio, 2)}</td>
-                    <td>{e.results?.metrics?.total_trades ?? 0}</td>
-                    <td><LocalTime value={e.created_at} label="Created" /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <AutoCardTable
+          columns={[
+            { key: "strategy", label: "Strategy", render: (e: any) => STRATEGIES.find((s) => s.value === e.strategy)?.label || e.strategy },
+            { key: "symbol", label: "Symbol", render: (e: any) => e.symbol },
+            { key: "timeframe", label: "Timeframe", render: (e: any) => e.timeframe },
+            { key: "totalReturn", label: "Total Return", render: (e: any) => fmtPct(e.results?.metrics?.total_return_pct, 2) },
+            { key: "sharpe", label: "Sharpe", render: (e: any) => fmtNum(e.results?.metrics?.sharpe_ratio, 2) },
+            { key: "trades", label: "Trades", render: (e: any) => e.results?.metrics?.total_trades ?? 0 },
+            { key: "created", label: "Created", render: (e: any) => <LocalTime value={e.created_at} label="Created" /> },
+          ]}
+          rows={labExperiments || []}
+          keyField={(e: any) => e.experiment_id}
+          titleColumn="symbol"
+          emptyMessage="No backtests run yet - configure one above and hit Run."
+        />
       </Card>
     </div>
   );

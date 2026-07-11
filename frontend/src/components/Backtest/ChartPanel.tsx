@@ -179,7 +179,7 @@ export default function ChartPanel({
           overlays={overlays}
           replaying={replaying || replayIndex > 0}
           replayIndex={replayIndex || candles.length}
-          height={fullscreen ? window.innerHeight - 120 : 460}
+          height={460}
         />
       )}
 
