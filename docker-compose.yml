@@ -10,6 +10,15 @@ services:
       - .env
     volumes:
       - ./backend/data:/app/data
+      # The admin server-config panel edits the host .env through this
+      # file mount (app/core/env_manager.py). Note: a bind-mounted FILE
+      # cannot be atomically replaced from inside the container, hence
+      # env_manager's backup-then-in-place-write fallback.
+      - ./.env:/app/.env
+    environment:
+      # .env backups must outlive the container (only the .env file itself
+      # is mounted) - the data volume is host-persistent and gitignored.
+      ENV_BACKUP_DIR: /app/data/env-backups
     depends_on:
       - postgres
       - redis

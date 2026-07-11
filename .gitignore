@@ -1,6 +1,9 @@
 .env
+.env.backup.*
+.env.tmp.*
 .env.*.local
 __pycache__/
 *.pyc
+backend/data/env-backups/
 backend/data/models/
 backend/data/ml_lab/

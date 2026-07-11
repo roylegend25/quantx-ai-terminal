@@ -5810,3 +5810,18 @@ body.notif-scroll-lock {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ---------- Phase 24: server trading control ---------- */
+
+.card > .server-control-body {
+  flex: initial;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.server-control-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}

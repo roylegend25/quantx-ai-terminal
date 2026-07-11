@@ -333,6 +333,16 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ symbol: symbol ?? null, confirm: true }),
     }),
+  // ---- Phase 24: admin server-config (allowlisted .env editor) ----
+  adminServerConfig: () => getJson("/api/admin/server-config"),
+  adminSetBinanceLive: (enabled: boolean, typedConfirmation = "", acknowledgements: Record<string, boolean> = {}) =>
+    postJson("/api/admin/server-config/binance-live", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled, typed_confirmation: typedConfirmation, acknowledgements }),
+    }),
+  adminUpdateRiskLimits: (limits: Record<string, unknown>) =>
+    patchJson("/api/admin/server-config/risk-limits", limits),
+  adminReloadConfig: () => postJson("/api/admin/server-config/reload"),
   killSwitch: (active: boolean, reason?: string, cancelOrders = true) =>
     postJson("/api/trading/kill-switch", {
       headers: { "Content-Type": "application/json" },

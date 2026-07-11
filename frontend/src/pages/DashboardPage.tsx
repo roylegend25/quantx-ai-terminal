@@ -10,6 +10,7 @@ import DecisionReasoningCard from "../components/Dashboard/DecisionReasoningCard
 import ModelVotesPanel from "../components/Dashboard/ModelVotesPanel";
 import AccountOverviewCard from "../components/Dashboard/AccountOverviewCard";
 import TradingModeRow from "../components/Trading/TradingModeRow";
+import ServerTradingControlCard from "../components/Trading/ServerTradingControlCard";
 import RiskStatusCard from "../components/Dashboard/RiskStatusCard";
 import OpenPositionsCard from "../components/Dashboard/OpenPositionsCard";
 import PerformanceMiniCard from "../components/Dashboard/PerformanceMiniCard";
@@ -61,6 +62,8 @@ export default function DashboardPage(props: Props) {
       </div>
 
       <TradingModeRow showToast={props.showToast} />
+
+      <ServerTradingControlCard showToast={props.showToast} />
 
       <div className="dash-row-decision">
         <Card title="Active Decision Engine">
