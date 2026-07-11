@@ -1738,9 +1738,21 @@ button, select, input {
   font-size: 20px;
 }
 
+/* !important required: ".card > :last-child" (App.css ~line 1006, 0-2-0
+   specificity) is meant to let a lone empty-state message re-center via
+   flexbox when it's the only/last thing in a card - but ":last-child"
+   matches ANY last child, including a real .kv-grid metrics panel, and
+   silently overrides its display:grid with display:flex/flex-direction:
+   column (0-1-0 loses regardless of this rule's later source position).
+   Confirmed live: every .kv-grid on every page - Binance Real, Portfolio,
+   Paper Trading, Dashboard's account/risk cards, etc. - was rendering as
+   a single tall column with each label/value on its own row (including
+   the "align-right" ones, which just right-align their own now-full-width
+   row instead of sitting beside their pair) instead of the intended
+   compact 2-column grid, at every viewport from phone to desktop. */
 .target-stop-row, .kv-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: grid !important;
+  grid-template-columns: 1fr 1fr !important;
   gap: 12px;
 }
 
