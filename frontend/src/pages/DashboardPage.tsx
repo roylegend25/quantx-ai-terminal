@@ -9,6 +9,7 @@ import DecisionEngineCard from "../components/Dashboard/DecisionEngineCard";
 import DecisionReasoningCard from "../components/Dashboard/DecisionReasoningCard";
 import ModelVotesPanel from "../components/Dashboard/ModelVotesPanel";
 import AccountOverviewCard from "../components/Dashboard/AccountOverviewCard";
+import TradingModeRow from "../components/Trading/TradingModeRow";
 import RiskStatusCard from "../components/Dashboard/RiskStatusCard";
 import OpenPositionsCard from "../components/Dashboard/OpenPositionsCard";
 import PerformanceMiniCard from "../components/Dashboard/PerformanceMiniCard";
@@ -58,6 +59,8 @@ export default function DashboardPage(props: Props) {
           <RiskStatusCard portfolio={props.portfolio} positions={props.positions} history={props.history} />
         </div>
       </div>
+
+      <TradingModeRow showToast={props.showToast} />
 
       <div className="dash-row-decision">
         <Card title="Active Decision Engine">

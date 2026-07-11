@@ -83,9 +83,16 @@ def test_safe_status_never_contains_api_secrets(monkeypatch):
     assert FAKE_KEY not in serialized
     assert FAKE_SECRET not in serialized
     assert status["binance_configured"] is True
-    # required safe fields per spec
-    for field in ("mode", "binance_configured", "testnet", "live_enabled", "can_trade", "reason"):
+    # required safe fields per the Phase 23 spec
+    for field in (
+        "active_mode", "paper_available", "binance_live_available", "binance_configured",
+        "binance_live_enabled_by_server", "binance_live_unlocked_by_user",
+        "can_trade_binance_live", "reason", "kill_switch_active", "allowed_symbols",
+        "max_leverage", "max_notional_per_trade", "max_daily_loss_usdt",
+    ):
         assert field in status
+    # no testnet wording reaches the product surface
+    assert "testnet" not in serialized.lower()
 
 
 def test_trading_mode_endpoint_never_leaks_secrets(monkeypatch):
@@ -106,7 +113,7 @@ def test_live_unlock_refused_when_server_disabled(monkeypatch):
     monkeypatch.setattr(settings, "binance_api_secret", FAKE_SECRET)
     client = make_trading_client()
     r = client.post(
-        "/api/trading/request-live-unlock",
+        "/api/trading/binance/unlock-live",
         json={
             "confirmation": modes.LIVE_UNLOCK_PHRASE,
             "acknowledgements": {k: True for k in modes.LIVE_UNLOCK_ACKNOWLEDGEMENTS},
@@ -124,7 +131,7 @@ def test_live_unlock_requires_exact_phrase_and_all_acknowledgements(monkeypatch)
     client = make_trading_client()
 
     wrong_phrase = client.post(
-        "/api/trading/request-live-unlock",
+        "/api/trading/binance/unlock-live",
         json={
             "confirmation": "i understand live trading risk",
             "acknowledgements": {k: True for k in modes.LIVE_UNLOCK_ACKNOWLEDGEMENTS},
@@ -133,7 +140,7 @@ def test_live_unlock_requires_exact_phrase_and_all_acknowledgements(monkeypatch)
     assert wrong_phrase.status_code == 400
 
     missing_ack = client.post(
-        "/api/trading/request-live-unlock",
+        "/api/trading/binance/unlock-live",
         json={
             "confirmation": modes.LIVE_UNLOCK_PHRASE,
             "acknowledgements": {k: True for k in modes.LIVE_UNLOCK_ACKNOWLEDGEMENTS[:-1]},
@@ -143,7 +150,7 @@ def test_live_unlock_requires_exact_phrase_and_all_acknowledgements(monkeypatch)
     assert modes.effective_mode() != modes.MODE_LIVE
 
     complete = client.post(
-        "/api/trading/request-live-unlock",
+        "/api/trading/binance/unlock-live",
         json={
             "confirmation": modes.LIVE_UNLOCK_PHRASE,
             "acknowledgements": {k: True for k in modes.LIVE_UNLOCK_ACKNOWLEDGEMENTS},
@@ -206,13 +213,87 @@ def test_kill_switch_endpoint_stops_bot_and_blocks_trades():
     assert BOT_STATE["status"] == "stopped"
     assert modes.kill_switch_active() is True
 
-    order = client.post(
-        "/api/trading/place-order",
-        json={"symbol": "BTCUSDT", "side": "LONG", "notional_usdt": 10},
-    )
-    assert order.status_code == 400
-    assert "kill switch" in order.json()["detail"].lower()
+    # both execution paths are blocked while active
+    import asyncio
+    router = ExecutionRouter()
+    result = asyncio.run(router.open_position(symbol="BTCUSDT", side="LONG", notional_usdt=10))
+    assert not result.ok and "kill switch" in result.reason.lower()
+
+    # ... and so is a direct manual paper open (bypassing bot gates)
+    import app.api.paper as paper_module
+    paper_app = FastAPI()
+    paper_app.include_router(paper_module.router)
+    paper_client = TestClient(paper_app)
+    manual = paper_client.post("/api/paper/open", params={"symbol": "BTCUSDT", "side": "LONG", "usdt_size": 100})
+    assert manual.status_code == 423
+    assert "kill switch" in manual.json()["detail"].lower()
 
     off = client.post("/api/trading/kill-switch", json={"active": False})
     assert off.status_code == 200
     assert modes.kill_switch_active() is False
+
+
+# ------------------------------------------------------- mode toggle (P23)
+
+def test_mode_endpoint_defaults_to_paper_and_rejects_testnet():
+    client = make_trading_client()
+    status = client.get("/api/trading/mode").json()
+    assert status["active_mode"] == modes.MODE_PAPER
+
+    # testnet is internal-only: not selectable through the product API
+    r = client.post("/api/trading/mode", json={"mode": "BINANCE_TESTNET"})
+    assert r.status_code == 400
+
+
+def test_switching_to_binance_stays_locked_until_unlock(monkeypatch):
+    monkeypatch.setattr(settings, "binance_api_key", FAKE_KEY)
+    monkeypatch.setattr(settings, "binance_api_secret", FAKE_SECRET)
+    monkeypatch.setattr(settings, "binance_live_enabled", False)
+    client = make_trading_client()
+
+    r = client.post("/api/trading/mode", json={"mode": "BINANCE_LIVE"})
+    assert r.status_code == 200
+    status = r.json()["status"]
+    assert status["active_mode"] == modes.MODE_LIVE_LOCKED
+    assert status["can_trade_binance_live"] is False
+    assert "disabled by server configuration" in status["reason"]
+
+    back = client.post("/api/trading/mode", json={"mode": "PAPER"})
+    assert back.status_code == 200
+    assert back.json()["status"]["active_mode"] == modes.MODE_PAPER
+
+
+def test_switch_to_binance_requires_configured_keys(monkeypatch):
+    monkeypatch.setattr(settings, "binance_api_key", "")
+    monkeypatch.setattr(settings, "binance_api_secret", "")
+    client = make_trading_client()
+    r = client.post("/api/trading/mode", json={"mode": "BINANCE_LIVE"})
+    assert r.status_code == 400
+    assert "not configured" in r.json()["detail"]
+
+
+def test_lock_live_returns_to_paper(monkeypatch):
+    monkeypatch.setattr(settings, "binance_live_enabled", True)
+    modes.set_mode(modes.MODE_LIVE)
+    modes.unlock_live()
+    assert modes.effective_mode() == modes.MODE_LIVE
+
+    client = make_trading_client()
+    r = client.post("/api/trading/binance/lock-live")
+    assert r.status_code == 200
+    assert modes.effective_mode() == modes.MODE_PAPER
+    # and the unlock is re-armed
+    modes.set_mode(modes.MODE_LIVE)
+    assert modes.effective_mode() == modes.MODE_LIVE_LOCKED
+
+
+def test_read_only_production_client_allowed_but_cannot_write(monkeypatch):
+    monkeypatch.setattr(settings, "binance_live_enabled", False)
+    client = BinanceFuturesClient(testnet=False, read_only=True)
+    assert client.base_url == "https://fapi.binance.com"
+
+    import asyncio
+    with pytest.raises(LiveTradingLocked):
+        asyncio.run(client.place_market_order("BTCUSDT", "BUY", 0.001))
+    with pytest.raises(LiveTradingLocked):
+        asyncio.run(client.cancel_all_orders("BTCUSDT"))

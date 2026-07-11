@@ -18,12 +18,18 @@ import {
   Boxes,
   Microscope,
   Wallet,
+  NotebookPen,
+  CircleDollarSign,
+  History,
 } from "lucide-react";
 import { NAV_ITEMS, NAV_SECTIONS, type NavKey } from "../../lib/nav";
 
 const ICONS: Record<NavKey, ComponentType<{ size?: number }>> = {
   dashboard: LayoutDashboard,
   portfolio: Wallet,
+  "paper-trading": NotebookPen,
+  "binance-real": CircleDollarSign,
+  "bot-trades": History,
   predictions: Brain,
   positions: Rows3,
   performance: ChartLine,

@@ -51,8 +51,8 @@ RECV_WINDOW_MS = 5000
 
 
 class LiveTradingLocked(RuntimeError):
-    """Raised when a production (non-testnet) client is constructed while
-    BINANCE_LIVE_ENABLED is false."""
+    """Raised when an order-capable production (non-testnet) client is
+    constructed - or a write is attempted - while it isn't permitted."""
 
 
 class BinanceFuturesClient:
@@ -62,14 +62,21 @@ class BinanceFuturesClient:
         api_secret: str | None = None,
         testnet: bool = True,
         timeout: float = 15.0,
+        read_only: bool = False,
     ):
-        if not testnet and not settings.binance_live_enabled:
+        """`read_only=True` (Phase 23) permits a PRODUCTION client purely for
+        signed account reads - balances, positions, orders, trades, income -
+        so the Binance Real portfolio is viewable while live trading stays
+        locked. Every write path (_post/_delete) hard-refuses on a read-only
+        client, so this cannot become an order side door."""
+        if not testnet and not read_only and not settings.binance_live_enabled:
             raise LiveTradingLocked(
                 "BINANCE_LIVE_ENABLED is false - refusing to construct a production trading client"
             )
         self._api_key = api_key if api_key is not None else settings.binance_api_key
         self._api_secret = api_secret if api_secret is not None else settings.binance_api_secret
         self.testnet = testnet
+        self.read_only = read_only
         self.base_url = TESTNET_BASE if testnet else PROD_BASE
         self.timeout = timeout
         # server_time - local_time, learned lazily and re-synced on -1021
@@ -147,9 +154,13 @@ class BinanceFuturesClient:
         return await self._request("GET", path, params, signed)
 
     async def _post(self, path: str, params: dict | None = None):
+        if self.read_only:
+            raise LiveTradingLocked("read-only Binance client - write operations are structurally disabled")
         return await self._request("POST", path, params, signed=True)
 
     async def _delete(self, path: str, params: dict | None = None):
+        if self.read_only:
+            raise LiveTradingLocked("read-only Binance client - write operations are structurally disabled")
         return await self._request("DELETE", path, params, signed=True)
 
     # ------------------------------------------------------------ read side
@@ -186,6 +197,25 @@ class BinanceFuturesClient:
     async def get_mark_price(self, symbol: str) -> float:
         data = await self._get("/fapi/v1/premiumIndex", {"symbol": symbol.upper()})
         return float(data["markPrice"])
+
+    async def get_income_history(self, limit: int = 50, income_type: str | None = None) -> list[dict]:
+        """Recent account income rows (realized PnL, commission, funding
+        fees...), normalized and safe to return to the UI."""
+        params: dict = {"limit": min(max(limit, 1), 1000)}
+        if income_type:
+            params["incomeType"] = income_type
+        data = await self._get("/fapi/v1/income", params, signed=True)
+        return [
+            {
+                "symbol": row.get("symbol") or None,
+                "income_type": row.get("incomeType"),
+                "income": float(row.get("income", 0)),
+                "asset": row.get("asset"),
+                "info": row.get("info"),
+                "time": row.get("time"),
+            }
+            for row in data
+        ]
 
     async def get_daily_realized_pnl(self) -> float:
         """Sum of REALIZED_PNL income since UTC midnight - the number the

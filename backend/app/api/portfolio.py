@@ -1,35 +1,74 @@
-"""Unified portfolio view across trading modes (Phase 22).
+"""Two strictly separate portfolio surfaces (Phase 23).
 
-PAPER mode reads the local simulated ledger; BINANCE_TESTNET / BINANCE_LIVE
-read live from Binance through the execution router's provider (Binance is
-the source of truth for real positions). Every response carries the mode it
-describes so the UI can label it honestly. Nothing here ever returns API
-keys, secrets or signatures.
+/api/portfolio/paper/*   - the simulated ledger, always available, never
+                           influenced by the active trading mode.
+/api/portfolio/binance/* - the REAL Binance Futures account, read through a
+                           read-only production client (order methods are
+                           structurally disabled on it), viewable even while
+                           live trading is locked. Binance is the source of
+                           truth; nothing here is merged with paper data.
+
+Binance endpoints never crash the page: failures return 200 with
+{"available": false, "reason": <safe classification>} - and no response
+anywhere in this module can contain keys, secrets or signatures.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 import app.api.paper as paper_api
 from app.core.config import settings
-from app.db.models import ExchangePositionRow, TradingAuditLog
+from app.db.models import BinanceBotTrade, ExchangePositionRow, TradingAuditLog
 from app.db.session import get_db
+from app.exchanges.binance_errors import (
+    BinanceError,
+    BinanceNetworkError,
+    BinanceNotConfigured,
+    BinancePermissionError,
+    BinanceRateLimitError,
+    BinanceTimestampError,
+)
+from app.exchanges.binance_futures_client import BinanceFuturesClient
 from app.risk import settings_repository
 from app.trading import modes
-from app.trading.execution_router import router as execution_router
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 
+# One long-lived READ-ONLY production client for account views. Its
+# _post/_delete raise unconditionally, so it can never place or cancel an
+# order regardless of any lock state.
+_read_client: BinanceFuturesClient | None = None
 
-def _real_provider_or_502():
-    provider = execution_router.provider()
-    if getattr(provider, "mode", modes.MODE_PAPER) not in modes.REAL_MODES:
-        raise HTTPException(status_code=409, detail="Not in a Binance trading mode")
-    if not provider.client.configured:
-        raise HTTPException(status_code=502, detail="Binance API keys are not configured")
-    return provider
+
+def get_read_client() -> BinanceFuturesClient:
+    global _read_client
+    if _read_client is None:
+        _read_client = BinanceFuturesClient(testnet=False, read_only=True)
+    return _read_client
+
+
+def _safe_unavailable_reason(e: Exception) -> str:
+    """Classify a Binance failure into a UI-safe sentence - never the raw
+    exception (which could reference request internals)."""
+    if isinstance(e, BinanceNotConfigured):
+        return "Binance API key not configured"
+    if isinstance(e, BinancePermissionError):
+        return "API key rejected - check futures permission and IP whitelist"
+    if isinstance(e, BinanceRateLimitError):
+        return "Rate limited by Binance - retry shortly"
+    if isinstance(e, BinanceTimestampError):
+        return "Server clock drift while signing - retry"
+    if isinstance(e, BinanceNetworkError):
+        return "Binance unreachable"
+    if isinstance(e, BinanceError):
+        return "Binance rejected the request"
+    return "Binance account unavailable"
+
+
+def _binance_unavailable(e: Exception) -> dict:
+    return {"available": False, "reason": _safe_unavailable_reason(e)}
 
 
 def _risk_summary(db: Session) -> dict:
@@ -37,8 +76,7 @@ def _risk_summary(db: Session) -> dict:
     control = modes.get_control(db)
     mode = modes.effective_mode(db)
     return {
-        "mode": mode,
-        "risk_mode": "paper" if mode == modes.MODE_PAPER else ("testnet" if mode == modes.MODE_TESTNET else "live"),
+        "active_mode": mode,
         "max_daily_loss_pct": risk["max_daily_loss_pct"],
         "max_daily_loss_usdt": settings.binance_max_daily_loss_usdt,
         "max_open_positions": risk["max_open_positions"],
@@ -46,189 +84,214 @@ def _risk_summary(db: Session) -> dict:
         "max_leverage": settings.binance_max_leverage,
         "max_notional_per_trade": settings.binance_max_notional_per_trade,
         "allowed_symbols": settings.binance_allowed_symbols,
-        "live_enabled": settings.binance_live_enabled,
-        "live_unlocked": control["live_unlocked"],
-        "live_lock_status": "UNLOCKED" if mode == modes.MODE_LIVE else (
-            "LOCKED" if control["mode"] == modes.MODE_LIVE else "NOT_REQUESTED"
-        ),
+        "binance_live_enabled_by_server": settings.binance_live_enabled,
+        "binance_live_unlocked_by_user": control["live_unlocked"],
         "kill_switch_active": control["kill_switch_active"],
         "kill_switch_reason": control["kill_switch_reason"],
     }
 
 
-@router.get("/summary")
-async def summary(db: Session = Depends(get_db)):
-    mode = modes.effective_mode(db)
+# ============================================================= paper space
 
-    if mode in modes.REAL_MODES:
-        provider = _real_provider_or_502()
-        try:
-            account = await provider.client.get_account_info()
-            positions = await provider.client.get_positions()
-            daily_pnl = await provider.client.get_daily_realized_pnl()
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Binance account unavailable: {type(e).__name__}")
-
-        total_notional = sum(p.notional for p in positions)
-        margin_used = account.total_initial_margin
-        nearest_liq = None
-        for p in positions:
-            if p.liquidation_price and p.mark_price:
-                dist = abs(p.mark_price - p.liquidation_price) / p.mark_price * 100
-                nearest_liq = dist if nearest_liq is None else min(nearest_liq, dist)
-
-        return {
-            "mode": mode,
-            "total_wallet_balance": round(account.total_wallet_balance, 2),
-            "available_balance": round(account.available_balance, 2),
-            "margin_balance": round(account.total_margin_balance, 2),
-            "unrealized_pnl": round(account.total_unrealized_pnl, 2),
-            "realized_pnl": None,  # lifetime realized PnL is not a single Binance field
-            "daily_pnl": round(daily_pnl, 2),
-            "margin_used": round(margin_used, 2),
-            "free_margin": round(account.available_balance, 2),
-            "open_positions": len(positions),
-            "total_notional_exposure": round(total_notional, 2),
-            "nearest_liquidation_distance_pct": round(nearest_liq, 2) if nearest_liq is not None else None,
-            "risk": _risk_summary(db),
-        }
-
+@router.get("/paper/summary")
+async def paper_summary(db: Session = Depends(get_db)):
     paper = await paper_api.portfolio(db=db)
     return {
-        "mode": mode,
-        "total_wallet_balance": paper["balance"],
-        "available_balance": paper["available_margin"],
-        "margin_balance": paper["equity"],
+        "mode": "PAPER",
+        "available": True,
+        "balance": paper["balance"],
+        "equity": paper["equity"],
+        "available_margin": paper["available_margin"],
+        "margin_used": paper["total_margin_used"],
         "unrealized_pnl": paper["unrealized_pnl"],
         "realized_pnl": paper["total_pnl"],
         "daily_pnl": paper["daily_pnl"],
-        "margin_used": paper["total_margin_used"],
-        "free_margin": paper["available_margin"],
-        "open_positions": paper["open_positions"],
-        "total_notional_exposure": paper["total_notional_exposure"],
-        "nearest_liquidation_distance_pct": paper["nearest_liquidation_distance_pct"],
         "win_rate": paper["win_rate"],
         "wins": paper["wins"],
         "losses": paper["losses"],
+        "open_positions": paper["open_positions"],
+        "max_open_positions": paper["max_open_positions"],
+        "total_notional_exposure": paper["total_notional_exposure"],
+        "nearest_liquidation_distance_pct": paper["nearest_liquidation_distance_pct"],
         "risk": _risk_summary(db),
     }
 
 
-@router.get("/balances")
-async def balances(db: Session = Depends(get_db)):
-    mode = modes.effective_mode(db)
+@router.get("/paper/positions")
+async def paper_positions(db: Session = Depends(get_db)):
+    data = await paper_api.positions(db=db)
+    return {"mode": "PAPER", "positions": data["positions"]}
 
-    if mode in modes.REAL_MODES:
-        provider = _real_provider_or_502()
-        try:
-            rows = await provider.client.get_balances()
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Binance balances unavailable: {type(e).__name__}")
-        interesting = [b for b in rows if b.balance or b.available or b.asset in ("USDT", "BTC", "ETH")]
-        return {
-            "mode": mode,
-            "balances": [
-                {
-                    "asset": b.asset,
-                    "available": round(b.available, 8),
-                    "locked": round(b.locked, 8),
-                    "total": round(b.balance, 8),
-                }
-                for b in interesting
-            ],
-        }
 
-    paper = await paper_api.portfolio(db=db)
+@router.get("/paper/orders")
+async def paper_orders():
+    # the paper engine fills immediately - there are never resting orders
+    return {"mode": "PAPER", "orders": []}
+
+
+@router.get("/paper/trades")
+async def paper_trades(db: Session = Depends(get_db)):
+    data = await paper_api.history(db=db)
+    return {"mode": "PAPER", "trades": data["trades"]}
+
+
+# =========================================================== binance space
+
+@router.get("/binance/summary")
+async def binance_summary(db: Session = Depends(get_db)):
+    if not modes.binance_configured():
+        return {"mode": "BINANCE_LIVE", **_binance_unavailable(BinanceNotConfigured("no keys"))}
+    client = get_read_client()
+    try:
+        account = await client.get_account_info()
+        positions = await client.get_positions()
+        daily_pnl = await client.get_daily_realized_pnl()
+    except Exception as e:
+        return {"mode": "BINANCE_LIVE", **_binance_unavailable(e)}
+
+    total_notional = sum(p.notional for p in positions)
+    nearest_liq = None
+    for p in positions:
+        if p.liquidation_price and p.mark_price:
+            dist = abs(p.mark_price - p.liquidation_price) / p.mark_price * 100
+            nearest_liq = dist if nearest_liq is None else min(nearest_liq, dist)
+
     return {
-        "mode": mode,
+        "mode": "BINANCE_LIVE",
+        "available": True,
+        "total_wallet_balance": round(account.total_wallet_balance, 2),
+        "available_balance": round(account.available_balance, 2),
+        "margin_balance": round(account.total_margin_balance, 2),
+        "unrealized_pnl": round(account.total_unrealized_pnl, 2),
+        "daily_pnl": round(daily_pnl, 2),
+        "margin_used": round(account.total_initial_margin, 2),
+        "maintenance_margin": round(account.total_maintenance_margin, 2),
+        "free_margin": round(account.available_balance, 2),
+        "open_positions": len(positions),
+        "total_notional_exposure": round(total_notional, 2),
+        "nearest_liquidation_distance_pct": round(nearest_liq, 2) if nearest_liq is not None else None,
+        "risk": _risk_summary(db),
+    }
+
+
+@router.get("/binance/balances")
+async def binance_balances():
+    if not modes.binance_configured():
+        return {"mode": "BINANCE_LIVE", **_binance_unavailable(BinanceNotConfigured("no keys")), "balances": []}
+    try:
+        rows = await get_read_client().get_balances()
+    except Exception as e:
+        return {"mode": "BINANCE_LIVE", **_binance_unavailable(e), "balances": []}
+    interesting = [b for b in rows if b.balance or b.available or b.asset in ("USDT", "BTC", "ETH")]
+    return {
+        "mode": "BINANCE_LIVE",
+        "available": True,
         "balances": [
             {
-                "asset": "USDT",
-                "available": paper["available_margin"],
-                "locked": paper["total_margin_used"],
-                "total": paper["balance"],
+                "asset": b.asset,
+                "available": round(b.available, 8),
+                "locked": round(b.locked, 8),
+                "total": round(b.balance, 8),
             }
+            for b in interesting
         ],
     }
 
 
-@router.get("/positions")
-async def positions(db: Session = Depends(get_db)):
-    mode = modes.effective_mode(db)
+@router.get("/binance/positions")
+async def binance_positions(db: Session = Depends(get_db)):
+    if not modes.binance_configured():
+        return {"mode": "BINANCE_LIVE", **_binance_unavailable(BinanceNotConfigured("no keys")), "positions": []}
+    client = get_read_client()
+    try:
+        live = await client.get_positions()
+        open_orders = await client.get_open_orders()
+    except Exception as e:
+        return {"mode": "BINANCE_LIVE", **_binance_unavailable(e), "positions": []}
 
-    if mode in modes.REAL_MODES:
-        provider = _real_provider_or_502()
+    def _protective(symbol: str, order_type: str):
+        for o in open_orders:
+            if o.symbol == symbol and o.type == order_type:
+                return o.stop_price, o.order_id
+        return None, None
+
+    # local mirror row ids (written by the sync loop when live trading is
+    # active) let the UI target PATCH /api/trading/binance/positions/{id}/risk
+    local_ids = {
+        row.symbol: row.id
+        for row in db.query(ExchangePositionRow)
+        .filter(ExchangePositionRow.mode == modes.MODE_LIVE)
+        .all()
+    }
+
+    payload = []
+    for p in live:
+        sl, sl_id = _protective(p.symbol, "STOP_MARKET")
+        tp, tp_id = _protective(p.symbol, "TAKE_PROFIT_MARKET")
+        payload.append({
+            **p.to_dict(),
+            "id": local_ids.get(p.symbol),
+            "sl": sl,
+            "tp": tp,
+            "sl_order_id": sl_id,
+            "tp_order_id": tp_id,
+        })
+    return {"mode": "BINANCE_LIVE", "available": True, "positions": payload}
+
+
+@router.get("/binance/orders")
+async def binance_orders():
+    if not modes.binance_configured():
+        return {"mode": "BINANCE_LIVE", **_binance_unavailable(BinanceNotConfigured("no keys")), "orders": []}
+    try:
+        open_orders = await get_read_client().get_open_orders()
+    except Exception as e:
+        return {"mode": "BINANCE_LIVE", **_binance_unavailable(e), "orders": []}
+    return {"mode": "BINANCE_LIVE", "available": True, "orders": [o.to_dict() for o in open_orders]}
+
+
+@router.get("/binance/trades")
+async def binance_trades(db: Session = Depends(get_db)):
+    """Real account trade history, labelled: BOT_TRADE when the order id
+    matches this system's own journal, SYNCED_FROM_BINANCE otherwise (which
+    covers manual exchange trades - we cannot prove authorship of orders we
+    didn't place, so they are labelled by provenance, not guessed)."""
+    if not modes.binance_configured():
+        return {"mode": "BINANCE_LIVE", **_binance_unavailable(BinanceNotConfigured("no keys")), "trades": []}
+    client = get_read_client()
+    bot_order_ids = {
+        row.order_id for row in db.query(BinanceBotTrade.order_id).all()
+    }
+    result = []
+    errors = 0
+    for symbol in settings.binance_allowed_symbols:
         try:
-            live = await provider.client.get_positions()
-            open_orders = await provider.client.get_open_orders()
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Binance positions unavailable: {type(e).__name__}")
-
-        def _protective(symbol: str, order_type: str) -> float | None:
-            for o in open_orders:
-                if o.symbol == symbol and o.type == order_type:
-                    return o.stop_price
-            return None
-
-        # local mirror row ids let the UI target PATCH
-        # /api/trading/positions/{id}/risk for real TP/SL edits
-        local_ids = {
-            row.symbol: row.id
-            for row in db.query(ExchangePositionRow).filter(ExchangePositionRow.mode == mode).all()
-        }
-
-        return {
-            "mode": mode,
-            "positions": [
-                {
-                    **p.to_dict(),
-                    "id": local_ids.get(p.symbol),
-                    "sl": _protective(p.symbol, "STOP_MARKET"),
-                    "tp": _protective(p.symbol, "TAKE_PROFIT_MARKET"),
-                }
-                for p in live
-            ],
-        }
-
-    paper = await paper_api.positions(db=db)
-    return {"mode": mode, "positions": paper["positions"]}
+            for t in await client.get_trade_history(symbol, limit=50):
+                d = t.to_dict()
+                d["label"] = "BOT_TRADE" if t.order_id in bot_order_ids else "SYNCED_FROM_BINANCE"
+                result.append(d)
+        except Exception:
+            errors += 1
+            continue  # per-symbol failure must not empty the whole view
+    if errors == len(settings.binance_allowed_symbols) and settings.binance_allowed_symbols:
+        return {"mode": "BINANCE_LIVE", "available": False, "reason": "Binance unreachable", "trades": []}
+    result.sort(key=lambda t: t.get("time") or 0, reverse=True)
+    return {"mode": "BINANCE_LIVE", "available": True, "trades": result[:100]}
 
 
-@router.get("/orders")
-async def orders(db: Session = Depends(get_db)):
-    mode = modes.effective_mode(db)
-
-    if mode in modes.REAL_MODES:
-        provider = _real_provider_or_502()
-        try:
-            open_orders = await provider.client.get_open_orders()
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Binance orders unavailable: {type(e).__name__}")
-        return {"mode": mode, "orders": [o.to_dict() for o in open_orders]}
-
-    # the paper engine fills immediately - there are never resting orders
-    return {"mode": mode, "orders": []}
+@router.get("/binance/income")
+async def binance_income(limit: int = 50):
+    """Recent income rows: realized PnL, commission, funding fees."""
+    if not modes.binance_configured():
+        return {"mode": "BINANCE_LIVE", **_binance_unavailable(BinanceNotConfigured("no keys")), "income": []}
+    try:
+        rows = await get_read_client().get_income_history(limit=min(max(limit, 1), 200))
+    except Exception as e:
+        return {"mode": "BINANCE_LIVE", **_binance_unavailable(e), "income": []}
+    return {"mode": "BINANCE_LIVE", "available": True, "income": rows}
 
 
-@router.get("/trades")
-async def trades(db: Session = Depends(get_db)):
-    mode = modes.effective_mode(db)
-
-    if mode in modes.REAL_MODES:
-        provider = _real_provider_or_502()
-        result = []
-        for symbol in settings.binance_allowed_symbols:
-            try:
-                for t in await provider.client.get_trade_history(symbol, limit=50):
-                    result.append(t.to_dict())
-            except Exception:
-                continue  # per-symbol failure must not empty the whole view
-        result.sort(key=lambda t: t.get("time") or 0, reverse=True)
-        return {"mode": mode, "trades": result[:100]}
-
-    paper = await paper_api.history(db=db)
-    return {"mode": mode, "trades": paper["trades"]}
-
+# ================================================================== audit
 
 @router.get("/audit")
 async def audit_log(limit: int = 100, db: Session = Depends(get_db)):

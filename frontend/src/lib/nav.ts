@@ -1,6 +1,9 @@
 export type NavKey =
   | "dashboard"
   | "portfolio"
+  | "paper-trading"
+  | "binance-real"
+  | "bot-trades"
   | "predictions"
   | "positions"
   | "performance"
@@ -18,6 +21,9 @@ export type NavKey =
 export const NAV_ITEMS: { key: NavKey; label: string }[] = [
   { key: "dashboard", label: "Dashboard" },
   { key: "portfolio", label: "Portfolio" },
+  { key: "paper-trading", label: "Paper Trading" },
+  { key: "binance-real", label: "Binance Real" },
+  { key: "bot-trades", label: "Bot Trades" },
   { key: "predictions", label: "Predictions" },
   { key: "positions", label: "Positions" },
   { key: "performance", label: "Performance" },
@@ -37,7 +43,7 @@ export const NAV_ITEMS: { key: NavKey; label: string }[] = [
  * source of truth (labels, icon lookups) for anything else that needs it. */
 export const NAV_SECTIONS: { label: string; keys: NavKey[] }[] = [
   { label: "Main", keys: ["dashboard", "portfolio", "predictions", "positions", "performance"] },
-  { label: "Trading", keys: ["market", "bot-settings", "risk", "execution"] },
+  { label: "Trading", keys: ["paper-trading", "binance-real", "bot-trades", "market", "bot-settings", "risk", "execution"] },
   { label: "Analysis", keys: ["backtesting", "model-center", "research-lab", "stress-test"] },
   { label: "System", keys: ["logs", "system-status"] },
 ];

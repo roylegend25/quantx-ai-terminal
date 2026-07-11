@@ -1,9 +1,12 @@
-"""Trading mode control, order entry, live unlock and kill switch (Phase 22).
+"""Trading mode toggle, live unlock/lock, kill switch and real-order
+actions (Phase 23).
 
-Every route here sits behind authentication (router-level dependency in
-app/main.py). Real orders are only reachable through the execution router,
-which enforces the real-trading risk gate internally - there is no bypass
-parameter on any of these endpoints.
+User-facing modes are PAPER and BINANCE_LIVE only (BINANCE_TESTNET stays a
+developer-internal mode reachable via app.trading.modes.set_mode, never via
+this API). Every route sits behind authentication (router-level dependency
+in app/main.py). Real orders exist only behind the execution router, whose
+providers enforce the real risk gate internally - none of these endpoints
+carries a bypass parameter.
 """
 
 from __future__ import annotations
@@ -21,48 +24,53 @@ from app.trading.execution_router import router as execution_router
 router = APIRouter(prefix="/api/trading", tags=["trading"])
 
 
+# ================================================================== mode
+
 @router.get("/mode")
 async def get_mode(db: Session = Depends(get_db)):
     return modes.exchange_safe_status(db)
 
 
-@router.post("/enable-paper")
-async def enable_paper(db: Session = Depends(get_db)):
-    control = modes.set_mode(modes.MODE_PAPER, db=db)
-    return {"ok": True, "message": "Paper trading mode enabled", "control": control}
+class ModeRequest(BaseModel):
+    mode: str
 
 
-@router.post("/enable-testnet")
-async def enable_testnet(db: Session = Depends(get_db)):
-    if not modes.binance_configured():
+@router.post("/mode")
+async def set_mode(body: ModeRequest, db: Session = Depends(get_db)):
+    """Switch the active bot execution mode. Selecting BINANCE_LIVE only
+    *requests* live: it stays BINANCE_LIVE_LOCKED (viewing allowed, trading
+    blocked) until the unlock ceremony completes AND the server env lock is
+    open. Selecting PAPER always works and re-arms the live lock."""
+    mode = body.mode.upper()
+    if mode not in modes.USER_SELECTABLE_MODES:
+        raise HTTPException(status_code=400, detail=f"mode must be one of {', '.join(modes.USER_SELECTABLE_MODES)}")
+    if mode == modes.MODE_LIVE and not modes.binance_configured():
         raise HTTPException(status_code=400, detail="Binance API keys are not configured on the server")
-    if not settings.binance_futures_testnet:
-        raise HTTPException(
-            status_code=400,
-            detail="BINANCE_FUTURES_TESTNET is false - configure testnet keys and set it to true first",
-        )
-    control = modes.set_mode(modes.MODE_TESTNET, db=db)
-    return {"ok": True, "message": "Binance testnet trading enabled", "control": control}
 
+    control = modes.set_mode(mode, db=db)
+    return {"ok": True, "control": control, "status": modes.exchange_safe_status(db)}
+
+
+# ============================================================ live unlock
 
 class LiveUnlockRequest(BaseModel):
     confirmation: str = ""
     acknowledgements: dict[str, bool] = {}
 
 
-@router.post("/request-live-unlock")
-async def request_live_unlock(body: LiveUnlockRequest, db: Session = Depends(get_db)):
-    """The only path to BINANCE_LIVE. Requires the server env lock to be
-    open, the exact typed phrase, and every acknowledgement checked."""
+@router.post("/binance/unlock-live")
+async def unlock_live(body: LiveUnlockRequest, db: Session = Depends(get_db)):
+    """The only path to BINANCE_LIVE execution. Requires the server env
+    lock to be open, the exact typed phrase, and every acknowledgement."""
     if not settings.binance_live_enabled:
-        raise HTTPException(status_code=403, detail="Live trading is disabled by server configuration.")
+        raise HTTPException(
+            status_code=403,
+            detail="Live trading disabled by server configuration. Set BINANCE_LIVE_ENABLED=true in the backend .env only when ready.",
+        )
     if not modes.binance_configured():
         raise HTTPException(status_code=400, detail="Binance API keys are not configured on the server")
     if body.confirmation.strip() != modes.LIVE_UNLOCK_PHRASE:
-        raise HTTPException(
-            status_code=400,
-            detail=f'Type exactly "{modes.LIVE_UNLOCK_PHRASE}" to confirm',
-        )
+        raise HTTPException(status_code=400, detail=f'Type exactly "{modes.LIVE_UNLOCK_PHRASE}" to confirm')
     missing = [k for k in modes.LIVE_UNLOCK_ACKNOWLEDGEMENTS if not body.acknowledgements.get(k)]
     if missing:
         raise HTTPException(
@@ -79,43 +87,27 @@ async def request_live_unlock(body: LiveUnlockRequest, db: Session = Depends(get
     }
 
 
-class PlaceOrderRequest(BaseModel):
-    symbol: str
-    side: str  # LONG | SHORT
-    notional_usdt: float
-    leverage: float | None = None
-    order_type: str = "MARKET"
-    price: float | None = None  # for LIMIT (real modes)
-    stop_loss: float | None = None
-    take_profit: float | None = None
-    # Explicit human confirmation - required for any real (non-paper) order.
-    confirm: bool = False
+@router.post("/binance/lock-live")
+async def lock_live(db: Session = Depends(get_db)):
+    """Re-arm the live lock and drop back to PAPER execution immediately."""
+    control = modes.set_mode(modes.MODE_PAPER, db=db)
+    return {"ok": True, "message": "Live trading locked - back to paper execution", "control": control,
+            "status": modes.exchange_safe_status(db)}
 
 
-@router.post("/place-order")
-async def place_order(body: PlaceOrderRequest, db: Session = Depends(get_db)):
-    side = body.side.upper()
-    if side not in ("LONG", "SHORT"):
-        raise HTTPException(status_code=400, detail="side must be LONG or SHORT")
+# ======================================================= real-order actions
 
+def _require_live(db) -> None:
     mode = modes.effective_mode(db)
-    if mode in modes.REAL_MODES and not body.confirm:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Explicit confirmation required to place a real {mode} order (confirm=true)",
+    if mode != modes.MODE_LIVE:
+        reason = (
+            "Live trading disabled by server configuration"
+            if not settings.binance_live_enabled
+            else "Binance live trading is locked - complete the risk acknowledgement first"
         )
-
-    result = await execution_router.open_position(
-        symbol=body.symbol,
-        side=side,
-        notional_usdt=body.notional_usdt,
-        leverage=body.leverage,
-        sl=body.stop_loss,
-        tp=body.take_profit,
-    )
-    if not result.ok:
-        raise HTTPException(status_code=400, detail=result.reason or "Order rejected")
-    return result.to_dict()
+        if mode == modes.MODE_PAPER:
+            reason = "Active mode is PAPER - switch to Binance Real Money first"
+        raise HTTPException(status_code=409, detail=reason)
 
 
 class ClosePositionRequest(BaseModel):
@@ -125,10 +117,10 @@ class ClosePositionRequest(BaseModel):
     confirm: bool = False
 
 
-@router.post("/close-position")
-async def close_position(body: ClosePositionRequest, db: Session = Depends(get_db)):
-    mode = modes.effective_mode(db)
-    if mode in modes.REAL_MODES and not body.confirm:
+@router.post("/binance/close-position")
+async def binance_close_position(body: ClosePositionRequest, db: Session = Depends(get_db)):
+    _require_live(db)
+    if not body.confirm:
         raise HTTPException(status_code=400, detail="Explicit confirmation required to close a real position (confirm=true)")
     result = await execution_router.close_position(
         position_id=body.position_id, symbol=body.symbol, quantity=body.quantity
@@ -143,10 +135,11 @@ class PositionRiskUpdate(BaseModel):
     take_profit: float | None = None
 
 
-@router.patch("/positions/{position_id}/risk")
-async def update_position_risk(position_id: int, body: PositionRiskUpdate, db: Session = Depends(get_db)):
-    """Edit TP/SL through the router: paper edits hit the paper ledger, real
-    modes cancel-and-replace actual reduce-only orders on Binance."""
+@router.patch("/binance/positions/{position_id}/risk")
+async def binance_update_position_risk(position_id: int, body: PositionRiskUpdate, db: Session = Depends(get_db)):
+    """Cancel-and-replace real reduce-only TP/SL orders on Binance. Local
+    state updates only after the exchange confirms."""
+    _require_live(db)
     fields = body.model_fields_set
     if not fields:
         raise HTTPException(status_code=400, detail="Provide stop_loss and/or take_profit")
@@ -170,8 +163,9 @@ class CancelOrderRequest(BaseModel):
     order_id: int
 
 
-@router.post("/cancel-order")
-async def cancel_order(body: CancelOrderRequest):
+@router.post("/binance/cancel-order")
+async def binance_cancel_order(body: CancelOrderRequest, db: Session = Depends(get_db)):
+    _require_live(db)
     result = await execution_router.cancel_order(symbol=body.symbol, order_id=body.order_id)
     if not result.ok:
         raise HTTPException(status_code=400, detail=result.reason or "Cancel failed")
@@ -183,9 +177,10 @@ class CancelAllRequest(BaseModel):
     confirm: bool = False
 
 
-@router.post("/cancel-all-orders")
-async def cancel_all_orders(body: CancelAllRequest, db: Session = Depends(get_db)):
-    if modes.effective_mode(db) in modes.REAL_MODES and not body.confirm:
+@router.post("/binance/cancel-all-orders")
+async def binance_cancel_all_orders(body: CancelAllRequest, db: Session = Depends(get_db)):
+    _require_live(db)
+    if not body.confirm:
         raise HTTPException(status_code=400, detail="Explicit confirmation required to cancel all real orders (confirm=true)")
     result = await execution_router.cancel_all_orders(symbol=body.symbol)
     if not result.ok:
@@ -193,19 +188,22 @@ async def cancel_all_orders(body: CancelAllRequest, db: Session = Depends(get_db
     return result.to_dict()
 
 
+# ============================================================ kill switch
+
 class KillSwitchRequest(BaseModel):
     active: bool = True
     reason: str | None = None
-    # cancel resting exchange orders as part of the emergency stop
+    # cancel resting exchange orders as part of the emergency stop -
+    # positions are NEVER auto-closed by the kill switch
     cancel_orders: bool = True
 
 
 @router.post("/kill-switch")
 async def kill_switch(body: KillSwitchRequest, db: Session = Depends(get_db)):
-    """Emergency stop: halts the bot, blocks ALL new trades (paper and
-    real), and optionally cancels resting exchange orders. Never
-    auto-closes live positions - use close-position/cancel endpoints with
-    explicit confirmation for that."""
+    """Emergency stop: halts the bot and blocks ALL new trades - paper and
+    real. Optionally cancels resting exchange orders; closing real
+    positions always requires the separate close-position endpoint with its
+    own confirmation."""
     control = modes.set_kill_switch(body.active, reason=body.reason or ("manual" if body.active else None), db=db)
 
     canceled = None

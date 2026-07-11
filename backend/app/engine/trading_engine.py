@@ -4,10 +4,10 @@ import httpx
 
 from app.core.config import settings
 from app.core.security import create_internal_service_token
-from app.execution.execution_engine import engine as execution_engine
 from app.execution.order_router import OrderType
 from app.monitoring.logging import get_logger, log_event
 from app.trading import risk_manager
+from app.trading.execution_router import router as execution_router
 
 logger = get_logger("quantx.trading_engine")
 
@@ -110,13 +110,22 @@ class TradingEngine:
 
         if decision["allowed"]:
 
-            result = await execution_engine.submit_order(
+            # Execution intent goes to the mode-resolving router (Phase 23),
+            # never to a provider directly: PAPER books a simulated fill via
+            # the existing execution engine, BINANCE_LIVE runs the real risk
+            # gate and places an actual order, and a locked/killed state
+            # blocks with a reason - all decided per-cycle, no restart.
+            result = await execution_router.open_position(
                 symbol=symbol,
                 side=prediction["direction"],
-                usdt_size=decision["settings"]["max_position_size_usd"],
+                notional_usdt=decision["settings"]["max_position_size_usd"],
+                clamp_to_max=True,
                 order_type=OrderType.IOC,
                 sl=prediction["stop"],
                 tp=prediction["target"],
+                confidence=prediction["confidence"],
+                data_reliable=data_quality.get("reliable"),
+                spread_pct=spread_pct,
                 feature_id=prediction.get("feature_id"),
                 regime=prediction["regime"],
                 strategies=prediction["strategies"],
@@ -132,7 +141,8 @@ class TradingEngine:
                 message="scheduler_execution_result",
                 category="scheduler",
                 symbol=symbol,
-                reason=result.reason if result.status not in ("FILLED", "PARTIAL") else None,
+                mode=result.mode,
+                reason=result.reason if not result.ok else None,
             )
 
         else:

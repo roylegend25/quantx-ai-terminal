@@ -58,16 +58,25 @@ class PaperExecutionProvider:
 
     async def open_position(self, symbol: str, side: str, notional_usdt: float, leverage: float = 1.0,
                             sl: float | None = None, tp: float | None = None, **kwargs) -> RouterResult:
+        # Full decision provenance rides through to the paper ledger so a
+        # bot-originated order journals identically whether the strategy
+        # engine called the paper engine directly (pre-Phase 23) or through
+        # this router.
         result = await paper_engine.submit_order(
             symbol=symbol,
             side=side,
             usdt_size=notional_usdt,
-            order_type=OrderType.MARKET,
+            order_type=kwargs.get("order_type", OrderType.MARKET),
             sl=sl,
             tp=tp,
-            signal_time=datetime.now(timezone.utc),
+            feature_id=kwargs.get("feature_id"),
+            regime=kwargs.get("regime"),
+            strategies=kwargs.get("strategies"),
+            signal_time=kwargs.get("signal_time") or datetime.now(timezone.utc),
             open_positions=kwargs.get("open_positions", 0),
             equity=kwargs.get("equity"),
+            timeframe=kwargs.get("timeframe"),
+            decision_engine=kwargs.get("decision_engine"),
         )
         ok = result.status in ("FILLED", "PARTIAL")
         return RouterResult(
@@ -144,13 +153,33 @@ class BinanceExecutionProvider:
     async def open_position(self, symbol: str, side: str, notional_usdt: float, leverage: float | None = None,
                             sl: float | None = None, tp: float | None = None, confidence: float | None = None,
                             data_reliable: bool | None = None, spread_pct: float | None = None,
-                            open_positions: int | None = None, **kwargs) -> RouterResult:
+                            open_positions: int | None = None, clamp_to_max: bool = False,
+                            **kwargs) -> RouterResult:
         symbol = symbol.upper()
         side = side.upper()
         leverage = leverage if leverage and leverage > 0 else settings.binance_default_leverage
+        leverage = min(leverage, settings.binance_max_leverage)
+
+        # clamp_to_max is set ONLY by the strategy engine's bot intent: its
+        # paper position sizing (max_position_size_usd, often $1000) would
+        # trip the real max-notional gate on every cycle, so a bot order is
+        # capped at the configured per-trade notional instead of being
+        # permanently blocked. Any other oversized order is still BLOCKED by
+        # the gate below. The clamp is audited.
+        if clamp_to_max and notional_usdt > settings.binance_max_notional_per_trade:
+            modes.audit("order_notional_clamped", symbol=symbol,
+                        detail={"requested": notional_usdt, "clamped_to": settings.binance_max_notional_per_trade})
+            notional_usdt = settings.binance_max_notional_per_trade
 
         modes.audit("order_requested", symbol=symbol,
                     detail={"side": side, "notional": notional_usdt, "leverage": leverage, "sl": sl, "tp": tp})
+
+        # max_open_positions must count REAL exchange positions, not the
+        # paper count the strategy engine happens to know about.
+        try:
+            open_positions = len(await self.client.get_positions())
+        except Exception:
+            pass  # keep the caller-provided count; the gate re-verifies reachability anyway
 
         gate = await real_risk_gate.evaluate_real_order(
             symbol=symbol, side=side, notional_usdt=notional_usdt, leverage=leverage,
@@ -189,12 +218,62 @@ class BinanceExecutionProvider:
                 "executed_qty": order.executed_qty, "avg_price": order.avg_price,
                 "sl_order_id": sl_order_id, "tp_order_id": tp_order_id,
             })
+            self._record_bot_trade(
+                action="open", order=order, side=side, notional=notional_usdt,
+                leverage=leverage, sl_order_id=sl_order_id, tp_order_id=tp_order_id,
+                sl=sl, tp=tp, gate_checks=gate.checks, **kwargs,
+            )
             await self.sync_positions()
             return self._result(True, "open_position", order=order.to_dict(),
                                 sl_order_id=sl_order_id, tp_order_id=tp_order_id)
         except Exception as e:
             modes.audit("order_rejected", symbol=symbol, detail={"error": _safe_error(e)})
             return self._result(False, "open_position", reason=_safe_error(e))
+
+    def _record_bot_trade(self, action: str, order, side: str, notional: float | None = None,
+                          leverage: float | None = None, sl_order_id: int | None = None,
+                          tp_order_id: int | None = None, sl: float | None = None,
+                          tp: float | None = None, gate_checks: list | None = None, **kwargs) -> None:
+        """Journal one accepted real order into binance_bot_trades. Best
+        effort - a journaling failure must never unwind a live fill."""
+        from app.db.models import BinanceBotTrade
+
+        decision_engine = kwargs.get("decision_engine") or {}
+        active_model = decision_engine.get("active_model") or {}
+        reasons = decision_engine.get("top_reasons")
+        db = SessionLocal()
+        try:
+            db.add(BinanceBotTrade(
+                mode=self.mode,
+                action=action,
+                order_id=order.order_id,
+                client_order_id=order.client_order_id,
+                symbol=order.symbol,
+                side=side,
+                order_side=order.side,
+                order_type=order.type,
+                quantity=order.quantity,
+                avg_fill_price=order.avg_price or None,
+                status=order.status,
+                reduce_only=order.reduce_only,
+                notional=notional,
+                leverage=leverage,
+                sl_order_id=sl_order_id,
+                tp_order_id=tp_order_id,
+                stop_loss=sl,
+                take_profit=tp,
+                label="BOT_TRADE",
+                confidence=kwargs.get("confidence") or decision_engine.get("final_confidence"),
+                strategy=kwargs.get("strategy") or decision_engine.get("strategy_used"),
+                model=kwargs.get("model") or active_model.get("model_type"),
+                decision_reason="; ".join(reasons) if isinstance(reasons, list) else kwargs.get("reason"),
+                risk_gate=gate_checks,
+            ))
+            db.commit()
+        except Exception:
+            db.rollback()
+        finally:
+            db.close()
 
     async def close_position(self, position_id: int | None = None, symbol: str | None = None,
                              quantity: float | None = None, **kwargs) -> RouterResult:
@@ -215,6 +294,7 @@ class BinanceExecutionProvider:
             )
             modes.audit("position_closed", symbol=symbol,
                         detail={"order_id": order.order_id, "qty": qty, "side": pos.side})
+            self._record_bot_trade(action="close", order=order, side=pos.side, **kwargs)
             await self.sync_positions()
             return self._result(True, "close_position", order=order.to_dict())
         except Exception as e:

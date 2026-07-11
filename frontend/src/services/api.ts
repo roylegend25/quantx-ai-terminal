@@ -290,40 +290,46 @@ export const api = {
       body: JSON.stringify({ algorithm }),
     }),
   learningRecommendations: () => getJson("/api/learning/recommendations"),
-  // ---- Phase 22: portfolio + real trading control ----
-  portfolioSummary: () => getJson("/api/portfolio/summary"),
-  portfolioBalances: () => getJson("/api/portfolio/balances"),
-  portfolioPositions: () => getJson("/api/portfolio/positions"),
-  portfolioOrders: () => getJson("/api/portfolio/orders"),
-  portfolioTrades: () => getJson("/api/portfolio/trades"),
+  // ---- Phase 23: separated paper/Binance portfolios + trading control ----
+  paperSummary: () => getJson("/api/portfolio/paper/summary"),
+  paperPortfolioPositions: () => getJson("/api/portfolio/paper/positions"),
+  paperPortfolioOrders: () => getJson("/api/portfolio/paper/orders"),
+  paperPortfolioTrades: () => getJson("/api/portfolio/paper/trades"),
+  binanceSummary: () => getJson("/api/portfolio/binance/summary"),
+  binanceBalances: () => getJson("/api/portfolio/binance/balances"),
+  binancePositions: () => getJson("/api/portfolio/binance/positions"),
+  binanceOrders: () => getJson("/api/portfolio/binance/orders"),
+  binanceTrades: () => getJson("/api/portfolio/binance/trades"),
+  binanceIncome: (limit = 50) => getJson(`/api/portfolio/binance/income?limit=${limit}`),
   portfolioAudit: (limit = 50) => getJson(`/api/portfolio/audit?limit=${limit}`),
+  botTradesPaper: (limit = 100) => getJson(`/api/bot/trades/paper?limit=${limit}`),
+  botTradesBinance: (limit = 100) => getJson(`/api/bot/trades/binance?limit=${limit}`),
   tradingMode: () => getJson("/api/trading/mode"),
-  enablePaperMode: () => postJson("/api/trading/enable-paper"),
-  enableTestnetMode: () => postJson("/api/trading/enable-testnet"),
-  requestLiveUnlock: (confirmation: string, acknowledgements: Record<string, boolean>) =>
-    postJson("/api/trading/request-live-unlock", {
+  setTradingMode: (mode: "PAPER" | "BINANCE_LIVE") =>
+    postJson("/api/trading/mode", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    }),
+  unlockBinanceLive: (confirmation: string, acknowledgements: Record<string, boolean>) =>
+    postJson("/api/trading/binance/unlock-live", {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ confirmation, acknowledgements }),
     }),
-  placeTradingOrder: (body: Record<string, unknown>) =>
-    postJson("/api/trading/place-order", {
+  lockBinanceLive: () => postJson("/api/trading/binance/lock-live"),
+  binanceClosePosition: (body: Record<string, unknown>) =>
+    postJson("/api/trading/binance/close-position", {
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ ...body, confirm: true }),
     }),
-  closeTradingPosition: (body: Record<string, unknown>) =>
-    postJson("/api/trading/close-position", {
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-  updateTradingPositionRisk: (id: number, patch: { stop_loss?: number | null; take_profit?: number | null }) =>
-    patchJson(`/api/trading/positions/${id}/risk`, patch),
-  cancelTradingOrder: (symbol: string, orderId: number) =>
-    postJson("/api/trading/cancel-order", {
+  binanceUpdatePositionRisk: (id: number, patch: { stop_loss?: number | null; take_profit?: number | null }) =>
+    patchJson(`/api/trading/binance/positions/${id}/risk`, patch),
+  binanceCancelOrder: (symbol: string, orderId: number) =>
+    postJson("/api/trading/binance/cancel-order", {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ symbol, order_id: orderId }),
     }),
-  cancelAllTradingOrders: (symbol?: string) =>
-    postJson("/api/trading/cancel-all-orders", {
+  binanceCancelAllOrders: (symbol?: string) =>
+    postJson("/api/trading/binance/cancel-all-orders", {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ symbol: symbol ?? null, confirm: true }),
     }),

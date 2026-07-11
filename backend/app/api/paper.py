@@ -288,6 +288,13 @@ async def open_trade(
     symbol = symbol.upper()
     side = side.upper()
 
+    # The emergency kill switch halts EVERY open path - the bot's gates
+    # (risk_manager, execution engine, router) all check it, and this
+    # covers the one remaining way in: a direct manual API/UI open.
+    from app.trading import modes as trading_modes
+    if trading_modes.kill_switch_active():
+        raise HTTPException(status_code=423, detail="Kill switch active - all trading halted")
+
     if side not in ["LONG", "SHORT"]:
         raise HTTPException(status_code=400, detail="side must be LONG or SHORT")
     if not usdt_size or usdt_size <= 0:

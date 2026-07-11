@@ -1,7 +1,7 @@
-"""/api/portfolio in paper and (mocked) Binance testnet mode, plus the
-ownership rule that one user cannot touch another user's position."""
-
-import asyncio
+"""Phase 23: /api/portfolio/paper/* and /api/portfolio/binance/* are two
+strictly separate surfaces - paper always available, Binance read through a
+read-only production client with safe error classification - plus the
+ownership rule that one user cannot touch another user's paper position."""
 
 import pytest
 from fastapi import FastAPI
@@ -11,6 +11,7 @@ import app.api.paper as paper_module
 import app.api.portfolio as portfolio_module
 from app.db.session import SessionLocal
 from app.db.models import ExchangePositionRow, Trade, TradingControl
+from app.exchanges.binance_errors import BinancePermissionError, BinanceRateLimitError
 from app.exchanges.binance_models import (
     BinanceAccountSummary,
     BinanceBalance,
@@ -19,11 +20,14 @@ from app.exchanges.binance_models import (
     BinanceUserTrade,
 )
 from app.trading import modes
-from app.trading.execution_router import router as execution_router
+
+
+FAKE_KEY = "AKIAFAKEKEY1234567890"
+FAKE_SECRET = "supersecretvalue0987654321"
 
 
 @pytest.fixture(autouse=True)
-def paper_mode():
+def clean_state(monkeypatch):
     db = SessionLocal()
     try:
         db.query(TradingControl).delete()
@@ -31,6 +35,7 @@ def paper_mode():
         db.commit()
     finally:
         db.close()
+    monkeypatch.setattr(portfolio_module, "_read_client", None)
     yield
     modes.set_mode(modes.MODE_PAPER)
 
@@ -43,6 +48,12 @@ def make_client(monkeypatch, price=50000.0):
     app = FastAPI()
     app.include_router(portfolio_module.router)
     return TestClient(app)
+
+
+def configure_keys(monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "binance_api_key", FAKE_KEY)
+    monkeypatch.setattr(settings, "binance_api_secret", FAKE_SECRET)
 
 
 def open_paper_trade(**kw):
@@ -60,47 +71,11 @@ def open_paper_trade(**kw):
         db.close()
 
 
-# ------------------------------------------------------------- paper mode
+class MockReadClient:
+    """Healthy production account double for the read-only client."""
 
-def test_summary_returns_paper_data_in_paper_mode(monkeypatch):
-    open_paper_trade()
-    client = make_client(monkeypatch)
-
-    r = client.get("/api/portfolio/summary")
-    assert r.status_code == 200
-    data = r.json()
-    assert data["mode"] == "PAPER"
-    assert data["open_positions"] == 1
-    assert data["total_wallet_balance"] == 10000.0
-    assert data["risk"]["kill_switch_active"] is False
-    assert data["risk"]["live_enabled"] is False
-
-
-def test_balances_positions_trades_paper_mode(monkeypatch):
-    open_paper_trade()
-    client = make_client(monkeypatch)
-
-    balances = client.get("/api/portfolio/balances").json()
-    assert balances["mode"] == "PAPER"
-    assert balances["balances"][0]["asset"] == "USDT"
-
-    positions = client.get("/api/portfolio/positions").json()
-    assert positions["mode"] == "PAPER"
-    assert len(positions["positions"]) == 1
-    assert positions["positions"][0]["symbol"] == "BTCUSDT"
-
-    orders = client.get("/api/portfolio/orders").json()
-    assert orders == {"mode": "PAPER", "orders": []}
-
-    trades = client.get("/api/portfolio/trades").json()
-    assert trades["mode"] == "PAPER"
-    assert len(trades["trades"]) == 1
-
-
-# ----------------------------------------------------------- testnet mode
-
-class MockPortfolioClient:
     configured = True
+    read_only = True
 
     async def get_account_info(self):
         return BinanceAccountSummary(
@@ -136,43 +111,138 @@ class MockPortfolioClient:
             quantity=0.05, realized_pnl=1.25, commission=0.02, commission_asset="USDT", time=1,
         )]
 
+    async def get_income_history(self, limit=50, income_type=None):
+        return [{"symbol": "ETHUSDT", "income_type": "FUNDING_FEE", "income": -0.01,
+                 "asset": "USDT", "info": "", "time": 1}]
 
-def use_mock_testnet_provider(monkeypatch):
-    modes.set_mode(modes.MODE_TESTNET)
-    monkeypatch.setattr(execution_router._testnet, "_client", MockPortfolioClient())
+
+def use_mock_read_client(monkeypatch, client=None):
+    configure_keys(monkeypatch)
+    monkeypatch.setattr(portfolio_module, "_read_client", client or MockReadClient())
 
 
-def test_summary_returns_binance_data_in_testnet_mode(monkeypatch):
-    use_mock_testnet_provider(monkeypatch)
+# ------------------------------------------------------------- paper space
+
+def test_paper_summary_is_paper_data_regardless_of_mode(monkeypatch):
+    open_paper_trade()
+    use_mock_read_client(monkeypatch)
+    modes.set_mode(modes.MODE_LIVE)  # active mode must not leak into the paper view
     client = make_client(monkeypatch)
 
-    r = client.get("/api/portfolio/summary")
+    r = client.get("/api/portfolio/paper/summary")
     assert r.status_code == 200
     data = r.json()
-    assert data["mode"] == "BINANCE_TESTNET"
+    assert data["mode"] == "PAPER"
+    assert data["balance"] == 10000.0
+    assert data["open_positions"] == 1
+    assert data["risk"]["kill_switch_active"] is False
+
+
+def test_paper_positions_orders_trades(monkeypatch):
+    open_paper_trade()
+    client = make_client(monkeypatch)
+
+    positions = client.get("/api/portfolio/paper/positions").json()
+    assert positions["mode"] == "PAPER"
+    assert len(positions["positions"]) == 1
+
+    orders = client.get("/api/portfolio/paper/orders").json()
+    assert orders == {"mode": "PAPER", "orders": []}
+
+    trades = client.get("/api/portfolio/paper/trades").json()
+    assert trades["mode"] == "PAPER"
+    assert len(trades["trades"]) == 1
+
+
+# ----------------------------------------------------------- binance space
+
+def test_binance_summary_uses_env_key_but_never_returns_it(monkeypatch):
+    use_mock_read_client(monkeypatch)
+    client = make_client(monkeypatch)
+
+    r = client.get("/api/portfolio/binance/summary")
+    assert r.status_code == 200
+    assert FAKE_KEY not in r.text
+    assert FAKE_SECRET not in r.text
+    data = r.json()
+    assert data["available"] is True
     assert data["total_wallet_balance"] == 500.0
     assert data["daily_pnl"] == -3.5
     assert data["open_positions"] == 1
-    assert data["total_notional_exposure"] == 149.5
 
 
-def test_positions_orders_trades_in_testnet_mode(monkeypatch):
-    use_mock_testnet_provider(monkeypatch)
+def test_binance_and_paper_portfolios_are_separate(monkeypatch):
+    open_paper_trade()  # BTCUSDT paper LONG
+    use_mock_read_client(monkeypatch)  # ETHUSDT real SHORT
     client = make_client(monkeypatch)
 
-    positions = client.get("/api/portfolio/positions").json()
-    assert positions["mode"] == "BINANCE_TESTNET"
-    pos = positions["positions"][0]
-    assert pos["symbol"] == "ETHUSDT"
-    assert pos["sl"] == 3100.0  # from the resting STOP_MARKET order
-    assert pos["liquidation_price"] == 4400.0
+    paper = client.get("/api/portfolio/paper/positions").json()["positions"]
+    real = client.get("/api/portfolio/binance/positions").json()["positions"]
 
-    orders = client.get("/api/portfolio/orders").json()
+    assert [p["symbol"] for p in paper] == ["BTCUSDT"]
+    assert [p["symbol"] for p in real] == ["ETHUSDT"]
+    # the real view carries live TP/SL from resting reduce-only orders
+    assert real[0]["sl"] == 3100.0
+    assert real[0]["liquidation_price"] == 4400.0
+
+
+def test_binance_not_configured_returns_safe_unavailable(monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "binance_api_key", "")
+    monkeypatch.setattr(settings, "binance_api_secret", "")
+    client = make_client(monkeypatch)
+
+    r = client.get("/api/portfolio/binance/summary")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["available"] is False
+    assert data["reason"] == "Binance API key not configured"
+
+
+def test_binance_permission_error_returns_safe_warning(monkeypatch):
+    class PermissionDeniedClient(MockReadClient):
+        async def get_account_info(self):
+            raise BinancePermissionError("Invalid API-key, IP, or permissions for action.", code=-2015)
+
+    use_mock_read_client(monkeypatch, PermissionDeniedClient())
+    client = make_client(monkeypatch)
+
+    r = client.get("/api/portfolio/binance/summary")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["available"] is False
+    assert "IP whitelist" in data["reason"]
+    # the raw exchange message (or anything else) never leaks
+    assert "-2015" not in r.text
+
+
+def test_binance_rate_limit_returns_safe_warning(monkeypatch):
+    class RateLimitedClient(MockReadClient):
+        async def get_balances(self):
+            raise BinanceRateLimitError("Too many requests", status=429)
+
+    use_mock_read_client(monkeypatch, RateLimitedClient())
+    client = make_client(monkeypatch)
+    data = client.get("/api/portfolio/binance/balances").json()
+    assert data["available"] is False
+    assert "Rate limited" in data["reason"]
+
+
+def test_binance_orders_trades_income(monkeypatch):
+    use_mock_read_client(monkeypatch)
+    client = make_client(monkeypatch)
+
+    orders = client.get("/api/portfolio/binance/orders").json()
     assert orders["orders"][0]["order_id"] == 42
     assert orders["orders"][0]["reduce_only"] is True
 
-    trades = client.get("/api/portfolio/trades").json()
+    trades = client.get("/api/portfolio/binance/trades").json()
     assert trades["trades"][0]["realized_pnl"] == 1.25
+    # order 42 was never journaled as a bot trade -> synced label
+    assert trades["trades"][0]["label"] == "SYNCED_FROM_BINANCE"
+
+    income = client.get("/api/portfolio/binance/income").json()
+    assert income["income"][0]["income_type"] == "FUNDING_FEE"
 
 
 # --------------------------------------------------------------- ownership

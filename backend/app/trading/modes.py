@@ -49,13 +49,21 @@ _ENV_MODE_MAP = {
 LIVE_UNLOCK_PHRASE = "I UNDERSTAND LIVE TRADING RISK"
 
 # Every one of these must be explicitly acknowledged (true) to unlock live.
+# Phase 23: testnet left the product UI, so the ceremony now acknowledges
+# real money + paper testing instead of testnet testing.
 LIVE_UNLOCK_ACKNOWLEDGEMENTS = (
+    "real_money_understood",
     "withdrawal_permission_disabled",
     "ip_whitelisted",
     "losses_possible_understood",
-    "tested_on_testnet",
     "risk_limits_accepted",
+    "tested_in_paper_mode",
 )
+
+# What POST /api/trading/mode accepts. BINANCE_TESTNET remains a valid
+# *internal* mode (set_mode still stores it, the test suite and developer
+# tooling use it) but it is not selectable from the product UI/API.
+USER_SELECTABLE_MODES = (MODE_PAPER, MODE_LIVE)
 
 
 def _get_or_create(db) -> TradingControl:
@@ -182,11 +190,11 @@ def can_trade(db=None) -> tuple[bool, str]:
     if control["kill_switch_active"]:
         return False, "Kill switch active - all trading halted"
     if mode == MODE_PAPER:
-        return False, "Paper mode - real orders are not placed"
+        return False, "Paper mode active - real orders are not placed"
     if mode == MODE_LIVE_LOCKED:
         if not settings.binance_live_enabled:
-            return False, "Live trading is disabled by server configuration"
-        return False, "Live trading locked - complete the unlock confirmation first"
+            return False, "Live trading disabled by server configuration"
+        return False, "Live trading locked - complete the risk acknowledgement first"
     if not binance_configured():
         return False, "Binance API keys are not configured"
     return True, "Trading enabled"
@@ -214,23 +222,28 @@ def status_warnings(permission_check: dict | None = None) -> list[str]:
 
 
 def exchange_safe_status(db=None) -> dict:
-    """The safe public status shape - never keys, secrets, signatures or
-    headers."""
+    """The safe public status shape (Phase 23) - never keys, secrets,
+    signatures or headers, and no testnet wording (testnet is internal
+    only). `binance_connected` is injected by the /api/exchange/status
+    endpoint, which is the only place willing to pay for a network probe."""
     mode = effective_mode(db)
     allowed, reason = can_trade(db)
     control = get_control(db)
     return {
-        "mode": mode,
+        "active_mode": mode,
+        "paper_available": True,
+        "binance_live_available": binance_configured(),
         "binance_configured": binance_configured(),
-        "testnet": settings.binance_futures_testnet,
-        "live_enabled": settings.binance_live_enabled,
-        "can_trade": allowed,
+        "binance_live_enabled_by_server": settings.binance_live_enabled,
+        "binance_live_unlocked_by_user": control["live_unlocked"],
+        "can_trade_binance_live": allowed and mode == MODE_LIVE,
         "reason": reason,
         "kill_switch_active": control["kill_switch_active"],
         "allowed_symbols": settings.binance_allowed_symbols,
         "max_leverage": settings.binance_max_leverage,
         "max_notional_per_trade": settings.binance_max_notional_per_trade,
         "max_daily_loss_usdt": settings.binance_max_daily_loss_usdt,
+        "default_leverage": settings.binance_default_leverage,
     }
 
 

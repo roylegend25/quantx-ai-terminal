@@ -776,6 +776,47 @@ class ExchangePositionRow(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class BinanceBotTrade(Base):
+    """One REAL Binance order placed by this system (Phase 23) - the bot's
+    own journal, kept strictly separate from the paper Trade table and from
+    manual/synced exchange history. Rows are written only by
+    BinanceExecutionProvider after the exchange accepted the order, with the
+    full decision provenance and risk-gate outcome attached. label is always
+    BOT_TRADE here; exchange history rows that don't match one of these
+    order ids are labelled SYNCED_FROM_BINANCE / MANUAL_EXCHANGE_TRADE at
+    read time and never stored in this table."""
+    __tablename__ = "binance_bot_trades"
+
+    id = Column(Integer, primary_key=True, index=True)
+    mode = Column(String, index=True)  # BINANCE_TESTNET (internal) | BINANCE_LIVE
+    action = Column(String, index=True)  # open | close
+    order_id = Column(BigInteger, index=True)
+    client_order_id = Column(String, index=True)
+    symbol = Column(String, index=True)
+    side = Column(String)  # LONG | SHORT (position side)
+    order_side = Column(String)  # BUY | SELL (exchange order side)
+    order_type = Column(String)
+    quantity = Column(Float)
+    avg_fill_price = Column(Float, nullable=True)
+    status = Column(String)
+    reduce_only = Column(Boolean, default=False)
+    notional = Column(Float, nullable=True)
+    leverage = Column(Float, nullable=True)
+    sl_order_id = Column(BigInteger, nullable=True)
+    tp_order_id = Column(BigInteger, nullable=True)
+    stop_loss = Column(Float, nullable=True)
+    take_profit = Column(Float, nullable=True)
+    label = Column(String, default="BOT_TRADE")
+    # decision provenance
+    confidence = Column(Float, nullable=True)
+    strategy = Column(String, nullable=True)
+    model = Column(String, nullable=True)
+    decision_reason = Column(Text, nullable=True)
+    risk_gate = Column(JSON, nullable=True)  # the checks the real risk gate ran
+    realized_pnl = Column(Float, nullable=True)  # backfilled from income where matched
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
 class TradingAuditLog(Base):
     """Append-only audit trail of every real-trading lifecycle event (Phase
     22): order requested/accepted/rejected/filled/canceled, TP/SL updates,

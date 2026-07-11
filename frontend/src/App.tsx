@@ -10,6 +10,9 @@ import { useTheme } from "./hooks/useTheme";
 import type { NavKey } from "./lib/nav";
 
 const PortfolioPage = lazy(() => import("./pages/PortfolioPage"));
+const PaperTradingPage = lazy(() => import("./pages/PaperTradingPage"));
+const BinanceRealPage = lazy(() => import("./pages/BinanceRealPage"));
+const BotTradesPage = lazy(() => import("./pages/BotTradesPage"));
 const PredictionsPage = lazy(() => import("./pages/PredictionsPage"));
 const PositionsPage = lazy(() => import("./pages/PositionsPage"));
 const PerformancePage = lazy(() => import("./pages/PerformancePage"));
@@ -51,7 +54,13 @@ function App() {
       case "dashboard":
         return <DashboardPage {...data} navigate={setActive} />;
       case "portfolio":
-        return <PortfolioPage {...data} />;
+        return <PortfolioPage {...data} navigate={setActive} />;
+      case "paper-trading":
+        return <PaperTradingPage {...data} />;
+      case "binance-real":
+        return <BinanceRealPage {...data} />;
+      case "bot-trades":
+        return <BotTradesPage />;
       case "predictions":
         return <PredictionsPage {...data} />;
       case "positions":

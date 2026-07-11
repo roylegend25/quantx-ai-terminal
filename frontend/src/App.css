@@ -5638,9 +5638,15 @@ body.notif-scroll-lock {
   flex-wrap: wrap;
 }
 
+/* Direct children of the (row-axis) header only: inside
+   .portfolio-banner-left, a flex COLUMN, a 260px basis would become
+   HEIGHT rather than width. */
+.portfolio-header-row > .regime-desc {
+  flex: 1 1 260px;
+}
+
 .portfolio-header-row .regime-desc {
   margin: 0;
-  flex: 1 1 260px;
 }
 
 .live-danger-card {
@@ -5710,4 +5716,97 @@ body.notif-scroll-lock {
   .portfolio-header-row {
     flex-direction: column;
   }
+}
+
+/* ---------- Phase 23: mode toggle + separated terminals ---------- */
+
+.badge-orange {
+  background: rgba(255, 178, 84, 0.15);
+  border-color: rgba(255, 178, 84, 0.45);
+  color: #ffb254;
+}
+
+.mode-toggle {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  gap: 3px;
+}
+
+.mode-toggle-btn {
+  border: 0;
+  border-radius: 9px;
+  padding: 8px 14px;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  background: transparent;
+  color: #8b90a8;
+  transition: background 0.2s ease, color 0.2s ease;
+  white-space: nowrap;
+}
+
+.mode-toggle-btn:hover {
+  color: inherit;
+}
+
+.mode-toggle-btn.on.paper {
+  background: rgba(var(--c-purple-rgb), 0.35);
+  color: #fff;
+}
+
+.mode-toggle-btn.on.locked {
+  background: rgba(255, 178, 84, 0.25);
+  color: #ffb254;
+}
+
+.mode-toggle-btn.on.live {
+  background: rgba(255, 93, 115, 0.3);
+  color: var(--c-red, #ff5d73);
+}
+
+.portfolio-banner-left {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+/* Desktop two-column comparison: Paper left, Binance Real right. */
+.page-grid > .portfolio-compare {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  align-items: stretch;
+}
+
+@media (max-width: 1000px) {
+  .page-grid > .portfolio-compare {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Active Trading Mode card body: stacked controls, content-sized. */
+.card > .trading-mode-card {
+  flex: initial;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.trading-mode-row {
+  margin-bottom: 0;
+}
+
+.bot-trade-reason {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
