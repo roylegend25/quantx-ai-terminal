@@ -1,93 +1,75 @@
-import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, Lock, RefreshCw } from "lucide-react";
+import { useState } from "react";
+import { AlertTriangle, RefreshCw } from "lucide-react";
 import Card from "../components/Layout/Card";
 import EditRiskModal, { type RiskPatch } from "../components/Dashboard/EditRiskModal";
 import AutoCardTable from "../components/Responsive/AutoCardTable";
+import BinancePositionsTable from "../components/Trading/BinancePositionsTable";
+import ServerTradingControlCard from "../components/Trading/ServerTradingControlCard";
 import { api } from "../services/api";
 import { fmtLocalDateTime, fmtNum, fmtPct, fmtUsd, toneClass, toneOf } from "../lib/format";
-import { LiveUnlockModal, ModeBadge, useTradingStatus } from "../components/Trading/TradingShared";
+import { ModeBadge, ModeToggle, useTradingStatus, type TradingStatus } from "../components/Trading/TradingShared";
+import { useBinanceAccount } from "../hooks/useBinanceAccount";
 import type { AppData } from "../hooks/useAppData";
 
 const POLL_MS = 10000;
 
-type ConfirmState = { title: string; body: string; action: () => Promise<void> } | null;
+/** Dynamic status copy (task: "Binance page status copy") - replaces the
+ *  old static ".env" instruction paragraph with UI-driven text reflecting
+ *  the two independent gates: the admin server lock (BINANCE_LIVE_ENABLED,
+ *  now controlled below via ServerTradingControlCard) and the per-session
+ *  user live-risk confirmation (ModeToggle -> LiveUnlockModal). */
+function statusCopy(status: TradingStatus | null): string {
+  if (!status?.binance_live_enabled_by_server) {
+    return "Real Binance trading is locked by the server. Use Server Trading Control below to enable the server lock, then complete the live-risk confirmation.";
+  }
+  if (!status.binance_live_unlocked_by_user) {
+    return "Server live trading is enabled. Complete the live-risk confirmation before real orders can be placed.";
+  }
+  return "Binance Real Money Trading is active. Real orders may be placed if the risk gate approves.";
+}
 
-/** Binance Real Money Terminal (Phase 23). Binance is the source of truth:
- *  everything shown here is read live from the real account through the
- *  backend's read-only client. Trading actions (close, cancel, TP/SL) are
- *  enabled only while the mode is BINANCE_LIVE - otherwise the account is
- *  view-only and the unlock panel explains why. */
+/** Binance Real Money Terminal (Phase 23/24). Binance is the source of
+ *  truth: everything shown here is read live from the real account through
+ *  the backend's read-only client. Trading actions (close, cancel, TP/SL)
+ *  are enabled only while the mode is BINANCE_LIVE - otherwise the account
+ *  is view-only. Enabling real trading requires two independent gates:
+ *  the admin-only Server Trading Control below (server env lock) and the
+ *  per-session live-risk confirmation reached via the mode switch. */
 export default function BinanceRealPage(props: AppData) {
   const { showToast } = props;
   const { status, reload } = useTradingStatus(POLL_MS);
+  const {
+    summary,
+    balances,
+    positions,
+    orders,
+    trades,
+    income,
+    balanceRows,
+    positionRows,
+    orderRows,
+    tradeRows,
+    incomeRows,
+    busy,
+    confirm,
+    setConfirm,
+    run,
+    saveRisk,
+    reload: reloadAccount,
+  } = useBinanceAccount(showToast);
 
-  const [summary, setSummary] = useState<any>(null);
-  const [balances, setBalances] = useState<any>(null);
-  const [positions, setPositions] = useState<any>(null);
-  const [orders, setOrders] = useState<any>(null);
-  const [trades, setTrades] = useState<any>(null);
-  const [income, setIncome] = useState<any>(null);
-
-  const [busy, setBusy] = useState(false);
-  const [confirm, setConfirm] = useState<ConfirmState>(null);
   const [editing, setEditing] = useState<any>(null);
-  const [showUnlock, setShowUnlock] = useState(false);
-
-  const load = useCallback(async () => {
-    const [s, b, p, o, t, inc] = await Promise.all([
-      api.binanceSummary().catch(() => null),
-      api.binanceBalances().catch(() => null),
-      api.binancePositions().catch(() => null),
-      api.binanceOrders().catch(() => null),
-      api.binanceTrades().catch(() => null),
-      api.binanceIncome(30).catch(() => null),
-    ]);
-    if (s) setSummary(s);
-    if (b) setBalances(b);
-    if (p) setPositions(p);
-    if (o) setOrders(o);
-    if (t) setTrades(t);
-    if (inc) setIncome(inc);
-  }, []);
-
-  useEffect(() => {
-    load();
-    const id = window.setInterval(load, POLL_MS);
-    return () => window.clearInterval(id);
-  }, [load]);
-
-  const onChanged = useCallback(async () => {
-    await Promise.all([reload(), load()]);
-  }, [reload, load]);
-
-  const run = useCallback(
-    async (fn: () => Promise<any>, okMessage: string) => {
-      setBusy(true);
-      try {
-        await fn();
-        showToast(okMessage, "success");
-      } catch (e: any) {
-        showToast(e?.message || "Action failed", "error");
-      } finally {
-        setBusy(false);
-        setConfirm(null);
-        await onChanged();
-      }
-    },
-    [showToast, onChanged]
-  );
 
   const mode = status?.active_mode || "PAPER";
   const isLive = mode === "BINANCE_LIVE";
   const available = summary?.available;
-  const positionRows = positions?.positions || [];
-  const orderRows = orders?.orders || [];
-  const tradeRows = trades?.trades || [];
-  const incomeRows = income?.income || [];
 
-  const saveRisk = async (id: number, patch: RiskPatch) => {
-    await api.binanceUpdatePositionRisk(id, { stop_loss: patch.stop_loss, take_profit: patch.take_profit });
-    showToast("Binance Live TP/SL orders updated", "success");
+  const onChanged = async () => {
+    await Promise.all([reload(), reloadAccount()]);
+  };
+
+  const handleSaveRisk = async (id: number, patch: RiskPatch) => {
+    await saveRisk(id, { stop_loss: patch.stop_loss, take_profit: patch.take_profit });
     await onChanged();
   };
 
@@ -112,37 +94,34 @@ export default function BinanceRealPage(props: AppData) {
         }
       >
         <div className="portfolio-header-row">
-          <p className="regime-desc">
-            {isLive
-              ? "⚠ LIVE — the bot may place real orders and the actions below use real funds."
-              : "View-only. Binance Real Money Trading is locked. Enable BINANCE_LIVE_ENABLED=true on the server and complete the risk acknowledgement to allow real orders."}
-          </p>
+          <div className="portfolio-banner-left">
+            <ModeToggle status={status} onChanged={onChanged} showToast={showToast} />
+            <p className="regime-desc">{statusCopy(status)}</p>
+          </div>
           <div className="controls">
-            <button className="mini-btn" disabled={busy} onClick={async () => { await api.tradingSync().catch(() => null); await onChanged(); showToast("Re-synced from Binance", "success"); }}>
+            <button
+              className="mini-btn"
+              disabled={busy}
+              onClick={async () => {
+                await api.tradingSync().catch(() => null);
+                await onChanged();
+                showToast("Re-synced from Binance", "success");
+              }}
+            >
               <RefreshCw size={13} /> Sync
             </button>
-            {isLive ? (
-              <button
-                className="btn-danger"
-                disabled={busy}
-                onClick={() =>
-                  setConfirm({
-                    title: "Lock live trading?",
-                    body: "Execution returns to PAPER immediately and the unlock ceremony re-arms.",
-                    action: () => run(() => api.lockBinanceLive(), "Live trading locked — back to paper"),
-                  })
-                }
-              >
-                <Lock size={14} /> Lock Live Trading
-              </button>
-            ) : (
-              <button className="btn-danger" disabled={busy || !status} onClick={() => setShowUnlock(true)}>
-                Unlock Real Trading…
-              </button>
-            )}
           </div>
         </div>
+
+        <ol className="binance-steps">
+          <li>Server Trading Control below — enable the server live lock (admin).</li>
+          <li>Switch the mode above to "Binance Real Money" — complete the live-risk confirmation.</li>
+          <li>Real orders become possible once the risk gate approves each trade.</li>
+        </ol>
       </Card>
+
+      {/* ---------------- server trading control (Phase 24) ---------------- */}
+      <ServerTradingControlCard showToast={showToast} />
 
       {/* ---------------- account overview ---------------- */}
       <Card title="Real Account Overview" className={isLive ? "live-danger-card" : ""}>
@@ -241,7 +220,7 @@ export default function BinanceRealPage(props: AppData) {
             { key: "locked", label: "Locked", render: (b: any) => fmtNum(b.locked, b.asset === "USDT" ? 2 : 6) },
             { key: "total", label: "Total", render: (b: any) => fmtNum(b.total, b.asset === "USDT" ? 2 : 6) },
           ]}
-          rows={balances?.balances || []}
+          rows={balanceRows}
           keyField={(b: any) => b.asset}
           titleColumn="asset"
           emptyMessage={balances?.available === false ? balances?.reason || "Unavailable" : "No balances"}
@@ -249,67 +228,28 @@ export default function BinanceRealPage(props: AppData) {
       </Card>
 
       {/* ---------------- positions ---------------- */}
-      <Card title={`Real Open Positions (${positionRows.length})`} full className={isLive ? "live-danger-card" : ""}>
-        <AutoCardTable
-          columns={[
-            { key: "symbol", label: "Symbol", render: (p: any) => <b>{p.symbol}</b> },
-            { key: "side", label: "Side", render: (p: any) => <span className={p.side === "LONG" ? "green" : "red"}>{p.side}</span> },
-            { key: "size", label: "Size", render: (p: any) => fmtNum(p.quantity, 6) },
-            { key: "entry", label: "Entry", render: (p: any) => fmtNum(p.entry_price) },
-            { key: "mark", label: "Mark", render: (p: any) => fmtNum(p.mark_price) },
-            { key: "liq", label: "Liquidation", render: (p: any) => (p.liquidation_price != null ? fmtNum(p.liquidation_price) : "—") },
-            { key: "margin", label: "Margin", render: (p: any) => fmtUsd(p.margin_used) },
-            { key: "type", label: "Type", render: (p: any) => p.margin_type || "—" },
-            { key: "lev", label: "Lev.", render: (p: any) => (p.leverage != null ? `${p.leverage}x` : "—") },
-            { key: "pnl", label: "uPnL", render: (p: any) => <span className={toneClass(toneOf(p.unrealized_pnl))}>{fmtUsd(p.unrealized_pnl)}</span> },
-            { key: "tp", label: "Live TP", render: (p: any) => (p.tp != null ? fmtNum(p.tp) : "—") },
-            { key: "sl", label: "Live SL", render: (p: any) => (p.sl != null ? fmtNum(p.sl) : "—") },
-          ]}
-          rows={positionRows.map((p: any, i: number) => ({ ...p, _key: p.symbol + i }))}
-          keyField={(p: any) => p._key}
-          titleColumn="symbol"
-          statusColumn="side"
-          renderActions={(p: any) => (
-            <>
-              <button
-                className="mini-btn"
-                disabled={busy || !isLive || p.id == null}
-                title={!isLive ? "Locked — unlock real trading first" : p.id == null ? "Waiting for sync…" : "Edit Binance Live TP/SL"}
-                onClick={() =>
-                  setEditing({
-                    ...p,
-                    entry: p.entry_price,
-                    mark: p.mark_price,
-                    qty: p.quantity,
-                    trailing_stop: null,
-                  })
-                }
-              >
-                TP/SL
-              </button>
-              <button
-                className="btn-danger mini"
-                disabled={busy || !isLive}
-                title={!isLive ? "Locked — unlock real trading first" : "Close on Binance"}
-                onClick={() =>
-                  setConfirm({
-                    title: `Close REAL ${p.symbol} ${p.side}?`,
-                    body: "Sends a real reduce-only MARKET order to Binance. This uses real funds.",
-                    action: () =>
-                      run(
-                        () => api.binanceClosePosition({ symbol: p.symbol, position_id: p.id }),
-                        `${p.symbol} position closed on Binance`
-                      ),
-                  })
-                }
-              >
-                Close
-              </button>
-            </>
-          )}
-          emptyMessage={positions?.available === false ? positions?.reason || "Unavailable" : "No open Binance positions"}
-        />
-      </Card>
+      <BinancePositionsTable
+        title={`Real Open Positions (${positionRows.length})`}
+        full
+        className={isLive ? "live-danger-card" : ""}
+        positionRows={positionRows}
+        busy={busy}
+        isLive={isLive}
+        unavailable={positions?.available === false}
+        unavailableReason={positions?.reason}
+        onEdit={setEditing}
+        onRequestClose={(p: any) =>
+          setConfirm({
+            title: `Close REAL ${p.symbol} ${p.side}?`,
+            body: "Sends a real reduce-only MARKET order to Binance. This uses real funds.",
+            action: () =>
+              run(
+                () => api.binanceClosePosition({ symbol: p.symbol, position_id: p.id }),
+                `${p.symbol} position closed on Binance`
+              ),
+          })
+        }
+      />
 
       {/* ---------------- open orders ---------------- */}
       <Card
@@ -422,11 +362,7 @@ export default function BinanceRealPage(props: AppData) {
       </Card>
 
       {/* ---------------- modals ---------------- */}
-      {editing && <EditRiskModal position={editing} onSave={saveRisk} onClose={() => setEditing(null)} />}
-
-      {showUnlock && status && (
-        <LiveUnlockModal status={status} onClose={() => setShowUnlock(false)} onChanged={onChanged} showToast={showToast} />
-      )}
+      {editing && <EditRiskModal position={editing} onSave={handleSaveRisk} onClose={() => setEditing(null)} />}
 
       {confirm && (
         <div className="modal-overlay" onClick={() => !busy && setConfirm(null)}>

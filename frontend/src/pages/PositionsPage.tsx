@@ -1,8 +1,13 @@
 import { useState } from "react";
 import Card from "../components/Layout/Card";
 import OpenPositionsCard from "../components/Dashboard/OpenPositionsCard";
-import EditRiskModal from "../components/Dashboard/EditRiskModal";
+import EditRiskModal, { type RiskPatch } from "../components/Dashboard/EditRiskModal";
 import AutoCardTable, { type AutoCardColumn } from "../components/Responsive/AutoCardTable";
+import PaperLiveTabs, { type PaperLiveTab } from "../components/Trading/PaperLiveTabs";
+import BinancePositionsTable from "../components/Trading/BinancePositionsTable";
+import { api } from "../services/api";
+import { useTradingStatus } from "../components/Trading/TradingShared";
+import { useBinanceAccount } from "../hooks/useBinanceAccount";
 import { fmtLocalDateTime, fmtNum, fmtTradeDuration, fmtUsd, toneClass, toneOf } from "../lib/format";
 import type { AppData } from "../hooks/useAppData";
 import type { Position } from "../lib/portfolioStats";
@@ -169,13 +174,27 @@ const JOURNAL_COLUMNS: AutoCardColumn<any>[] = [
 ];
 
 export default function PositionsPage(props: Props) {
-  const { positions, history, symbol, prediction, botStatus, executionStatus } = props;
+  const { positions, history, symbol, prediction, botStatus, executionStatus, showToast } = props;
 
+  const [tab, setTab] = useState<PaperLiveTab>("paper");
   const [symbolFilter, setSymbolFilter] = useState<SymbolFilter>("ALL");
   const [showResetModal, setShowResetModal] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [leverage, setLeverage] = useState(1);
   const [editingPosition, setEditingPosition] = useState<Position | null>(null);
+  const [editingBinance, setEditingBinance] = useState<any>(null);
+
+  const { status: liveStatus } = useTradingStatus();
+  const isLive = liveStatus?.active_mode === "BINANCE_LIVE";
+  const {
+    positions: binancePositions,
+    positionRows: binancePositionRows,
+    busy: binanceBusy,
+    confirm: binanceConfirm,
+    setConfirm: setBinanceConfirm,
+    run: runBinance,
+    saveRisk: saveBinanceRisk,
+  } = useBinanceAccount(showToast);
 
   const filteredPositions =
     symbolFilter === "ALL" ? positions : positions.filter((p) => p.symbol === symbolFilter);
@@ -196,8 +215,49 @@ export default function PositionsPage(props: Props) {
     }
   };
 
+  const handleSaveBinanceRisk = async (id: number, patch: RiskPatch) => {
+    await saveBinanceRisk(id, { stop_loss: patch.stop_loss, take_profit: patch.take_profit });
+  };
+
   return (
     <div className="page-grid">
+      <Card
+        title="Positions"
+        full
+        right={<PaperLiveTabs active={tab} onChange={setTab} binanceLabel={`Binance Live Trading (${binancePositionRows.length})`} />}
+      >
+        <p className="regime-desc">
+          {tab === "paper"
+            ? "Simulated positions the paper engine is tracking - TP/SL and liquidation estimates are modeled, not read from an exchange."
+            : "Real open positions on Binance Futures, read live from the account. Edit/close actions only work while Binance Real Money mode is active."}
+        </p>
+      </Card>
+
+      {tab === "binance" ? (
+        <BinancePositionsTable
+          title={`Real Open Positions (${binancePositionRows.length})`}
+          full
+          className={isLive ? "live-danger-card" : ""}
+          positionRows={binancePositionRows}
+          busy={binanceBusy}
+          isLive={isLive}
+          unavailable={binancePositions?.available === false}
+          unavailableReason={binancePositions?.reason}
+          onEdit={setEditingBinance}
+          onRequestClose={(p: any) =>
+            setBinanceConfirm({
+              title: `Close REAL ${p.symbol} ${p.side}?`,
+              body: "Sends a real reduce-only MARKET order to Binance. This uses real funds.",
+              action: () =>
+                runBinance(
+                  () => api.binanceClosePosition({ symbol: p.symbol, position_id: p.id }),
+                  `${p.symbol} position closed on Binance`
+                ),
+            })
+          }
+        />
+      ) : (
+      <>
       <Card title="Open a Paper Trade" wide>
         <p className="regime-desc">
           Opens a simulated {symbol} position using the paper trading engine ($1,000 notional
@@ -371,6 +431,29 @@ export default function PositionsPage(props: Props) {
           emptyMessage="No trade history yet."
         />
       </Card>
+      </>
+      )}
+
+      {editingBinance && (
+        <EditRiskModal position={editingBinance} onSave={handleSaveBinanceRisk} onClose={() => setEditingBinance(null)} />
+      )}
+
+      {binanceConfirm && (
+        <div className="modal-overlay" onClick={() => !binanceBusy && setBinanceConfirm(null)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <h3>{binanceConfirm.title}</h3>
+            <p className="regime-desc">{binanceConfirm.body}</p>
+            <div className="modal-actions">
+              <button className="mini-btn" disabled={binanceBusy} onClick={() => setBinanceConfirm(null)}>
+                Cancel
+              </button>
+              <button className="btn-danger" disabled={binanceBusy} onClick={() => binanceConfirm.action()}>
+                {binanceBusy ? "Working…" : "Confirm"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

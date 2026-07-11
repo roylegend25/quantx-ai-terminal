@@ -61,6 +61,33 @@ devtools' responsive mode (or a real device) at each viewport below.
       horizontal overflow, tables (where present) render as cards on phone, form controls stack full-width
 - [ ] **Login** — form is usable and centered at every width, no overflow
 
+## Binance server control + Paper/Binance tabs (added with the ServerTradingControlCard integration)
+
+- [ ] **Binance Real** — the old "Unlock Real Trading…" button is gone, replaced by a Paper/Binance Real
+      `ModeToggle` in the header; a "Server Trading Control" card (Enable/Disable Server Live Lock, Edit
+      Risk Limits, Reload Backend Config, Emergency Stop) appears directly under the header for an admin
+      session, and is absent (not a broken/blank card) for a non-admin session; the status paragraph
+      changes text depending on server-lock/user-unlock state; the 3-step "how to enable real trading"
+      hint is visible
+- [ ] **Positions** — Paper/Binance Live Trading tabs at the top; Paper tab shows the existing paper
+      Open Positions + Trade Journal unchanged; Binance tab shows real positions with working TP/SL edit
+      and close-with-confirmation, disabled unless Binance Real Money mode is active; data never mixes
+      between tabs
+- [ ] **Performance** — Paper tab shows the existing equity-curve analytics; Binance tab shows real
+      wallet balance/PnL tiles, an income table, and closed bot trades (no fabricated equity chart); the
+      Prediction Accuracy / Model Confidence Reliability tables stay visible under both tabs (model-level,
+      not exchange-specific)
+- [ ] **Bot Settings** — Paper tab unchanged (bot lifecycle controls); Binance tab is a read-only recap
+      (active mode, API configured, server lock, user unlock, allowed symbols, leverage/notional/loss
+      limits) with an explicit "API keys are managed on the server .env only" notice and no edit controls
+- [ ] **Risk Management** — Paper tab unchanged (risk limits form); Binance tab shows a read-only risk
+      snapshot plus Emergency Stop, Cancel All Binance Orders, and Close All Binance Positions (disabled
+      when there are 0 open positions; when enabled, requires typing `CLOSE ALL POSITIONS` before it fires)
+- [ ] **Execution** — Paper tab unchanged; Binance tab shows the route diagram (Strategy Intent → Risk
+      Gate → Execution Router → Provider → Order Result) as a single horizontal row of chips (not stacked
+      vertically), connection status, open orders, recent bot fills, and the trading audit log
+- [ ] All of the above render with no horizontal overflow and no clipped tab labels at 430×932
+
 ## Notes
 
 - Playwright is not installed in this repo, so there is no automated responsive smoke-test suite — this
@@ -70,3 +97,7 @@ devtools' responsive mode (or a real device) at each viewport below.
 - `/signup`, `/billing`, `/account`, and a dedicated `/admin` page do not exist in this app (no router —
   see `frontend/src/App.tsx` / `frontend/src/lib/nav.ts` for the real 18 pages). Server Trading Control
   ("admin") lives on the Dashboard, not a separate route — check it there instead.
+- This app has no real multi-user/role system — "admin" means the JWT subject matches the server's
+  configured `admin_username` (check `docker exec quantx-backend python -c "from app.core.config import
+  settings; print(settings.admin_username)"` if a token unexpectedly gets 403'd on admin routes; it is
+  not necessarily the literal string `"admin"`).

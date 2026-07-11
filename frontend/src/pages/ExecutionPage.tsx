@@ -1,6 +1,8 @@
+import { useEffect, useState } from "react";
 import {
   Activity,
   AlertTriangle,
+  ArrowRight,
   CheckCircle2,
   Clock,
   RotateCw,
@@ -13,6 +15,11 @@ import Card from "../components/Layout/Card";
 import { fmtNum, fmtPct } from "../lib/format";
 import LocalTime from "../components/LocalTime";
 import AutoCardTable, { type AutoCardColumn } from "../components/Responsive/AutoCardTable";
+import PaperLiveTabs, { type PaperLiveTab } from "../components/Trading/PaperLiveTabs";
+import { useTradingStatus } from "../components/Trading/TradingShared";
+import { useBinanceAccount } from "../hooks/useBinanceAccount";
+import { BINANCE_TRADE_COLUMNS, BinanceTradeDetail } from "../lib/binanceTradeColumns";
+import { api } from "../services/api";
 import type { AppData } from "../hooks/useAppData";
 
 type Props = AppData;
@@ -67,7 +74,36 @@ const EXECUTION_COLUMNS: AutoCardColumn<any>[] = [
   { key: "quality", label: "Quality", render: (r) => <QualityBadge quality={r.execution_quality} /> },
 ];
 
-export default function ExecutionPage({ executionStatus, executionMetrics }: Props) {
+const BINANCE_ORDER_COLUMNS: AutoCardColumn<any>[] = [
+  { key: "symbol", label: "Symbol", render: (o) => <b>{o.symbol}</b> },
+  { key: "side", label: "Side", render: (o) => <span className={o.side === "BUY" ? "green" : "red"}>{o.side}</span> },
+  { key: "type", label: "Type", render: (o) => o.type },
+  { key: "price", label: "Price", render: (o) => (o.stop_price ? fmtNum(o.stop_price) : o.price ? fmtNum(o.price) : "—") },
+  { key: "qty", label: "Qty", render: (o) => (o.close_position ? "ALL" : fmtNum(o.quantity, 6)) },
+  { key: "status", label: "Status", render: (o) => o.status },
+];
+
+const AUDIT_COLUMNS: AutoCardColumn<any>[] = [
+  { key: "time", label: "Time", render: (e) => <LocalTime value={e.created_at} label="Recorded" /> },
+  { key: "event", label: "Event", render: (e) => e.event },
+  { key: "mode", label: "Mode", render: (e) => e.mode || "—" },
+  { key: "symbol", label: "Symbol", render: (e) => e.symbol || "—" },
+  {
+    key: "detail",
+    label: "Detail",
+    hideOnCard: true,
+    render: (e) => <span className="mll-dim">{e.detail ? JSON.stringify(e.detail) : "—"}</span>,
+  },
+];
+
+/** Execution Health / Safety Config / Last Execution / Performance metrics
+ *  are read from the paper-only execution engine (this backend never
+ *  tracks Binance orders through the same pipeline - see ExecutionRouter,
+ *  a completely separate module). The Binance Live tab is built entirely
+ *  from already-existing, already-tested endpoints instead of inventing
+ *  new backend execution instrumentation: open orders, the bot's Binance
+ *  trade journal, and the shared trading audit log. */
+export default function ExecutionPage({ executionStatus, executionMetrics, showToast }: Props) {
   const breaker = executionStatus?.circuit_breaker;
   const safety = executionStatus?.safety;
   const m = executionMetrics;
@@ -77,8 +113,106 @@ export default function ExecutionPage({ executionStatus, executionMetrics }: Pro
 
   const healthy = executionStatus?.engine === "operational" && !breaker?.open;
 
+  const [tab, setTab] = useState<PaperLiveTab>("paper");
+  const { status: liveStatus } = useTradingStatus();
+  const { orders, orderRows } = useBinanceAccount(showToast);
+  const [binanceBotTrades, setBinanceBotTrades] = useState<any[]>([]);
+  const [auditEvents, setAuditEvents] = useState<any[]>([]);
+
+  useEffect(() => {
+    api.botTradesBinance().then((res) => setBinanceBotTrades(res?.trades || [])).catch(() => {});
+    api.portfolioAudit(50).then((res) => setAuditEvents(res?.events || [])).catch(() => {});
+  }, []);
+
   return (
     <div className="page-grid">
+      <Card title="Execution" full right={<PaperLiveTabs active={tab} onChange={setTab} />}>
+        <p className="regime-desc">
+          {tab === "paper"
+            ? "Simulated fills from the paper execution engine - latency, slippage and rejection stats are modeled, not from a real exchange."
+            : "Real Binance order/trade activity, read live from the account, plus the shared trading audit log."}
+        </p>
+        <div className="chip-row">
+          <span className="chip">Strategy Intent</span>
+          <ArrowRight size={13} className="exec-route-arrow" />
+          <span className="chip">Risk Gate</span>
+          <ArrowRight size={13} className="exec-route-arrow" />
+          <span className="chip">Execution Router</span>
+          <ArrowRight size={13} className="exec-route-arrow" />
+          <span className="chip">{tab === "paper" ? "Paper Provider" : "Binance Live Provider"}</span>
+          <ArrowRight size={13} className="exec-route-arrow" />
+          <span className="chip">Order Result</span>
+        </div>
+      </Card>
+
+      {tab === "binance" ? (
+        <>
+          <Card title="Binance Connection" wide>
+            <div className="kv-grid">
+              <div>
+                <span className="tile-label">API Status</span>
+                <b className="tile-value">{liveStatus?.binance_configured ? "Configured" : "Not Configured"}</b>
+              </div>
+              <div className="align-right">
+                <span className="tile-label">Connected</span>
+                <b className={`tile-value ${liveStatus?.binance_connected ? "green" : "red"}`}>
+                  {liveStatus?.binance_connected ? "Yes" : "No"}
+                </b>
+              </div>
+              <div>
+                <span className="tile-label">Active Mode</span>
+                <b className="tile-value">{liveStatus?.active_mode || "—"}</b>
+              </div>
+              <div className="align-right">
+                <span className="tile-label">Kill Switch</span>
+                <b className={`tile-value ${liveStatus?.kill_switch_active ? "red" : "green"}`}>
+                  {liveStatus?.kill_switch_active ? "ACTIVE" : "OFF"}
+                </b>
+              </div>
+            </div>
+            {(orders?.available === false || liveStatus?.reason) && (
+              <p className="regime-desc" style={{ marginTop: 12 }}>
+                <AlertTriangle size={13} /> {orders?.reason || liveStatus?.reason}
+              </p>
+            )}
+          </Card>
+
+          <Card title={`Real Open Orders (${orderRows.length})`} full>
+            <AutoCardTable
+              columns={BINANCE_ORDER_COLUMNS}
+              rows={orderRows}
+              keyField={(o: any) => o.order_id}
+              titleColumn="symbol"
+              statusColumn="side"
+              emptyMessage={orders?.available === false ? orders?.reason || "Unavailable" : "No open Binance orders"}
+            />
+          </Card>
+
+          <Card title="Recent Bot Fills" full>
+            <AutoCardTable
+              columns={BINANCE_TRADE_COLUMNS}
+              rows={binanceBotTrades.slice(0, 30)}
+              keyField={(t: any) => t.id}
+              titleColumn="symbol"
+              statusColumn="side"
+              renderDetail={(t: any) => <BinanceTradeDetail t={t} />}
+              emptyMessage="No Binance bot fills yet"
+            />
+          </Card>
+
+          <Card title="Trading Audit Log" full>
+            <AutoCardTable
+              columns={AUDIT_COLUMNS}
+              rows={auditEvents}
+              keyField={(e: any) => e.id}
+              titleColumn="event"
+              statusColumn="mode"
+              emptyMessage="No audit events recorded yet"
+            />
+          </Card>
+        </>
+      ) : (
+      <>
       <Card title="Execution Health" wide>
         <div className="analytics-grid">
           <div className="analytics-tile status-tile">
@@ -234,6 +368,8 @@ export default function ExecutionPage({ executionStatus, executionMetrics }: Pro
           emptyMessage="No executions recorded yet - the scheduler routes each paper trade through this engine."
         />
       </Card>
+      </>
+      )}
     </div>
   );
 }

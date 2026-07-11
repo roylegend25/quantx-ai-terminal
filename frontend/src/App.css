@@ -2980,8 +2980,14 @@ progress.disabled::-webkit-progress-value {
   white-space: nowrap;
 }
 
+/* !important required: same ".card > :last-child" specificity conflict as
+   .kv-grid above (0-2-0 beats .chip-row's 0-1-0 regardless of source
+   order) - whenever .chip-row happens to be a card's last child, its
+   chips silently stack in a full-width column instead of wrapping inline.
+   Confirmed live on the new Execution page's route diagram. */
 .chip-row {
   display: flex;
+  flex-direction: row !important;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
@@ -6056,4 +6062,35 @@ body.mobilenav-scroll-lock {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 12px;
+}
+
+/* ---------- Binance Real page: "how to enable real trading" hint ---------- */
+
+.binance-steps {
+  margin: 14px 0 0;
+  padding-left: 20px;
+  color: #8b90a8;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.binance-steps li {
+  margin-bottom: 2px;
+}
+
+/* ---------- Paper/Binance Live tab panes (Positions, Performance, Bot
+   Settings, Risk Management, Execution) ---------- */
+
+.paper-live-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ---------- Execution route diagram (Execution page) - reuses .chip-row/
+   .chip, just adds a muted arrow separator between chips. ---------- */
+
+.exec-route-arrow {
+  color: #565c78;
+  font-size: 13px;
 }

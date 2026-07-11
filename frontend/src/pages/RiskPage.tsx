@@ -1,9 +1,70 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
+import { AlertTriangle, OctagonX } from "lucide-react";
 import Card from "../components/Layout/Card";
 import RiskStatusCard from "../components/Dashboard/RiskStatusCard";
-import { fmtLocalDateTime, fmtPct } from "../lib/format";
+import PaperLiveTabs, { type PaperLiveTab } from "../components/Trading/PaperLiveTabs";
+import { useTradingStatus } from "../components/Trading/TradingShared";
+import { useBinanceAccount } from "../hooks/useBinanceAccount";
+import { fmtLocalDateTime, fmtPct, fmtUsd } from "../lib/format";
 import { api } from "../services/api";
 import type { AppData } from "../hooks/useAppData";
+
+const CLOSE_ALL_PHRASE = "CLOSE ALL POSITIONS";
+
+/** Typed-confirmation gate for the one genuinely new, high-risk action on
+ *  this page - closing every open Binance position in one go. Reuses the
+ *  existing single-position close endpoint per position (no new backend
+ *  bulk-close surface), so each close still goes through the same
+ *  server-side risk-gate and audit checks as any other close. */
+function CloseAllPositionsModal({
+  positionCount,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  positionCount: number;
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const [text, setText] = useState("");
+  const ready = text.trim() === CLOSE_ALL_PHRASE;
+
+  return createPortal(
+    <div className="modal-overlay" onClick={() => !busy && onClose()}>
+      <div className="modal-card risk-modal" onClick={(e) => e.stopPropagation()}>
+        <h3>Close ALL {positionCount} Binance position{positionCount === 1 ? "" : "s"}?</h3>
+        <p className="risk-modal-error">
+          <AlertTriangle size={14} /> Sends a real reduce-only MARKET order for every open Binance position, one at a
+          time. This uses real funds and cannot be undone.
+        </p>
+        <label className="live-unlock-phrase">
+          <span className="tile-label">
+            Type <b>{CLOSE_ALL_PHRASE}</b> to confirm
+          </span>
+          <input
+            type="text"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder={CLOSE_ALL_PHRASE}
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </label>
+        <div className="modal-actions">
+          <button className="mini-btn" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button className="btn-danger" onClick={onConfirm} disabled={!ready || busy}>
+            {busy ? "Closing…" : "Close All Positions"}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
 
 type RiskSettingsData = {
   min_confidence_to_trade: number;
@@ -97,10 +158,47 @@ export default function RiskPage(props: AppData) {
   const risk = dashboard?.risk;
   const tradeRisk = prediction?.risk;
 
+  const [tab, setTab] = useState<PaperLiveTab>("paper");
   const [settings, setSettings] = useState<RiskSettingsData | null>(null);
   const [draft, setDraft] = useState<RiskSettingsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+
+  const { status: liveStatus, reload: reloadStatus } = useTradingStatus();
+  const { summary, positionRows: binancePositionRows, busy: binanceBusy, run: runBinance, reload: reloadBinance } =
+    useBinanceAccount(showToast);
+  const [showCloseAll, setShowCloseAll] = useState(false);
+  const [killSwitchBusy, setKillSwitchBusy] = useState(false);
+
+  async function handleCloseAllPositions() {
+    setShowCloseAll(false);
+    let ok = 0;
+    let failed = 0;
+    await runBinance(async () => {
+      for (const p of binancePositionRows) {
+        try {
+          await api.binanceClosePosition({ symbol: p.symbol, position_id: p.id });
+          ok += 1;
+        } catch {
+          failed += 1;
+        }
+      }
+      if (failed > 0) throw new Error(`Closed ${ok}, ${failed} failed — check Open Positions`);
+    }, `Closed ${ok} Binance position${ok === 1 ? "" : "s"}`);
+  }
+
+  async function handleEmergencyStop(active: boolean) {
+    setKillSwitchBusy(true);
+    try {
+      await api.killSwitch(active, active ? "risk page emergency stop" : undefined);
+      showToast(active ? "Kill switch ACTIVATED — all trading halted" : "Kill switch deactivated", "success");
+      await Promise.all([reloadStatus(), reloadBinance()]);
+    } catch (e: any) {
+      showToast(e?.message || "Kill switch action failed", "error");
+    } finally {
+      setKillSwitchBusy(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -167,6 +265,118 @@ export default function RiskPage(props: AppData) {
 
   return (
     <div className="page-grid">
+      <Card title="Risk Management" full right={<PaperLiveTabs active={tab} onChange={setTab} />}>
+        <p className="regime-desc">
+          {tab === "paper"
+            ? "Editable paper-mode risk limits and the bot's live decision status."
+            : "Read-only Binance Real Money risk snapshot, plus emergency controls. Limits are edited from Binance Real → Server Trading Control (admin-only)."}
+        </p>
+      </Card>
+
+      {tab === "binance" ? (
+        <>
+          <Card title="Binance Live Risk" full className="live-danger-card">
+            <div className="kv-grid">
+              <div>
+                <span className="tile-label">Server Live Lock</span>
+                <b className={`tile-value ${liveStatus?.binance_live_enabled_by_server ? "red" : "green"}`}>
+                  {liveStatus?.binance_live_enabled_by_server ? "OPEN" : "ENGAGED"}
+                </b>
+              </div>
+              <div className="align-right">
+                <span className="tile-label">User Live Unlock</span>
+                <b className={`tile-value ${liveStatus?.binance_live_unlocked_by_user ? "red" : "green"}`}>
+                  {liveStatus?.binance_live_unlocked_by_user ? "UNLOCKED" : "LOCKED"}
+                </b>
+              </div>
+              <div>
+                <span className="tile-label">Max Leverage</span>
+                <b className="tile-value">{liveStatus?.max_leverage != null ? `${liveStatus.max_leverage}x` : "—"}</b>
+              </div>
+              <div className="align-right">
+                <span className="tile-label">Max Notional / Trade</span>
+                <b className="tile-value">{fmtUsd(liveStatus?.max_notional_per_trade)}</b>
+              </div>
+              <div>
+                <span className="tile-label">Max Daily Loss</span>
+                <b className="tile-value">{fmtUsd(liveStatus?.max_daily_loss_usdt)}</b>
+              </div>
+              <div className="align-right">
+                <span className="tile-label">Available Balance</span>
+                <b className="tile-value">{summary?.available ? fmtUsd(summary?.available_balance) : "—"}</b>
+              </div>
+              <div>
+                <span className="tile-label">Margin Used</span>
+                <b className="tile-value">{summary?.available ? fmtUsd(summary?.margin_used) : "—"}</b>
+              </div>
+              <div className="align-right">
+                <span className="tile-label">Nearest Liq. Distance</span>
+                <b className="tile-value orange">
+                  {summary?.available && summary?.nearest_liquidation_distance_pct != null
+                    ? fmtPct(summary.nearest_liquidation_distance_pct)
+                    : "—"}
+                </b>
+              </div>
+              <div>
+                <span className="tile-label">Open Positions</span>
+                <b className="tile-value">{binancePositionRows.length}</b>
+              </div>
+              <div className="align-right">
+                <span className="tile-label">Kill Switch</span>
+                <b className={`tile-value ${liveStatus?.kill_switch_active ? "red" : "green"}`}>
+                  {liveStatus?.kill_switch_active ? "ACTIVE" : "OFF"}
+                </b>
+              </div>
+            </div>
+
+            <div className="controls" style={{ marginTop: 18 }}>
+              {liveStatus?.kill_switch_active ? (
+                <button className="btn-long" disabled={killSwitchBusy} onClick={() => handleEmergencyStop(false)}>
+                  Re-enable Trading
+                </button>
+              ) : (
+                <button
+                  className="btn-danger"
+                  disabled={killSwitchBusy}
+                  onClick={() => {
+                    if (window.confirm("EMERGENCY STOP?\n\nStops the bot and blocks ALL new paper and real trades. Open positions are NOT auto-closed.")) {
+                      handleEmergencyStop(true);
+                    }
+                  }}
+                >
+                  <OctagonX size={14} /> Emergency Stop
+                </button>
+              )}
+              <button
+                className="mini-btn"
+                disabled={binanceBusy}
+                onClick={() =>
+                  runBinance(() => api.binanceCancelAllOrders(), "All Binance orders canceled")
+                }
+              >
+                Cancel All Binance Orders
+              </button>
+              <button
+                className="btn-danger"
+                disabled={binanceBusy || binancePositionRows.length === 0}
+                onClick={() => setShowCloseAll(true)}
+              >
+                Close All Binance Positions
+              </button>
+            </div>
+          </Card>
+
+          {showCloseAll && (
+            <CloseAllPositionsModal
+              positionCount={binancePositionRows.length}
+              busy={binanceBusy}
+              onClose={() => setShowCloseAll(false)}
+              onConfirm={handleCloseAllPositions}
+            />
+          )}
+        </>
+      ) : (
+      <>
       <RiskStatusCard portfolio={portfolio} positions={positions} history={history} />
 
       <Card title="Bot Decision Status">
@@ -385,6 +595,8 @@ export default function RiskPage(props: AppData) {
           </div>
         </div>
       </Card>
+      </>
+      )}
     </div>
   );
 }
