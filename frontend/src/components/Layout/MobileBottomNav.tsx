@@ -24,6 +24,7 @@ import {
   History,
   Menu,
   X,
+  Stethoscope,
 } from "lucide-react";
 import { NAV_ITEMS, NAV_SECTIONS, type NavKey } from "../../lib/nav";
 
@@ -55,6 +56,7 @@ const ICONS: Record<NavKey, ComponentType<{ size?: number }>> = {
   execution: Zap,
   "model-center": Boxes,
   "research-lab": Microscope,
+  "trading-diagnostics": Stethoscope,
 };
 
 const PRIMARY_KEYS: NavKey[] = ["dashboard", "portfolio", "paper-trading", "binance-real"];

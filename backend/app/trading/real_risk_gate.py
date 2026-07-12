@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 from app.core.config import settings
 from app.risk import settings_repository
-from app.trading import modes
+from app.trading import modes, protection
 
 # Same idea as the paper execution engine's dedupe window: an identical
 # order signature inside this window is a duplicate, not a new decision.
@@ -56,6 +56,8 @@ async def evaluate_real_order(
     data_reliable: bool | None = None,
     spread_pct: float | None = None,
     open_positions: int | None = None,
+    sl: float | None = None,
+    tp: float | None = None,
     db=None,
 ) -> GateResult:
     """Run the full real-order checklist. `client` is a configured
@@ -112,6 +114,21 @@ async def evaluate_real_order(
         )
     passed("max_leverage")
 
+    # Phase 27: an entry that can't be protected must never be placed. This
+    # is a hard, local, fail-closed check - it runs before any exchange
+    # call and cannot be skipped by a caller omitting sl/tp.
+    if settings.binance_require_tp_sl and (sl is None or tp is None):
+        return blocked("tp_sl_required", "Live entry requires TP and SL")
+    if sl is not None and tp is not None:
+        # A cheap, price-free sanity check that SL/TP aren't simply swapped
+        # for the side - execution_router additionally runs the full
+        # margin.validate_risk_levels() against the real entry/mark price.
+        if side == "LONG" and sl >= tp:
+            return blocked("tp_sl_required", "Invalid TP/SL for LONG: stop loss must be below take profit")
+        if side == "SHORT" and sl <= tp:
+            return blocked("tp_sl_required", "Invalid TP/SL for SHORT: stop loss must be above take profit")
+    passed("tp_sl_required")
+
     if notional_usdt <= 0:
         return blocked("notional", "Order notional must be positive")
     if notional_usdt > settings.binance_max_notional_per_trade:
@@ -149,6 +166,22 @@ async def evaluate_real_order(
     if _is_duplicate(signature):
         return blocked("duplicate", "Duplicate order rejected (same order submitted within dedupe window)")
     passed("duplicate")
+
+    # ---- existing unprotected positions block new entries (Phase 27) ----
+    if settings.binance_block_new_trades_if_unprotected:
+        try:
+            live_positions = await client.get_positions()
+            live_orders = await client.get_open_orders()
+        except Exception as e:
+            return blocked("existing_position_protected", f"Could not verify existing position protection: {type(e).__name__}")
+        for pos in live_positions:
+            result = protection.derive_protection(pos.symbol, live_orders)
+            if protection.is_unprotected(result.status):
+                return blocked(
+                    "existing_position_protected",
+                    f"Existing live position is unprotected ({pos.symbol} {result.status})",
+                )
+    passed("existing_position_protected")
 
     # ---- exchange-touching checks last ----
     try:

@@ -63,6 +63,19 @@ class Settings(BaseSettings):
         default=["BTCUSDT", "ETHUSDT"]
     )
 
+    # --- Phase 27: mandatory TP/SL protection for real Binance positions ---
+    # Root cause this guards against: an entry order can fill successfully
+    # while its protective TP/SL orders fail afterward (seen in production:
+    # Binance rejected the closePosition-style STOP_MARKET/TAKE_PROFIT_MARKET
+    # with "Order type not supported for this endpoint" for this account),
+    # leaving a real position open with no stop. See
+    # app/trading/execution_router.py and app/trading/protection.py.
+    binance_require_tp_sl: bool = True
+    binance_close_if_protection_fails: bool = False
+    binance_protection_watchdog_enabled: bool = True
+    binance_auto_protect_positions: bool = False
+    binance_block_new_trades_if_unprotected: bool = True
+
     @field_validator("binance_allowed_symbols", mode="before")
     @classmethod
     def _split_allowed_symbols(cls, v):

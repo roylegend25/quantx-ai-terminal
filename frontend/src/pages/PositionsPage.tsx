@@ -5,6 +5,8 @@ import EditRiskModal, { type RiskPatch } from "../components/Dashboard/EditRiskM
 import AutoCardTable, { type AutoCardColumn } from "../components/Responsive/AutoCardTable";
 import PaperLiveTabs, { type PaperLiveTab } from "../components/Trading/PaperLiveTabs";
 import BinancePositionsTable from "../components/Trading/BinancePositionsTable";
+import CloseAllPositionsModal from "../components/Trading/CloseAllPositionsModal";
+import { useBinanceLiveGate } from "../components/Trading/BinanceLiveGate";
 import { api } from "../services/api";
 import { useTradingStatus } from "../components/Trading/TradingShared";
 import { useBinanceAccount } from "../hooks/useBinanceAccount";
@@ -195,6 +197,8 @@ export default function PositionsPage(props: Props) {
     run: runBinance,
     saveRisk: saveBinanceRisk,
   } = useBinanceAccount(showToast);
+  const gate = useBinanceLiveGate(liveStatus);
+  const [showCloseAll, setShowCloseAll] = useState(false);
 
   const filteredPositions =
     symbolFilter === "ALL" ? positions : positions.filter((p) => p.symbol === symbolFilter);
@@ -219,6 +223,37 @@ export default function PositionsPage(props: Props) {
     await saveBinanceRisk(id, { stop_loss: patch.stop_loss, take_profit: patch.take_profit });
   };
 
+  const handlePartialClose = (p: any, quantity: number) =>
+    runBinance(
+      () => api.binanceClosePosition({ symbol: p.symbol, position_id: p.id, quantity }),
+      `${p.symbol} partially closed on Binance`
+    );
+
+  const handleCancelProtective = (p: any, kind: "sl" | "tp") => {
+    const orderId = kind === "sl" ? p.sl_order_id : p.tp_order_id;
+    if (orderId == null) return;
+    return runBinance(() => api.binanceCancelOrder(p.symbol, orderId), `${kind.toUpperCase()} order canceled`);
+  };
+
+  const handleSyncBinance = () => runBinance(() => api.tradingSync(), "Re-synced from Binance");
+
+  const handleCloseAllPositions = async () => {
+    setShowCloseAll(false);
+    let ok = 0;
+    let failed = 0;
+    await runBinance(async () => {
+      for (const p of binancePositionRows) {
+        try {
+          await api.binanceClosePosition({ symbol: p.symbol, position_id: p.id });
+          ok += 1;
+        } catch {
+          failed += 1;
+        }
+      }
+      if (failed > 0) throw new Error(`Closed ${ok}, ${failed} failed — check Open Positions`);
+    }, `Closed ${ok} Binance position${ok === 1 ? "" : "s"}`);
+  };
+
   return (
     <div className="page-grid">
       <Card
@@ -234,28 +269,59 @@ export default function PositionsPage(props: Props) {
       </Card>
 
       {tab === "binance" ? (
-        <BinancePositionsTable
-          title={`Real Open Positions (${binancePositionRows.length})`}
-          full
-          className={isLive ? "live-danger-card" : ""}
-          positionRows={binancePositionRows}
-          busy={binanceBusy}
-          isLive={isLive}
-          unavailable={binancePositions?.available === false}
-          unavailableReason={binancePositions?.reason}
-          onEdit={setEditingBinance}
-          onRequestClose={(p: any) =>
-            setBinanceConfirm({
-              title: `Close REAL ${p.symbol} ${p.side}?`,
-              body: "Sends a real reduce-only MARKET order to Binance. This uses real funds.",
-              action: () =>
-                runBinance(
-                  () => api.binanceClosePosition({ symbol: p.symbol, position_id: p.id }),
-                  `${p.symbol} position closed on Binance`
-                ),
-            })
-          }
-        />
+        <>
+          <BinancePositionsTable
+            title={`Real Open Positions (${binancePositionRows.length})`}
+            full
+            className={isLive ? "live-danger-card" : ""}
+            positionRows={binancePositionRows}
+            busy={binanceBusy}
+            gate={gate}
+            unavailable={binancePositions?.available === false}
+            unavailableReason={binancePositions?.reason}
+            showToast={showToast}
+            onEdit={setEditingBinance}
+            onRequestClose={(p: any) =>
+              setBinanceConfirm({
+                title: `Close REAL ${p.symbol} ${p.side}?`,
+                body: "Sends a real reduce-only MARKET order to Binance. This uses real funds.",
+                action: () =>
+                  runBinance(
+                    () => api.binanceClosePosition({ symbol: p.symbol, position_id: p.id }),
+                    `${p.symbol} position closed on Binance`
+                  ),
+              })
+            }
+            onPartialClose={handlePartialClose}
+            onCancelProtective={handleCancelProtective}
+            onSync={handleSyncBinance}
+          />
+
+          {binancePositionRows.length > 0 && (
+            <Card title="Danger Zone">
+              <p className="regime-desc">Close every open Binance position at once. This uses real funds.</p>
+              <div className="controls" style={{ marginTop: 12 }}>
+                <button
+                  className="btn-danger"
+                  disabled={binanceBusy || !gate.canClosePositions}
+                  title={!gate.canClosePositions ? gate.disabledReason ?? "" : ""}
+                  onClick={() => setShowCloseAll(true)}
+                >
+                  Close All Binance Positions
+                </button>
+              </div>
+            </Card>
+          )}
+
+          {showCloseAll && (
+            <CloseAllPositionsModal
+              positionCount={binancePositionRows.length}
+              busy={binanceBusy}
+              onClose={() => setShowCloseAll(false)}
+              onConfirm={handleCloseAllPositions}
+            />
+          )}
+        </>
       ) : (
       <>
       <Card title="Open a Paper Trade" wide>

@@ -7,6 +7,9 @@ import PredictionChart from "../components/Charts/PredictionChart";
 import PredictionGauge from "../components/Dashboard/PredictionGauge";
 import DecisionEngineCard from "../components/Dashboard/DecisionEngineCard";
 import DecisionReasoningCard from "../components/Dashboard/DecisionReasoningCard";
+import ExecutionPipelineCard from "../components/Dashboard/ExecutionPipelineCard";
+import LiveMarginCalculatorCard from "../components/Dashboard/LiveMarginCalculatorCard";
+import TradingRecommendationsCard from "../components/Dashboard/TradingRecommendationsCard";
 import ModelVotesPanel from "../components/Dashboard/ModelVotesPanel";
 import AccountOverviewCard from "../components/Dashboard/AccountOverviewCard";
 import TradingModeRow from "../components/Trading/TradingModeRow";
@@ -18,6 +21,9 @@ import MarketSentimentCard from "../components/Dashboard/MarketSentimentCard";
 import LiquidationHeatmapCard from "../components/Dashboard/LiquidationHeatmapCard";
 import OrderBookCard from "../components/Dashboard/OrderBookCard";
 import RecentTradesCard from "../components/Dashboard/RecentTradesCard";
+import { useExecutionPipeline } from "../hooks/useExecutionPipeline";
+import { useMarginCalculator } from "../hooks/useMarginCalculator";
+import { useTradingStatus } from "../components/Trading/TradingShared";
 import type { AppData } from "../hooks/useAppData";
 import type { NavKey } from "../lib/nav";
 
@@ -27,6 +33,15 @@ export default function DashboardPage(props: Props) {
   const { dashboard, symbol, prediction } = props;
   const ticker = dashboard?.symbols?.[symbol]?.ticker;
   const decisionEngine = prediction?.decision_engine ?? null;
+  const { status: tradingStatus } = useTradingStatus();
+  const liveActive = tradingStatus?.active_mode === "BINANCE_LIVE";
+  const { pipeline, loading: pipelineLoading, errored: pipelineErrored, reload: reloadPipeline } =
+    useExecutionPipeline(symbol);
+  const { data: marginData, loading: marginLoading, errored: marginErrored, reload: reloadMargin } =
+    useMarginCalculator(symbol, liveActive);
+  const executionOutcome = pipeline
+    ? { attempted: !!pipeline.execution_attempted, ok: pipeline.execution_ok, reason: pipeline.final_reason }
+    : null;
   const [editingPosition, setEditingPosition] = useState<Position | null>(null);
   const editPositionById = (id: number) => {
     const p = props.positions.find((x: Position) => x.id === id);
@@ -76,13 +91,38 @@ export default function DashboardPage(props: Props) {
         </Card>
 
         <Card title="Why Bot Decided This">
-          <DecisionReasoningCard decision={decisionEngine} regime={prediction?.regime} />
+          <DecisionReasoningCard decision={decisionEngine} regime={prediction?.regime} executionOutcome={executionOutcome} />
         </Card>
 
         <Card title="Model & Strategy Votes">
           <ModelVotesPanel votes={decisionEngine?.model_votes} finalDirection={decisionEngine?.final_direction} />
         </Card>
       </div>
+
+      <Card title="Execution Pipeline">
+        <ExecutionPipelineCard
+          symbol={symbol}
+          pipeline={pipeline}
+          simulation={marginData?.simulation}
+          statusChecklist={marginData?.status_checklist}
+          loading={pipelineLoading}
+          errored={pipelineErrored}
+          onRefresh={reloadPipeline}
+          showToast={props.showToast}
+        />
+      </Card>
+
+      <LiveMarginCalculatorCard
+        symbol={symbol}
+        data={marginData}
+        loading={marginLoading}
+        errored={marginErrored}
+        liveActive={liveActive}
+        onRefresh={reloadMargin}
+        showToast={props.showToast}
+      />
+
+      <TradingRecommendationsCard symbol={symbol} marginData={marginData} liveActive={liveActive} />
 
       <div className="dash-row-2">
         <Card title="Open Positions">

@@ -349,6 +349,34 @@ export const api = {
       body: JSON.stringify({ active, reason: reason ?? null, cancel_orders: cancelOrders }),
     }),
   tradingSync: () => postJson("/api/trading/sync"),
+  liveReadiness: () => getJson("/api/trading/live-readiness"),
+  binanceRiskStatus: () => getJson("/api/trading/binance/risk-status"),
+  binanceDecisionStatus: () => getJson("/api/trading/binance/decision-status"),
+  binanceExecutionLog: (limit = 50) => getJson(`/api/trading/binance/execution-log?limit=${limit}`),
+  binanceExecutionPipeline: (symbol?: string) =>
+    getJson(`/api/trading/binance/execution-pipeline${symbol ? `?symbol=${symbol}` : ""}`),
+  binanceExecutionLogs: (limit = 100) => getJson(`/api/trading/binance/execution-logs?limit=${limit}`),
+  binanceTestOrder: (body: { symbol?: string; confirm: boolean }) =>
+    postJson("/api/trading/binance/test-order", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  binanceMarginCalculator: (symbol?: string) =>
+    getJson(`/api/trading/binance/margin-calculator${symbol ? `?symbol=${symbol}` : ""}`),
+  binanceSymbolRecommendations: () => getJson("/api/trading/binance/symbol-recommendations"),
+  binanceProtectPosition: (symbol: string, body: { take_profit: number; stop_loss: number; mode?: string }) =>
+    postJson(`/api/trading/binance/positions/${symbol}/protect`, {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "full_position", ...body }),
+    }),
+  binanceProtectionWatchdog: () => getJson("/api/trading/binance/protection-watchdog"),
+  binanceTradingDiagnostics: (symbol?: string) =>
+    getJson(`/api/trading/binance/diagnostics${symbol ? `?symbol=${symbol}` : ""}`),
+  binanceTestStopOrder: (body: { symbol?: string; side: string; stop_price?: number; quantity?: number }) =>
+    postJson("/api/trading/binance/diagnostics/test-stop-order", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   riskSettingsGet: () => getJson("/api/risk/settings"),
   riskSettingsUpdate: (patch: Record<string, unknown>) => putJson("/api/risk/settings", patch),
   riskSettingsReset: () => postJson("/api/risk/settings/reset"),

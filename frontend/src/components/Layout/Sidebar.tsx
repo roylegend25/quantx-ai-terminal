@@ -21,6 +21,7 @@ import {
   NotebookPen,
   CircleDollarSign,
   History,
+  Stethoscope,
 } from "lucide-react";
 import { NAV_ITEMS, NAV_SECTIONS, type NavKey } from "../../lib/nav";
 
@@ -43,6 +44,7 @@ const ICONS: Record<NavKey, ComponentType<{ size?: number }>> = {
   execution: Zap,
   "model-center": Boxes,
   "research-lab": Microscope,
+  "trading-diagnostics": Stethoscope,
 };
 
 type Props = {

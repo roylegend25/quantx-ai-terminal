@@ -1,31 +1,38 @@
-import { useState } from "react";
-import { AlertTriangle, RefreshCw } from "lucide-react";
+import { useEffect, useState } from "react";
+import { AlertTriangle, CheckCircle2, RefreshCw, XCircle } from "lucide-react";
 import Card from "../components/Layout/Card";
 import EditRiskModal, { type RiskPatch } from "../components/Dashboard/EditRiskModal";
 import AutoCardTable from "../components/Responsive/AutoCardTable";
 import BinancePositionsTable from "../components/Trading/BinancePositionsTable";
 import ServerTradingControlCard from "../components/Trading/ServerTradingControlCard";
+import UserLiveConfirmationCard from "../components/Trading/UserLiveConfirmationCard";
+import ExecutionModeCard from "../components/Trading/ExecutionModeCard";
+import { useBinanceLiveGate } from "../components/Trading/BinanceLiveGate";
 import { api } from "../services/api";
 import { fmtLocalDateTime, fmtNum, fmtPct, fmtUsd, toneClass, toneOf } from "../lib/format";
-import { ModeBadge, ModeToggle, useTradingStatus, type TradingStatus } from "../components/Trading/TradingShared";
+import { useTradingStatus, type TradingStatus } from "../components/Trading/TradingShared";
 import { useBinanceAccount } from "../hooks/useBinanceAccount";
 import type { AppData } from "../hooks/useAppData";
 
 const POLL_MS = 10000;
 
-/** Dynamic status copy (task: "Binance page status copy") - replaces the
- *  old static ".env" instruction paragraph with UI-driven text reflecting
- *  the two independent gates: the admin server lock (BINANCE_LIVE_ENABLED,
- *  now controlled below via ServerTradingControlCard) and the per-session
- *  user live-risk confirmation (ModeToggle -> LiveUnlockModal). */
+/** Dynamic status copy for the Binance Real page. This page never shows a
+ *  Paper/Binance toggle - it always represents Binance Real Money, so the
+ *  copy walks the visitor through the three-step readiness sequence
+ *  (server lock -> user live confirmation -> active-mode switch) instead
+ *  of referencing a mode switch that no longer lives on this page. */
 function statusCopy(status: TradingStatus | null): string {
-  if (!status?.binance_live_enabled_by_server) {
-    return "Real Binance trading is locked by the server. Use Server Trading Control below to enable the server lock, then complete the live-risk confirmation.";
+  if (!status) return "Loading Binance status…";
+  if (!status.binance_live_enabled_by_server) {
+    return "Real Binance trading is locked by the server. Use Server Trading Control to enable the server lock first.";
   }
   if (!status.binance_live_unlocked_by_user) {
-    return "Server live trading is enabled. Complete the live-risk confirmation before real orders can be placed.";
+    return "Server live trading is enabled. Complete User Live Confirmation before real orders can be placed.";
   }
-  return "Binance Real Money Trading is active. Real orders may be placed if the risk gate approves.";
+  if (status.active_mode !== "BINANCE_LIVE") {
+    return "User live confirmation is complete. Switch active execution mode to Binance Live before the bot can place real orders.";
+  }
+  return "Binance Live Trading is active. Real orders may be placed only when the risk gate approves.";
 }
 
 /** Binance Real Money Terminal (Phase 23/24). Binance is the source of
@@ -59,18 +66,51 @@ export default function BinanceRealPage(props: AppData) {
   } = useBinanceAccount(showToast);
 
   const [editing, setEditing] = useState<any>(null);
+  const [readiness, setReadiness] = useState<any>(null);
 
   const mode = status?.active_mode || "PAPER";
   const isLive = mode === "BINANCE_LIVE";
   const available = summary?.available;
+  const gate = useBinanceLiveGate(status, { balanceAvailable: available ? summary?.available_balance > 0 : undefined });
+
+  const loadReadiness = () => api.liveReadiness().then((r: any) => setReadiness(r)).catch(() => {});
 
   const onChanged = async () => {
-    await Promise.all([reload(), reloadAccount()]);
+    await Promise.all([reload(), reloadAccount(), loadReadiness()]);
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => api.liveReadiness().then((r: any) => !cancelled && setReadiness(r)).catch(() => {});
+    load();
+    const id = window.setInterval(load, POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
 
   const handleSaveRisk = async (id: number, patch: RiskPatch) => {
     await saveRisk(id, { stop_loss: patch.stop_loss, take_profit: patch.take_profit });
     await onChanged();
+  };
+
+  const handleSync = async () => {
+    await api.tradingSync().catch(() => null);
+    await onChanged();
+    showToast("Re-synced from Binance", "success");
+  };
+
+  const handlePartialClose = (p: any, quantity: number) =>
+    run(
+      () => api.binanceClosePosition({ symbol: p.symbol, position_id: p.id, quantity }),
+      `${p.symbol} partially closed on Binance`
+    );
+
+  const handleCancelProtective = (p: any, kind: "sl" | "tp") => {
+    const orderId = kind === "sl" ? p.sl_order_id : p.tp_order_id;
+    if (orderId == null) return;
+    return run(() => api.binanceCancelOrder(p.symbol, orderId), `${kind.toUpperCase()} order canceled`);
   };
 
   return (
@@ -82,7 +122,9 @@ export default function BinanceRealPage(props: AppData) {
         className={isLive ? "live-danger-card" : ""}
         right={
           <div className="controls">
-            <ModeBadge mode={mode === "PAPER" ? "BINANCE_LIVE_LOCKED" : mode} killSwitch={status?.kill_switch_active} />
+            <span className={`badge ${isLive ? "badge-red" : status?.binance_live_enabled_by_server && status?.binance_live_unlocked_by_user ? "badge-orange" : ""}`}>
+              Binance Real — {isLive ? "Active" : status?.binance_live_enabled_by_server && status?.binance_live_unlocked_by_user ? "Ready" : "Locked"}
+            </span>
             <span className={`badge ${status?.binance_connected ? "badge-green" : ""}`}>
               {status?.binance_configured
                 ? status?.binance_connected
@@ -90,35 +132,68 @@ export default function BinanceRealPage(props: AppData) {
                   : "Binance API: Configured"
                 : "Binance API: Not Configured"}
             </span>
+            <span className={`badge ${isLive ? "badge-red" : ""}`}>Active Mode: {isLive ? "BINANCE_LIVE" : "PAPER"}</span>
+            <span className={`badge ${status?.binance_live_enabled_by_server ? "badge-red" : ""}`}>
+              Server Live Lock: {status?.binance_live_enabled_by_server ? "ON" : "OFF"}
+            </span>
+            <span className={`badge ${status?.binance_live_unlocked_by_user ? "badge-red" : ""}`}>
+              User Live Unlock: {status?.binance_live_unlocked_by_user ? "Unlocked" : "Locked"}
+            </span>
+            <span className={`badge ${status?.kill_switch_active ? "badge-red" : ""}`}>
+              Kill Switch: {status?.kill_switch_active ? "Active" : "Off"}
+            </span>
           </div>
         }
       >
         <div className="portfolio-header-row">
           <div className="portfolio-banner-left">
-            <ModeToggle status={status} onChanged={onChanged} showToast={showToast} />
+            <p className="regime-desc">
+              Complete the server lock, user live confirmation, and active-mode switch before real Binance orders can
+              be placed.
+            </p>
             <p className="regime-desc">{statusCopy(status)}</p>
           </div>
           <div className="controls">
-            <button
-              className="mini-btn"
-              disabled={busy}
-              onClick={async () => {
-                await api.tradingSync().catch(() => null);
-                await onChanged();
-                showToast("Re-synced from Binance", "success");
-              }}
-            >
+            <button className="mini-btn" disabled={busy} onClick={handleSync}>
               <RefreshCw size={13} /> Sync
             </button>
           </div>
         </div>
-
-        <ol className="binance-steps">
-          <li>Server Trading Control below — enable the server live lock (admin).</li>
-          <li>Switch the mode above to "Binance Real Money" — complete the live-risk confirmation.</li>
-          <li>Real orders become possible once the risk gate approves each trade.</li>
-        </ol>
       </Card>
+
+      {/* ---------------- live readiness checklist ---------------- */}
+      <Card title="Live Readiness Checklist" full className={readiness?.ok ? "live-danger-card" : ""}>
+        {readiness ? (
+          <>
+            <div className="kv-grid">
+              {readiness.steps.map((s: any) => (
+                <div key={s.key}>
+                  <span className="tile-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    {s.passed ? <CheckCircle2 size={13} className="green" /> : <XCircle size={13} className="red" />}
+                    {s.label}
+                  </span>
+                  <b className={`tile-value ${s.passed ? "green" : "red"}`} style={{ fontSize: 13 }}>
+                    {s.detail}
+                  </b>
+                </div>
+              ))}
+            </div>
+            <p className="regime-desc" style={{ marginTop: 12 }}>
+              {readiness.ok
+                ? "All readiness checks pass — real orders may be placed if the per-trade risk gate approves."
+                : `Blocked: ${readiness.blocked_reason}`}
+            </p>
+          </>
+        ) : (
+          <p className="regime-desc">Loading readiness checklist…</p>
+        )}
+      </Card>
+
+      {/* ---------------- user live confirmation ---------------- */}
+      <UserLiveConfirmationCard status={status} onChanged={onChanged} showToast={showToast} />
+
+      {/* ---------------- execution mode ---------------- */}
+      <ExecutionModeCard status={status} onChanged={onChanged} showToast={showToast} />
 
       {/* ---------------- server trading control (Phase 24) ---------------- */}
       <ServerTradingControlCard showToast={showToast} />
@@ -234,9 +309,10 @@ export default function BinanceRealPage(props: AppData) {
         className={isLive ? "live-danger-card" : ""}
         positionRows={positionRows}
         busy={busy}
-        isLive={isLive}
+        gate={gate}
         unavailable={positions?.available === false}
         unavailableReason={positions?.reason}
+        showToast={showToast}
         onEdit={setEditing}
         onRequestClose={(p: any) =>
           setConfirm({
@@ -249,6 +325,9 @@ export default function BinanceRealPage(props: AppData) {
               ),
           })
         }
+        onPartialClose={handlePartialClose}
+        onCancelProtective={handleCancelProtective}
+        onSync={handleSync}
       />
 
       {/* ---------------- open orders ---------------- */}

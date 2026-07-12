@@ -100,11 +100,82 @@ def _migrate_ml_lab_columns():
                 conn.execute(text("ALTER TABLE prediction_features ADD COLUMN latency_ms FLOAT"))
 
 
+def _migrate_binance_bot_trade_columns():
+    """TP/SL protection provenance columns, added after binance_bot_trades
+    already existed on disk (Phase 27)."""
+    inspector = inspect(engine)
+    if "binance_bot_trades" not in inspector.get_table_names():
+        return
+    existing = {col["name"] for col in inspector.get_columns("binance_bot_trades")}
+    new_columns = {
+        "entry_order_id": "BIGINT",
+        "protection_status": "VARCHAR",
+        "protection_failed_reason": "TEXT",
+        "protection_confirmed_at": "DATETIME",
+        "exit_order_id": "BIGINT",
+        "exit_reason": "TEXT",
+    }
+    with engine.begin() as conn:
+        for name, sql_type in new_columns.items():
+            if name not in existing:
+                conn.execute(text(f"ALTER TABLE binance_bot_trades ADD COLUMN {name} {sql_type}"))
+
+
+def _migrate_protection_provider_columns():
+    """Algo Order Provider columns (Phase 26 Algo Order Provider), added
+    after exchange_positions / binance_bot_trades already existed on disk."""
+    inspector = inspect(engine)
+    tables = inspector.get_table_names()
+
+    if "exchange_positions" in tables:
+        existing = {col["name"] for col in inspector.get_columns("exchange_positions")}
+        new_columns = {
+            "protection_provider": "VARCHAR",
+            "tp_algo_id": "BIGINT",
+            "sl_algo_id": "BIGINT",
+        }
+        with engine.begin() as conn:
+            for name, sql_type in new_columns.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE exchange_positions ADD COLUMN {name} {sql_type}"))
+
+    if "binance_bot_trades" in tables:
+        existing = {col["name"] for col in inspector.get_columns("binance_bot_trades")}
+        new_columns = {
+            "provider_used": "VARCHAR",
+            "provider_response": "JSON",
+            "provider_latency_ms": "FLOAT",
+            "verification_result": "VARCHAR",
+            "repair_attempts": "INTEGER DEFAULT 0",
+        }
+        with engine.begin() as conn:
+            for name, sql_type in new_columns.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE binance_bot_trades ADD COLUMN {name} {sql_type}"))
+
+
+def _migrate_risk_settings_columns():
+    """Live Margin Calculator's advisory safety-reserve columns, added
+    after risk_settings already existed on disk."""
+    inspector = inspect(engine)
+    if "risk_settings" not in inspector.get_table_names():
+        return
+    existing = {col["name"] for col in inspector.get_columns("risk_settings")}
+    with engine.begin() as conn:
+        if "safety_buffer_usdt" not in existing:
+            conn.execute(text("ALTER TABLE risk_settings ADD COLUMN safety_buffer_usdt FLOAT DEFAULT 1.0"))
+        if "safety_buffer_pct" not in existing:
+            conn.execute(text("ALTER TABLE risk_settings ADD COLUMN safety_buffer_pct FLOAT DEFAULT 0.10"))
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_trade_columns()
     _migrate_prediction_feature_columns()
     _migrate_ml_lab_columns()
+    _migrate_binance_bot_trade_columns()
+    _migrate_protection_provider_columns()
+    _migrate_risk_settings_columns()
 
     db: Session = SessionLocal()
     try:

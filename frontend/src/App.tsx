@@ -28,6 +28,7 @@ const StressTestPage = lazy(() => import("./pages/StressTestPage"));
 const ExecutionPage = lazy(() => import("./pages/ExecutionPage"));
 const ModelCenterPage = lazy(() => import("./pages/ModelCenterPage"));
 const ResearchLabPage = lazy(() => import("./pages/ResearchLabPage"));
+const TradingDiagnosticsPage = lazy(() => import("./pages/TradingDiagnosticsPage"));
 
 function PageFallback() {
   return <div className="page-fallback" aria-hidden="true" />;
@@ -90,6 +91,8 @@ function App() {
         return <ModelCenterPage {...data} />;
       case "research-lab":
         return <ResearchLabPage {...data} />;
+      case "trading-diagnostics":
+        return <TradingDiagnosticsPage {...data} />;
       default:
         return <DashboardPage {...data} navigate={setActive} />;
     }

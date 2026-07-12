@@ -28,7 +28,27 @@ from app.db.session import SessionLocal
 from app.exchanges.binance_futures_client import BinanceFuturesClient
 from app.execution.execution_engine import engine as paper_engine
 from app.execution.order_router import OrderType
-from app.trading import modes, real_risk_gate
+from app.trading import modes, protection, protection_provider, real_risk_gate
+from app.trading.execution_pipeline import (
+    STAGE_BINANCE_VALIDATION,
+    STAGE_CHAMPION_MODEL,
+    STAGE_ENTRY_ORDER_ACCEPTED,
+    STAGE_ENTRY_ORDER_SUBMITTED,
+    STAGE_POSITION_SIZING,
+    STAGE_PROTECTION_CONFIRMED,
+    STAGE_PROTECTION_PROVIDER_SELECTED,
+    STAGE_PROTECTIVE_SL_SUBMITTED,
+    STAGE_PROTECTIVE_TP_SUBMITTED,
+    STAGE_QUANTITY_CALCULATION,
+    STAGE_RISK_GATE,
+    STAGE_TRADE_ACTIVE,
+    STATUS_FAILED,
+    STATUS_SUCCESS,
+    STATUS_WAITING,
+    PipelineRecorder,
+    classify_binance_error,
+    classify_gate_failure,
+)
 
 PAPER_API = "http://127.0.0.1:8000"
 
@@ -154,11 +174,27 @@ class BinanceExecutionProvider:
                             sl: float | None = None, tp: float | None = None, confidence: float | None = None,
                             data_reliable: bool | None = None, spread_pct: float | None = None,
                             open_positions: int | None = None, clamp_to_max: bool = False,
-                            **kwargs) -> RouterResult:
+                            is_test: bool = False, **kwargs) -> RouterResult:
         symbol = symbol.upper()
         side = side.upper()
         leverage = leverage if leverage and leverage > 0 else settings.binance_default_leverage
         leverage = min(leverage, settings.binance_max_leverage)
+
+        # Phase 25 execution transparency: one BinanceExecutionAttempt row
+        # per call, stage-by-stage, regardless of outcome - see
+        # app.trading.execution_pipeline. This is purely additive
+        # instrumentation; every existing audit call, control-flow branch
+        # and RouterResult below is unchanged.
+        decision_engine = kwargs.get("decision_engine") or {}
+        recorder = PipelineRecorder(
+            mode=self.mode, symbol=symbol, side=side, is_test=is_test,
+            confidence=confidence, requested_notional=notional_usdt, leverage=leverage,
+        )
+        has_model = bool(decision_engine.get("active_model"))
+        recorder.stage(
+            STAGE_CHAMPION_MODEL, STATUS_SUCCESS if has_model else STATUS_WAITING,
+            None if has_model else "No Champion model metadata supplied with this order",
+        )
 
         # clamp_to_max is set ONLY by the strategy engine's bot intent: its
         # paper position sizing (max_position_size_usd, often $1000) would
@@ -170,6 +206,11 @@ class BinanceExecutionProvider:
             modes.audit("order_notional_clamped", symbol=symbol,
                         detail={"requested": notional_usdt, "clamped_to": settings.binance_max_notional_per_trade})
             notional_usdt = settings.binance_max_notional_per_trade
+        recorder.stage(
+            STAGE_POSITION_SIZING, STATUS_SUCCESS,
+            None if notional_usdt == recorder.requested_notional
+            else f"Clamped to configured max per-trade notional (${notional_usdt:.2f})",
+        )
 
         modes.audit("order_requested", symbol=symbol,
                     detail={"side": side, "notional": notional_usdt, "leverage": leverage, "sl": sl, "tp": tp})
@@ -184,57 +225,217 @@ class BinanceExecutionProvider:
         gate = await real_risk_gate.evaluate_real_order(
             symbol=symbol, side=side, notional_usdt=notional_usdt, leverage=leverage,
             client=self.client, confidence=confidence, data_reliable=data_reliable,
-            spread_pct=spread_pct, open_positions=open_positions,
+            spread_pct=spread_pct, open_positions=open_positions, sl=sl, tp=tp,
         )
         if not gate.allowed:
+            failing = next((c for c in gate.checks if not c.get("passed")), None)
+            recorder.stage(STAGE_RISK_GATE, STATUS_FAILED, classify_gate_failure(failing and failing.get("check")))
+            recorder.finish("failed", reason=gate.reason, exchange_response={"checks": gate.checks})
             return self._result(False, "open_position", reason=gate.reason, checks=gate.checks)
+        recorder.stage(STAGE_RISK_GATE, STATUS_SUCCESS)
 
         try:
             mark = await self.client.get_mark_price(symbol)
-            qty = _round_qty(symbol, notional_usdt / mark)
-            if qty <= 0:
-                return self._result(False, "open_position",
-                                    reason=f"Notional ${notional_usdt:.2f} is below the minimum order size for {symbol}")
+        except Exception as e:
+            reason = _safe_error(e)
+            recorder.stage(STAGE_QUANTITY_CALCULATION, STATUS_FAILED, classify_binance_error(e))
+            recorder.finish("failed", reason=reason)
+            modes.audit("order_rejected", symbol=symbol, detail={"error": reason})
+            return self._result(False, "open_position", reason=reason)
 
+        raw_qty = notional_usdt / mark
+        qty = _round_qty(symbol, raw_qty)
+        recorder.requested_quantity = round(raw_qty, 8)
+        recorder.adjusted_quantity = qty
+        recorder.margin_required = round(notional_usdt / max(leverage, 1.0), 2)
+        if qty <= 0:
+            reason = f"Notional ${notional_usdt:.2f} is below the minimum order size for {symbol}"
+            recorder.stage(STAGE_QUANTITY_CALCULATION, STATUS_FAILED, "Quantity below minimum")
+            recorder.finish("failed", reason=reason)
+            return self._result(False, "open_position", reason=reason)
+        recorder.stage(STAGE_QUANTITY_CALCULATION, STATUS_SUCCESS)
+
+        try:
             await self.client.set_margin_type(symbol, "ISOLATED")
             await self.client.set_leverage(symbol, int(leverage))
+        except Exception as e:
+            reason = _safe_error(e)
+            recorder.stage(STAGE_BINANCE_VALIDATION, STATUS_FAILED, classify_binance_error(e))
+            recorder.finish("failed", reason=reason)
+            modes.audit("order_rejected", symbol=symbol, detail={"error": reason})
+            return self._result(False, "open_position", reason=reason)
+        recorder.stage(STAGE_BINANCE_VALIDATION, STATUS_SUCCESS)
 
+        try:
             order = await self.client.place_market_order(
                 symbol=symbol, side="BUY" if side == "LONG" else "SELL", quantity=qty,
             )
-            modes.audit("order_accepted", symbol=symbol,
-                        detail={"order_id": order.order_id, "qty": qty, "side": side})
+        except Exception as e:
+            reason = _safe_error(e)
+            recorder.stage(STAGE_ENTRY_ORDER_SUBMITTED, STATUS_FAILED, classify_binance_error(e))
+            recorder.finish("failed", reason=reason)
+            modes.audit("order_rejected", symbol=symbol, detail={"error": reason})
+            return self._result(False, "open_position", reason=reason)
+        recorder.stage(STAGE_ENTRY_ORDER_SUBMITTED, STATUS_SUCCESS)
+        recorder.order_id = order.order_id
 
-            sl_order_id = tp_order_id = None
-            if sl is not None:
-                sl_order = await self.client.place_stop_loss(symbol, side, sl)
-                sl_order_id = sl_order.order_id
-            if tp is not None:
-                tp_order = await self.client.place_take_profit(symbol, side, tp)
-                tp_order_id = tp_order.order_id
+        modes.audit("order_accepted", symbol=symbol,
+                    detail={"order_id": order.order_id, "qty": qty, "side": side})
+        recorder.stage(STAGE_ENTRY_ORDER_ACCEPTED, STATUS_SUCCESS)
+
+        # Phase 27: the entry filling is NOT a complete trade - a naked real
+        # position is unsafe. Protective TP/SL are attempted next and
+        # verified against Binance's own open orders (never trusted from
+        # the placement call's return value alone) before this attempt is
+        # ever considered done. A failure here still journals the trade
+        # (fixing the prior bug where a protection failure silently skipped
+        # _record_bot_trade too, leaving an open position with no local
+        # record at all) and, if configured, closes the naked position.
+        try:
+            fill_price = order.avg_price or mark
+            try:
+                from app.trading.margin import validate_risk_levels
+                if sl is not None or tp is not None:
+                    validate_risk_levels(side, fill_price, sl, tp)
+            except Exception as e:
+                sl = tp = None  # invalid levels are never sent to Binance
+                invalid_reason = str(e)
+            else:
+                invalid_reason = None
+
+            try:
+                hedge_mode = await self.client.get_position_mode()
+            except Exception:
+                hedge_mode = False
+
+            # Phase 26 Algo Order Provider: classic first (or whatever this
+            # mode is already known to need - app.trading.protection_capability),
+            # auto-migrating to the Algo Order API on the first -4120. Every
+            # order after that first migration for this mode skips classic
+            # entirely. See app.trading.protection_provider.
+            recorder.stage(STAGE_PROTECTION_PROVIDER_SELECTED, STATUS_SUCCESS,
+                            f"provider={protection_provider.capability.get_provider(self.mode) or protection_provider.CLASSIC}")
+            protection_result = await protection_provider.place_protection(
+                client=self.client, mode=self.mode, symbol=symbol, position_side=side,
+                tp=tp, sl=sl, quantity=qty, hedge_mode=hedge_mode,
+            )
+            provider_used = protection_result.provider_used
+            tp_order_id = sl_order_id = tp_algo_id = sl_algo_id = None
+            if provider_used == protection_provider.ALGO:
+                tp_algo_id = protection_result.tp.order_id
+                sl_algo_id = protection_result.sl.order_id
+            else:
+                tp_order_id = protection_result.tp.order_id
+                sl_order_id = protection_result.sl.order_id
+            protection_failed_reason = invalid_reason
+            if not protection_result.tp.ok:
+                protection_failed_reason = protection_failed_reason or protection_result.tp.error
+            if not protection_result.sl.ok:
+                protection_failed_reason = protection_failed_reason or protection_result.sl.error
+            recorder.stage(STAGE_PROTECTIVE_TP_SUBMITTED,
+                            STATUS_SUCCESS if protection_result.tp.ok else STATUS_FAILED,
+                            None if protection_result.tp.ok else (protection_result.tp.error or "No take-profit computed for this entry"))
+            recorder.stage(STAGE_PROTECTIVE_SL_SUBMITTED,
+                            STATUS_SUCCESS if protection_result.sl.ok else STATUS_FAILED,
+                            None if protection_result.sl.ok else (protection_result.sl.error or "No stop-loss computed for this entry"))
+
+            # Ground truth: verify against Binance's own open orders (classic)
+            # AND, when the algo provider placed this leg, the specific algo
+            # id queried individually (see protection.resolve_protection) -
+            # never just trust that the placement calls above returned an id.
+            protection_confirmed_at = None
+            verification_result = None
+            try:
+                verified = await protection.resolve_protection(
+                    self.client, symbol, tp_algo_id=tp_algo_id, sl_algo_id=sl_algo_id,
+                )
+                sl_order_id = verified.sl_order_id or sl_order_id
+                tp_order_id = verified.tp_order_id or tp_order_id
+                protection_status = verified.status
+                verification_result = protection_status
+                if protection_status == protection.PROTECTED:
+                    protection_confirmed_at = datetime.now(timezone.utc)
+                    recorder.stage(STAGE_PROTECTION_CONFIRMED, STATUS_SUCCESS)
+                else:
+                    protection_failed_reason = protection_failed_reason or f"Verification found {protection_status} on Binance"
+                    recorder.stage(STAGE_PROTECTION_CONFIRMED, STATUS_FAILED, protection_failed_reason)
+            except Exception as e:
+                protection_status = protection.MISSING_BOTH
+                verification_result = "verification_error"
+                protection_failed_reason = protection_failed_reason or _safe_error(e)
+                recorder.stage(STAGE_PROTECTION_CONFIRMED, STATUS_FAILED, classify_binance_error(e))
 
             modes.audit("order_filled", symbol=symbol, detail={
                 "order_id": order.order_id, "status": order.status,
                 "executed_qty": order.executed_qty, "avg_price": order.avg_price,
                 "sl_order_id": sl_order_id, "tp_order_id": tp_order_id,
+                "protection_status": protection_status, "protection_provider": provider_used,
             })
+
+            # Journal unconditionally - protection outcome, good or bad, is
+            # itself part of the trade record, not a reason to skip it.
             self._record_bot_trade(
                 action="open", order=order, side=side, notional=notional_usdt,
                 leverage=leverage, sl_order_id=sl_order_id, tp_order_id=tp_order_id,
-                sl=sl, tp=tp, gate_checks=gate.checks, **kwargs,
+                sl=sl, tp=tp, gate_checks=gate.checks,
+                protection_status=protection_status, protection_failed_reason=protection_failed_reason,
+                protection_confirmed_at=protection_confirmed_at, entry_order_id=order.order_id,
+                provider_used=provider_used, provider_response=protection_result.to_dict(),
+                provider_latency_ms=protection_result.latency_ms, verification_result=verification_result,
+                **kwargs,
             )
+
+            closed_due_to_protection_failure = False
+            if protection_status != protection.PROTECTED and settings.binance_close_if_protection_fails:
+                close_result = await self.close_position(symbol=symbol)
+                closed_due_to_protection_failure = close_result.ok
+                modes.audit("position_closed_due_to_unprotected", symbol=symbol,
+                            detail={"reason": protection_failed_reason, "close_ok": close_result.ok})
+
             await self.sync_positions()
+            if not closed_due_to_protection_failure:
+                _store_protection_metadata(self.mode, symbol, provider_used, tp_order_id, sl_order_id, tp_algo_id, sl_algo_id)
+
+            if protection_status != protection.PROTECTED:
+                reason = f"Entry filled but protection failed ({protection_status}): {protection_failed_reason}"
+                if closed_due_to_protection_failure:
+                    reason += " - position closed"
+                recorder.finish("PROTECTION_FAILED", reason=reason, exchange_response=order.to_dict())
+                return self._result(
+                    False, "open_position", reason=reason, order=order.to_dict(),
+                    sl_order_id=sl_order_id, tp_order_id=tp_order_id,
+                    protection_status=protection_status, closed=closed_due_to_protection_failure,
+                    protection_provider=provider_used,
+                )
+
+            recorder.stage(STAGE_TRADE_ACTIVE, STATUS_SUCCESS)
+            recorder.finish("order_accepted", exchange_response=order.to_dict())
             return self._result(True, "open_position", order=order.to_dict(),
-                                sl_order_id=sl_order_id, tp_order_id=tp_order_id)
+                                sl_order_id=sl_order_id, tp_order_id=tp_order_id, protection_status=protection_status,
+                                protection_provider=provider_used)
         except Exception as e:
-            modes.audit("order_rejected", symbol=symbol, detail={"error": _safe_error(e)})
-            return self._result(False, "open_position", reason=_safe_error(e))
+            reason = _safe_error(e)
+            modes.audit("order_rejected", symbol=symbol, detail={"error": reason})
+            recorder.finish("PROTECTION_FAILED", reason=f"Order accepted but a post-fill step failed: {reason}",
+                            exchange_response=order.to_dict())
+            return self._result(False, "open_position", reason=reason)
 
     def _record_bot_trade(self, action: str, order, side: str, notional: float | None = None,
                           leverage: float | None = None, sl_order_id: int | None = None,
                           tp_order_id: int | None = None, sl: float | None = None,
-                          tp: float | None = None, gate_checks: list | None = None, **kwargs) -> None:
-        """Journal one accepted real order into binance_bot_trades. Best
+                          tp: float | None = None, gate_checks: list | None = None,
+                          protection_status: str | None = None, protection_failed_reason: str | None = None,
+                          protection_confirmed_at=None, entry_order_id: int | None = None,
+                          exit_order_id: int | None = None, exit_reason: str | None = None,
+                          provider_used: str | None = None, provider_response: dict | None = None,
+                          provider_latency_ms: float | None = None, verification_result: str | None = None,
+                          repair_attempts: int = 0,
+                          **kwargs) -> None:
+        """Journal one real order into binance_bot_trades - called
+        unconditionally for every accepted entry, regardless of whether its
+        protective TP/SL succeeded (see open_position: this used to be
+        skipped whenever TP/SL placement raised, which is how the position
+        that prompted this fix went unprotected AND unjournaled). Best
         effort - a journaling failure must never unwind a live fill."""
         from app.db.models import BinanceBotTrade
 
@@ -268,6 +469,17 @@ class BinanceExecutionProvider:
                 model=kwargs.get("model") or active_model.get("model_type"),
                 decision_reason="; ".join(reasons) if isinstance(reasons, list) else kwargs.get("reason"),
                 risk_gate=gate_checks,
+                entry_order_id=entry_order_id,
+                protection_status=protection_status,
+                protection_failed_reason=protection_failed_reason,
+                protection_confirmed_at=protection_confirmed_at,
+                exit_order_id=exit_order_id,
+                exit_reason=exit_reason,
+                provider_used=provider_used,
+                provider_response=provider_response,
+                provider_latency_ms=provider_latency_ms,
+                verification_result=verification_result,
+                repair_attempts=repair_attempts,
             ))
             db.commit()
         except Exception:
@@ -294,9 +506,36 @@ class BinanceExecutionProvider:
             )
             modes.audit("position_closed", symbol=symbol,
                         detail={"order_id": order.order_id, "qty": qty, "side": pos.side})
-            self._record_bot_trade(action="close", order=order, side=pos.side, **kwargs)
+            self._record_bot_trade(action="close", order=order, side=pos.side, exit_order_id=order.order_id, **kwargs)
+
+            # No position left to protect - any resting TP/SL for this
+            # symbol is now an orphan reduce-only order that would otherwise
+            # sit forever. Cancel-all is symbol-scoped and safe: a fresh
+            # position on the same symbol only exists after this call.
+            canceled_orphans: list[int] = []
+            try:
+                for o in await self.client.get_open_orders(symbol):
+                    if o.reduce_only or o.close_position:
+                        await self.client.cancel_order(symbol, o.order_id)
+                        canceled_orphans.append(o.order_id)
+                # Algo orders (Phase 26 Algo Order Provider) never show up in
+                # get_open_orders - clean up any tracked ids separately.
+                for algo_id in (_tracked_algo_id(self.mode, symbol, "tp"), _tracked_algo_id(self.mode, symbol, "sl")):
+                    if not algo_id:
+                        continue
+                    try:
+                        await protection_provider.cancel_leg(self.client, symbol, algo_id, protection_provider.ALGO)
+                        canceled_orphans.append(algo_id)
+                    except Exception:
+                        pass  # already gone (triggered/expired) - not a failure
+                if canceled_orphans:
+                    modes.audit("protective_order_canceled", symbol=symbol,
+                                detail={"reason": "orphaned after close", "order_ids": canceled_orphans})
+            except Exception:
+                pass  # best-effort cleanup - the position close itself already succeeded
+
             await self.sync_positions()
-            return self._result(True, "close_position", order=order.to_dict())
+            return self._result(True, "close_position", order=order.to_dict(), canceled_orphan_orders=canceled_orphans)
         except Exception as e:
             modes.audit("order_rejected", symbol=symbol, detail={"action": "close", "error": _safe_error(e)})
             return self._result(False, "close_position", reason=_safe_error(e))
@@ -311,13 +550,19 @@ class BinanceExecutionProvider:
 
     async def _replace_protective_order(self, symbol: str | None, position_id: int | None,
                                         kind: str, price: float | None) -> RouterResult:
-        """Cancel-then-replace one real TP/SL order. Local state is updated
-        only after the exchange confirms the new order."""
+        """Cancel-then-replace one real TP/SL order, through whichever
+        provider (classic or algo - Phase 26 Algo Order Provider) this
+        position's leg is currently on. Local state is updated only after
+        the exchange confirms the new order. Binance has no in-place
+        "modify" for either surface, so both this and the classic-only
+        predecessor already worked as cancel-then-replace - the only new
+        behavior is routing the cancel to the right surface."""
         if not symbol:
             symbol = _symbol_for_local_position(position_id)
             if not symbol:
                 return self._result(False, f"update_{kind}", reason="symbol (or a synced position id) is required")
         symbol = symbol.upper()
+        leg = "sl" if kind == "stop_loss" else "tp"
         order_type = "STOP_MARKET" if kind == "stop_loss" else "TAKE_PROFIT_MARKET"
         try:
             positions = await self.client.get_positions(symbol)
@@ -333,22 +578,45 @@ class BinanceExecutionProvider:
                     price if kind == "take_profit" else None,
                 )
 
+            # Cancel the existing leg wherever it actually lives: a classic
+            # resting order (scanned from get_open_orders) or a tracked algo
+            # id (ExchangePositionRow) - never assume based on the other
+            # leg or on global capability alone, in case the two legs ever
+            # disagree (e.g. a mid-migration position).
             for order in await self.client.get_open_orders(symbol):
                 if order.type == order_type:
                     await self.client.cancel_order(symbol, order.order_id)
                     modes.audit("protective_order_canceled", symbol=symbol,
-                                detail={"kind": kind, "order_id": order.order_id})
+                                detail={"kind": kind, "order_id": order.order_id, "provider": "classic"})
+            existing_algo_id = _tracked_algo_id(self.mode, symbol, leg)
+            if existing_algo_id:
+                try:
+                    await protection_provider.cancel_leg(self.client, symbol, existing_algo_id, protection_provider.ALGO)
+                    modes.audit("protective_order_canceled", symbol=symbol,
+                                detail={"kind": kind, "order_id": existing_algo_id, "provider": "algo"})
+                except Exception:
+                    pass  # already gone (triggered/expired) - not a reason to block the replacement
 
             new_order_id = None
+            provider_used = None
             if price is not None:
-                place = self.client.place_stop_loss if kind == "stop_loss" else self.client.place_take_profit
-                new_order = await place(symbol, pos.side, price)
-                new_order_id = new_order.order_id
+                try:
+                    hedge_mode = await self.client.get_position_mode()
+                except Exception:
+                    hedge_mode = False
+                leg_result = await protection_provider.place_leg(
+                    client=self.client, mode=self.mode, symbol=symbol, position_side=pos.side, kind=leg,
+                    price=price, quantity=pos.quantity, hedge_mode=hedge_mode,
+                )
+                if not leg_result.ok:
+                    return self._result(False, f"update_{kind}", reason=leg_result.error)
+                new_order_id = leg_result.order_id
+                provider_used = leg_result.provider
 
             modes.audit("tp_sl_updated", symbol=symbol,
-                        detail={"kind": kind, "price": price, "order_id": new_order_id})
-            _store_protective_order_id(self.mode, symbol, kind, new_order_id)
-            return self._result(True, f"update_{kind}", order_id=new_order_id, price=price)
+                        detail={"kind": kind, "price": price, "order_id": new_order_id, "provider": provider_used})
+            _store_protective_order_id(self.mode, symbol, kind, new_order_id, provider=provider_used or "classic")
+            return self._result(True, f"update_{kind}", order_id=new_order_id, price=price, protection_provider=provider_used)
         except Exception as e:
             return self._result(False, f"update_{kind}", reason=_safe_error(e))
 
@@ -402,9 +670,21 @@ class BinanceExecutionProvider:
             return self._result(False, "sync_orders", reason=_safe_error(e))
 
     async def cancel_order(self, symbol: str, order_id: int, **kwargs) -> RouterResult:
+        """Cancels a resting order by id. Phase 26 Algo Order Provider: an
+        id that matches this position's tracked tp_algo_id/sl_algo_id is an
+        Algo Order API id, not a classic order id - the UI never needs to
+        know which surface a given id belongs to, this routes it correctly
+        either way (the two id spaces cannot collide - Binance's own
+        classic orderId and algoId sequences are independent, but a match
+        here is checked against OUR tracked id, not a guess)."""
+        symbol = symbol.upper()
         try:
+            if order_id in (_tracked_algo_id(self.mode, symbol, "tp"), _tracked_algo_id(self.mode, symbol, "sl")):
+                await protection_provider.cancel_leg(self.client, symbol, order_id, protection_provider.ALGO)
+                modes.audit("order_canceled", symbol=symbol, detail={"order_id": order_id, "provider": "algo"})
+                return self._result(True, "cancel_order", order={"algo_id": order_id, "status": "CANCELED"})
             order = await self.client.cancel_order(symbol, order_id)
-            modes.audit("order_canceled", symbol=symbol.upper(), detail={"order_id": order_id})
+            modes.audit("order_canceled", symbol=symbol, detail={"order_id": order_id, "provider": "classic"})
             return self._result(True, "cancel_order", order=order.to_dict())
         except Exception as e:
             return self._result(False, "cancel_order", reason=_safe_error(e))
@@ -457,7 +737,30 @@ def _symbol_for_local_position(position_id: int | None) -> str | None:
         db.close()
 
 
-def _store_protective_order_id(mode: str, symbol: str, kind: str, order_id: int | None) -> None:
+def _tracked_algo_id(mode: str, symbol: str, leg: str) -> int | None:
+    """The tracked algo id (Phase 26 Algo Order Provider) for one leg
+    ("tp" or "sl") of a position, if that leg is currently on the algo
+    provider - the only way to find an algo order, since no reliable
+    "list open algo orders" endpoint exists for this account (see
+    app.exchanges.binance_algo_provider)."""
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(ExchangePositionRow)
+            .filter(ExchangePositionRow.mode == mode, ExchangePositionRow.symbol == symbol)
+            .first()
+        )
+        if not row:
+            return None
+        return row.tp_algo_id if leg == "tp" else row.sl_algo_id
+    finally:
+        db.close()
+
+
+def _store_protective_order_id(mode: str, symbol: str, kind: str, order_id: int | None, provider: str = "classic") -> None:
+    """Single-leg update (used by _replace_protective_order): sets one
+    classic or algo id, clearing the other surface's id for that leg so a
+    stale id from a prior provider can never be read back as live."""
     db = SessionLocal()
     try:
         row = (
@@ -466,12 +769,42 @@ def _store_protective_order_id(mode: str, symbol: str, kind: str, order_id: int 
             .first()
         )
         if row:
+            is_algo = provider == "algo"
             if kind == "stop_loss":
-                row.stop_loss_order_id = str(order_id) if order_id else None
+                row.stop_loss_order_id = str(order_id) if (order_id and not is_algo) else None
+                row.sl_algo_id = order_id if (order_id and is_algo) else None
             else:
-                row.take_profit_order_id = str(order_id) if order_id else None
+                row.take_profit_order_id = str(order_id) if (order_id and not is_algo) else None
+                row.tp_algo_id = order_id if (order_id and is_algo) else None
+            row.protection_provider = provider
             row.updated_at = datetime.now(timezone.utc)
             db.commit()
+    finally:
+        db.close()
+
+
+def _store_protection_metadata(mode: str, symbol: str, provider: str, tp_order_id: int | None,
+                               sl_order_id: int | None, tp_algo_id: int | None, sl_algo_id: int | None) -> None:
+    """Full upsert after a fresh entry's protection placement - creates the
+    row if sync_positions hasn't run yet, rather than silently no-op'ing
+    (unlike _store_protective_order_id, which only ever edits an existing
+    replace-flow row)."""
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(ExchangePositionRow)
+            .filter(ExchangePositionRow.mode == mode, ExchangePositionRow.symbol == symbol)
+            .first()
+        )
+        if not row:
+            return  # position no longer open (e.g. closed due to failed protection) - nothing to store
+        row.protection_provider = provider
+        row.stop_loss_order_id = str(sl_order_id) if sl_order_id else None
+        row.take_profit_order_id = str(tp_order_id) if tp_order_id else None
+        row.sl_algo_id = sl_algo_id
+        row.tp_algo_id = tp_algo_id
+        row.updated_at = datetime.now(timezone.utc)
+        db.commit()
     finally:
         db.close()
 

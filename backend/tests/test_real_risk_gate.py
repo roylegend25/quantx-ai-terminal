@@ -13,12 +13,16 @@ from app.trading import modes, real_risk_gate
 
 
 class FakeClient:
-    """Healthy, well-funded account by default."""
+    """Healthy, well-funded account by default - no open positions, so the
+    Phase 27 existing-position-protection check always passes unless a test
+    explicitly seeds positions/open_orders."""
 
-    def __init__(self, available_usdt=1000.0, daily_pnl=0.0, reachable=True):
+    def __init__(self, available_usdt=1000.0, daily_pnl=0.0, reachable=True, positions=None, open_orders=None):
         self.available_usdt = available_usdt
         self.daily_pnl = daily_pnl
         self.reachable = reachable
+        self.positions = positions or []
+        self.open_orders = open_orders or []
 
     async def ping(self):
         if not self.reachable:
@@ -30,6 +34,12 @@ class FakeClient:
 
     async def get_balances(self):
         return [BinanceBalance(asset="USDT", balance=self.available_usdt, available=self.available_usdt)]
+
+    async def get_positions(self, symbol=None):
+        return self.positions
+
+    async def get_open_orders(self, symbol=None):
+        return self.open_orders
 
 
 @pytest.fixture(autouse=True)
@@ -47,7 +57,9 @@ def testnet_mode():
 
 
 def run_gate(client=None, **kwargs):
-    defaults = dict(symbol="BTCUSDT", side="LONG", notional_usdt=10.0, leverage=1.0)
+    # sl/tp default to a valid LONG pair (Phase 27: BINANCE_REQUIRE_TP_SL
+    # defaults true) - tests exercising a SHORT order override both.
+    defaults = dict(symbol="BTCUSDT", side="LONG", notional_usdt=10.0, leverage=1.0, sl=45000.0, tp=55000.0)
     defaults.update(kwargs)
     return asyncio.run(real_risk_gate.evaluate_real_order(client=client or FakeClient(), **defaults))
 
@@ -142,3 +154,111 @@ def test_max_open_positions_blocked():
     result = run_gate(open_positions=1)
     assert not result.allowed
     assert "Maximum open positions" in result.reason
+
+
+# ------------------------------------------------- Phase 27: TP/SL required
+
+def test_live_entry_without_take_profit_blocked():
+    result = run_gate(tp=None)
+    assert not result.allowed
+    assert "requires TP and SL" in result.reason
+
+
+def test_live_entry_without_stop_loss_blocked():
+    result = run_gate(sl=None)
+    assert not result.allowed
+    assert "requires TP and SL" in result.reason
+
+
+def test_live_entry_without_either_tp_sl_blocked():
+    result = run_gate(sl=None, tp=None)
+    assert not result.allowed
+    assert "requires TP and SL" in result.reason
+
+
+def test_tp_sl_not_required_when_config_disabled(monkeypatch):
+    monkeypatch.setattr(settings, "binance_require_tp_sl", False)
+    result = run_gate(sl=None, tp=None)
+    assert result.allowed, result.reason
+
+
+def test_invalid_short_take_profit_blocked():
+    """SHORT: take profit must be below entry - a TP above the SL (i.e.
+    swapped for the side) is rejected before any exchange call."""
+    result = run_gate(side="SHORT", sl=1810.0, tp=1830.0)  # tp above sl - wrong for SHORT
+    assert not result.allowed
+    assert "SHORT" in result.reason
+
+
+def test_invalid_short_stop_loss_blocked():
+    result = run_gate(side="SHORT", sl=1780.0, tp=1790.0)  # sl below tp - wrong for SHORT
+    assert not result.allowed
+    assert "SHORT" in result.reason
+
+
+def test_valid_short_tp_sl_passes():
+    result = run_gate(side="SHORT", sl=1830.0, tp=1780.0)
+    assert result.allowed, result.reason
+
+
+def test_valid_long_tp_sl_passes():
+    result = run_gate(side="LONG", sl=45000.0, tp=55000.0)
+    assert result.allowed, result.reason
+
+
+# --------------------------------------- Phase 27: existing unprotected position
+
+def test_existing_unprotected_position_blocks_new_entries():
+    from app.exchanges.binance_models import BinancePosition
+
+    unprotected = BinancePosition(
+        symbol="ETHUSDT", side="SHORT", quantity=0.038, entry_price=1800.49, mark_price=1799.3,
+        leverage=10.0, margin_type="isolated", liquidation_price=1971.95,
+        unrealized_pnl=0.05, margin_used=6.87, notional=68.36,
+    )
+    client = FakeClient(positions=[unprotected], open_orders=[])
+    result = run_gate(client=client)
+    assert not result.allowed
+    assert "unprotected" in result.reason.lower()
+
+
+def test_existing_protected_position_does_not_block_new_entries():
+    from dataclasses import dataclass
+
+    from app.exchanges.binance_models import BinancePosition
+
+    @dataclass
+    class FakeOrder:
+        symbol: str
+        type: str
+        order_id: int
+        stop_price: float
+        reduce_only: bool = True
+        close_position: bool = False
+
+    protected = BinancePosition(
+        symbol="ETHUSDT", side="SHORT", quantity=0.038, entry_price=1800.49, mark_price=1799.3,
+        leverage=10.0, margin_type="isolated", liquidation_price=1971.95,
+        unrealized_pnl=0.05, margin_used=6.87, notional=68.36,
+    )
+    orders = [
+        FakeOrder(symbol="ETHUSDT", type="STOP_MARKET", order_id=1, stop_price=1810.0),
+        FakeOrder(symbol="ETHUSDT", type="TAKE_PROFIT_MARKET", order_id=2, stop_price=1792.0),
+    ]
+    client = FakeClient(positions=[protected], open_orders=orders)
+    result = run_gate(client=client)
+    assert result.allowed, result.reason
+
+
+def test_block_new_trades_if_unprotected_can_be_disabled(monkeypatch):
+    from app.exchanges.binance_models import BinancePosition
+
+    monkeypatch.setattr(settings, "binance_block_new_trades_if_unprotected", False)
+    unprotected = BinancePosition(
+        symbol="ETHUSDT", side="SHORT", quantity=0.038, entry_price=1800.49, mark_price=1799.3,
+        leverage=10.0, margin_type="isolated", liquidation_price=1971.95,
+        unrealized_pnl=0.05, margin_used=6.87, notional=68.36,
+    )
+    client = FakeClient(positions=[unprotected], open_orders=[])
+    result = run_gate(client=client)
+    assert result.allowed, result.reason

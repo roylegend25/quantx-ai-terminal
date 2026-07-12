@@ -25,6 +25,10 @@ DEFAULTS = {
     "allow_short": True,
     "cooldown_minutes": 0,
     "paper_trading_enabled": True,
+    # Live Margin Calculator's advisory reserve (app/trading/margin_calculator.py) -
+    # never consulted by real_risk_gate.py itself.
+    "safety_buffer_usdt": 1.0,
+    "safety_buffer_pct": 0.10,
 }
 
 # Inclusive (min, max) bounds - the one place "unsafe" numeric values get
@@ -39,6 +43,8 @@ BOUNDS = {
     "max_open_positions": (1, 5),
     "max_position_size_usd": (10.0, 100_000.0),
     "cooldown_minutes": (0, 1440),
+    "safety_buffer_usdt": (0.0, 1000.0),
+    "safety_buffer_pct": (0.0, 0.90),
 }
 
 BOOL_FIELDS = ("allow_long", "allow_short", "paper_trading_enabled")

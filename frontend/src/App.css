@@ -739,7 +739,7 @@ button, select, input {
      media block, so without !important they'd win the cascade regardless
      of this rule matching first. Confirmed via computed grid-column on a
      live .wide card before this fix: "span 2" instead of "1 / -1". */
-  .page-grid > .card.wide, .page-grid > .card.full {
+  .page-grid > .card.wide, .page-grid > .card.full, .page-grid > .stack-card.full {
     grid-column: 1 / -1 !important;
   }
 
@@ -950,7 +950,7 @@ button, select, input {
      should be a single mobile column (confirmed via computed
      gridTemplateColumns showing two unequal tracks on BinanceRealPage,
      which has a .wide card). */
-  .page-grid > .card.wide, .page-grid > .card.full {
+  .page-grid > .card.wide, .page-grid > .card.full, .page-grid > .stack-card.full {
     grid-column: auto !important;
   }
 
@@ -1014,7 +1014,7 @@ button, select, input {
   grid-column: span 2;
 }
 
-.page-grid > .card.full {
+.page-grid > .card.full, .page-grid > .stack-card.full {
   grid-column: 1 / -1;
 }
 
@@ -2615,7 +2615,91 @@ progress.disabled::-webkit-progress-value {
 
 .tone-green { --tone: var(--c-green); }
 .tone-yellow { --tone: var(--c-yellow); }
+.tone-orange { --tone: #ff9f43; }
 .tone-red { --tone: var(--c-red); }
+
+.reason-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: #aab0c8;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* ---------- Execution Pipeline (Dashboard) ---------- */
+
+.pipeline-stages {
+  display: flex;
+  flex-direction: column;
+  margin-top: 14px;
+}
+
+.pipeline-stage-row {
+  display: flex;
+  gap: 14px;
+}
+
+.pipeline-stage-marker {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 14px;
+  flex-shrink: 0;
+}
+
+.pipeline-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.04);
+}
+
+.pipeline-dot-success { background: var(--c-green); }
+.pipeline-dot-waiting { background: var(--c-yellow); }
+.pipeline-dot-failed { background: var(--c-red); }
+
+.pipeline-connector {
+  width: 2px;
+  flex: 1;
+  min-height: 22px;
+  background: rgba(255, 255, 255, 0.1);
+  margin: 2px 0;
+}
+
+.pipeline-stage-body {
+  padding-bottom: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pipeline-stage-label {
+  font-size: 13.5px;
+  letter-spacing: 0.01em;
+}
+
+.pipeline-stage-label.success { color: var(--c-green); }
+.pipeline-stage-label.waiting { color: var(--c-yellow); }
+.pipeline-stage-label.failed { color: var(--c-red); }
+
+.pipeline-stage-reason {
+  color: #aab0c8;
+  font-size: 12.5px;
+}
+
+.exec-raw-response {
+  margin: 6px 0 0;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-y: auto;
+}
 
 /* ---------- Strategy votes ---------- */
 

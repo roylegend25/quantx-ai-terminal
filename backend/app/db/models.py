@@ -773,6 +773,15 @@ class ExchangePositionRow(Base):
     stop_loss_order_id = Column(String, nullable=True)
     take_profit_order_id = Column(String, nullable=True)
     exchange_position_id = Column(String, nullable=True)
+    # Phase 26: which protection surface this position's TP/SL were placed
+    # through - "classic" (POST /fapi/v1/order) or "algo" (POST
+    # /fapi/v1/algoOrder). Algo orders never appear in GET /fapi/v1/
+    # openOrders, so their ids are tracked here (not derivable from Binance
+    # any other way for this account - see app.exchanges.binance_algo_provider)
+    # and re-verified individually by id, never via a "list" call.
+    protection_provider = Column(String, nullable=True)
+    tp_algo_id = Column(BigInteger, nullable=True)
+    sl_algo_id = Column(BigInteger, nullable=True)
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
@@ -814,6 +823,24 @@ class BinanceBotTrade(Base):
     decision_reason = Column(Text, nullable=True)
     risk_gate = Column(JSON, nullable=True)  # the checks the real risk gate ran
     realized_pnl = Column(Float, nullable=True)  # backfilled from income where matched
+    # Phase 27: TP/SL protection provenance - see app/trading/protection.py.
+    # protection_status mirrors that module's vocabulary (PROTECTED |
+    # MISSING_TP | MISSING_SL | MISSING_TP_SL), verified against Binance's
+    # own open orders, never assumed from the placement call succeeding.
+    entry_order_id = Column(BigInteger, nullable=True)
+    protection_status = Column(String, nullable=True, index=True)
+    protection_failed_reason = Column(Text, nullable=True)
+    protection_confirmed_at = Column(DateTime, nullable=True)
+    exit_order_id = Column(BigInteger, nullable=True)
+    exit_reason = Column(Text, nullable=True)
+    # Phase 26: which protection provider handled this trade's TP/SL, and
+    # the raw (already-redacted) evidence of how it went - see
+    # app.trading.protection_provider.
+    provider_used = Column(String, nullable=True)
+    provider_response = Column(JSON, nullable=True)
+    provider_latency_ms = Column(Float, nullable=True)
+    verification_result = Column(String, nullable=True)
+    repair_attempts = Column(Integer, default=0)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
 
@@ -830,6 +857,41 @@ class TradingAuditLog(Base):
     mode = Column(String, index=True, nullable=True)
     symbol = Column(String, index=True, nullable=True)
     detail = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class BinanceExecutionAttempt(Base):
+    """One row per BinanceExecutionProvider.open_position() call (Phase 25 -
+    execution transparency). Unlike BinanceBotTrade (written only once an
+    order is actually accepted by the exchange), this is written for EVERY
+    attempt regardless of outcome, with a stage-by-stage breakdown of the
+    pipeline (signal_generated -> champion_model -> risk_gate ->
+    position_sizing -> quantity_calculation -> binance_validation ->
+    order_submitted -> order_accepted) so a silent execution failure after
+    the decision engine already said "allowed" is never invisible. Never
+    contains API keys/secrets - exchange_response is the same safe,
+    classified text used everywhere else (see execution_router._safe_error
+    and _classify_execution_failure)."""
+    __tablename__ = "binance_execution_attempts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    mode = Column(String, index=True)
+    symbol = Column(String, index=True)
+    side = Column(String, nullable=True)
+    is_test = Column(Boolean, default=False, index=True)
+    confidence = Column(Float, nullable=True)
+    requested_notional = Column(Float, nullable=True)
+    requested_quantity = Column(Float, nullable=True)
+    adjusted_quantity = Column(Float, nullable=True)
+    leverage = Column(Float, nullable=True)
+    margin_required = Column(Float, nullable=True)
+    # ordered list of {stage, status: success|waiting|failed, reason, at}
+    stages = Column(JSON, nullable=False)
+    final_status = Column(String, index=True)  # order_accepted | failed
+    final_reason = Column(Text, nullable=True)
+    exchange_response = Column(JSON, nullable=True)
+    order_id = Column(BigInteger, nullable=True)
+    latency_ms = Column(Float, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
 
@@ -858,6 +920,34 @@ class RiskSettings(Base):
     allow_short = Column(Boolean, default=True)
     cooldown_minutes = Column(Integer, default=0)
     paper_trading_enabled = Column(Boolean, default=True)
+    # Phase 26 - Live Margin Calculator's advisory safety reserve (never
+    # consulted by real_risk_gate.py, which continues to rely on Binance's
+    # own balance check - these only feed the margin calculator's
+    # recommended-max-notional math and the "Auto Configure Risk" button).
+    safety_buffer_usdt = Column(Float, default=1.0)
+    safety_buffer_pct = Column(Float, default=0.10)
+    updated_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+
+class BinanceProtectionCapability(Base):
+    """Which TP/SL protection surface a given mode's account is known to
+    require - "classic" (POST /fapi/v1/order) or "algo" (POST /fapi/v1/
+    algoOrder), see app.trading.protection_provider. One row per mode
+    (BINANCE_TESTNET / BINANCE_LIVE): testnet and live are different
+    accounts and may genuinely differ. Written once classic protection
+    succeeds, or the instant classic is rejected with code -4120
+    (STOP_ORDER_SWITCH_ALGO) - every order after that first detection skips
+    straight to the known-working path instead of re-discovering it."""
+    __tablename__ = "binance_protection_capability"
+
+    id = Column(Integer, primary_key=True, index=True)
+    mode = Column(String, unique=True, index=True)  # BINANCE_TESTNET | BINANCE_LIVE
+    provider = Column(String)  # classic | algo
+    detected_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    detection_reason = Column(Text, nullable=True)
+    last_error = Column(Text, nullable=True)
     updated_at = Column(
         DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
     )

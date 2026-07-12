@@ -2,10 +2,22 @@ import { memo } from "react";
 import { CheckCircle2, Clock3, XCircle } from "lucide-react";
 import { fmtNum } from "../../lib/format";
 
+type ExecutionOutcome = {
+  attempted: boolean;
+  ok: boolean | null;
+  reason: string | null;
+} | null;
+
 type Props = {
   /** prediction.decision_engine for the selected symbol/interval */
   decision: any;
   regime?: string | null;
+  /** Ground truth from the most recent real Binance order attempt for this
+   *  symbol (see useExecutionPipeline) - when the signal was approved but
+   *  execution actually failed, this overrides the "trade allowed" verdict
+   *  below so the two are never conflated. Omit/null on the Paper tab,
+   *  where "trade allowed" already accurately describes what happens. */
+  executionOutcome?: ExecutionOutcome;
 };
 
 /** Green: trade allowed. Red: risk blocked a directional signal.
@@ -17,10 +29,14 @@ function overallState(decision: any): "allowed" | "blocked" | "waiting" {
   return "waiting";
 }
 
-function DecisionReasoningCard({ decision, regime }: Props) {
+function DecisionReasoningCard({ decision, regime, executionOutcome }: Props) {
   const state = overallState(decision);
-  const stateTone = state === "allowed" ? "green" : state === "blocked" ? "red" : "yellow";
-  const StateIcon = state === "allowed" ? CheckCircle2 : state === "blocked" ? XCircle : Clock3;
+  // A signal the decision engine approved, but whose live execution
+  // actually failed, must never be shown as simply "allowed" - see
+  // ExecutionPipelineCard for the full stage-by-stage reason.
+  const executionFailed = state === "allowed" && !!executionOutcome?.attempted && executionOutcome?.ok === false;
+  const stateTone = executionFailed ? "red" : state === "allowed" ? "green" : state === "blocked" ? "red" : "yellow";
+  const StateIcon = executionFailed ? XCircle : state === "allowed" ? CheckCircle2 : state === "blocked" ? XCircle : Clock3;
 
   const direction = decision?.final_direction ?? "—";
   const dirTone = direction === "LONG" ? "green" : direction === "SHORT" ? "red" : "yellow";
@@ -37,11 +53,24 @@ function DecisionReasoningCard({ decision, regime }: Props) {
       <div className={`dec-verdict ${stateTone}`}>
         <StateIcon size={18} />
         <div>
-          <b>
-            {direction === "NO_TRADE" ? "NO TRADE" : direction}
-            {state === "allowed" ? " · trade allowed" : state === "blocked" ? " · blocked by risk" : " · waiting"}
-          </b>
-          <p className="regime-desc">{decision?.risk_reason ?? "Waiting for the decision engine."}</p>
+          {executionFailed ? (
+            <>
+              <b>
+                <CheckCircle2 size={13} className="green" style={{ verticalAlign: "-2px" }} /> Signal Approved
+                {"  ·  "}
+                <XCircle size={13} className="red" style={{ verticalAlign: "-2px" }} /> Execution Failed
+              </b>
+              <p className="regime-desc">Reason: {executionOutcome?.reason || "Execution failed"}</p>
+            </>
+          ) : (
+            <>
+              <b>
+                {direction === "NO_TRADE" ? "NO TRADE" : direction}
+                {state === "allowed" ? " · trade allowed" : state === "blocked" ? " · blocked by risk" : " · waiting"}
+              </b>
+              <p className="regime-desc">{decision?.risk_reason ?? "Waiting for the decision engine."}</p>
+            </>
+          )}
         </div>
       </div>
 

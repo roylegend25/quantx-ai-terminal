@@ -15,6 +15,8 @@ anywhere in this module can contain keys, secrets or signatures.
 
 from __future__ import annotations
 
+import time
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -32,7 +34,7 @@ from app.exchanges.binance_errors import (
 )
 from app.exchanges.binance_futures_client import BinanceFuturesClient
 from app.risk import settings_repository
-from app.trading import modes
+from app.trading import modes, protection
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 
@@ -47,6 +49,37 @@ def get_read_client() -> BinanceFuturesClient:
     if _read_client is None:
         _read_client = BinanceFuturesClient(testnet=False, read_only=True)
     return _read_client
+
+
+# Phase 26: the Live Margin Calculator polls every 2s and the Execution
+# Pipeline/Risk Management endpoints poll every 8s - all of them need
+# (account, positions, daily_pnl) together. A short shared cache means
+# overlapping polls from multiple open cards cost one signed Binance round
+# trip, not one each, keeping this comfortably under Binance's per-IP
+# weight budget.
+_account_snapshot_cache: tuple[float, tuple, object] | None = None
+ACCOUNT_SNAPSHOT_TTL_SECONDS = 1.5
+
+
+async def get_account_snapshot(client: BinanceFuturesClient) -> tuple:
+    """Cache keyed on the client object's identity, not just time - so
+    swapping in a different client (production's real key rotation, or a
+    test's mock client) always invalidates immediately regardless of TTL,
+    with no separate cache-reset call for callers to remember."""
+    global _account_snapshot_cache
+    now = time.time()
+    if (
+        _account_snapshot_cache
+        and _account_snapshot_cache[2] is client
+        and now - _account_snapshot_cache[0] < ACCOUNT_SNAPSHOT_TTL_SECONDS
+    ):
+        return _account_snapshot_cache[1]
+    account = await client.get_account_info()
+    positions = await client.get_positions()
+    daily_pnl = await client.get_daily_realized_pnl()
+    snapshot = (account, positions, daily_pnl)
+    _account_snapshot_cache = (now, snapshot, client)
+    return snapshot
 
 
 def _safe_unavailable_reason(e: Exception) -> str:
@@ -143,9 +176,7 @@ async def binance_summary(db: Session = Depends(get_db)):
         return {"mode": "BINANCE_LIVE", **_binance_unavailable(BinanceNotConfigured("no keys"))}
     client = get_read_client()
     try:
-        account = await client.get_account_info()
-        positions = await client.get_positions()
-        daily_pnl = await client.get_daily_realized_pnl()
+        account, positions, daily_pnl = await get_account_snapshot(client)
     except Exception as e:
         return {"mode": "BINANCE_LIVE", **_binance_unavailable(e)}
 
@@ -209,12 +240,6 @@ async def binance_positions(db: Session = Depends(get_db)):
     except Exception as e:
         return {"mode": "BINANCE_LIVE", **_binance_unavailable(e), "positions": []}
 
-    def _protective(symbol: str, order_type: str):
-        for o in open_orders:
-            if o.symbol == symbol and o.type == order_type:
-                return o.stop_price, o.order_id
-        return None, None
-
     # local mirror row ids (written by the sync loop when live trading is
     # active) let the UI target PATCH /api/trading/binance/positions/{id}/risk
     local_ids = {
@@ -224,17 +249,36 @@ async def binance_positions(db: Session = Depends(get_db)):
         .all()
     }
 
+    # Phase 26 Algo Order Provider: which surface (classic/algo) each
+    # position's TP/SL is on, and any tracked algo ids - written by
+    # BinanceExecutionProvider whenever protection is placed or replaced.
+    provider_rows = {
+        row.symbol: row
+        for row in db.query(ExchangePositionRow).filter(ExchangePositionRow.mode == modes.MODE_LIVE).all()
+    }
+
     payload = []
     for p in live:
-        sl, sl_id = _protective(p.symbol, "STOP_MARKET")
-        tp, tp_id = _protective(p.symbol, "TAKE_PROFIT_MARKET")
+        # Phase 27: TP/SL is ALWAYS derived fresh from Binance's own open
+        # orders here (app.trading.protection) - never from local DB state,
+        # and never assumed present just because a same-type order exists
+        # (a plain non-reduce-only order doesn't count as protection). Algo
+        # orders never appear in get_open_orders, so any tracked algo id is
+        # looked up individually and merged in (resolve_protection).
+        row = provider_rows.get(p.symbol)
+        verified = await protection.resolve_protection(
+            client, p.symbol, open_orders=open_orders,
+            tp_algo_id=row.tp_algo_id if row else None, sl_algo_id=row.sl_algo_id if row else None,
+        )
         payload.append({
             **p.to_dict(),
             "id": local_ids.get(p.symbol),
-            "sl": sl,
-            "tp": tp,
-            "sl_order_id": sl_id,
-            "tp_order_id": tp_id,
+            "sl": verified.sl_price,
+            "tp": verified.tp_price,
+            "sl_order_id": verified.sl_order_id,
+            "tp_order_id": verified.tp_order_id,
+            "protection_status": verified.status,
+            "protection_provider": row.protection_provider if row else None,
         })
     return {"mode": "BINANCE_LIVE", "available": True, "positions": payload}
 

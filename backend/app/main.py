@@ -42,6 +42,7 @@ from app.api.admin_config import router as admin_config_router
 from app.core.env_manager import apply_to_settings as apply_env_file_to_settings
 from app.data_sources.scheduler import start_data_scheduler
 from app.trading.binance_sync import start_binance_sync
+from app.trading.protection_watchdog import start_protection_watchdog
 
 app = FastAPI(title="QuantX AI Terminal API", version="2.0.0")
 
@@ -52,6 +53,7 @@ async def delayed_background_start():
     start_mlops_scheduler()
     start_data_scheduler()
     start_binance_sync()
+    start_protection_watchdog()
 
 @app.on_event("startup")
 async def startup_event():

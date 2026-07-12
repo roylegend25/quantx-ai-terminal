@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import {
   Activity,
   AlertTriangle,
   ArrowRight,
   CheckCircle2,
   Clock,
+  Download,
   RotateCw,
   ShieldAlert,
   Target,
@@ -13,14 +14,24 @@ import {
 } from "lucide-react";
 import Card from "../components/Layout/Card";
 import { fmtNum, fmtPct } from "../lib/format";
+import { downloadBlob } from "../lib/backtestStats";
 import LocalTime from "../components/LocalTime";
 import AutoCardTable, { type AutoCardColumn } from "../components/Responsive/AutoCardTable";
 import PaperLiveTabs, { type PaperLiveTab } from "../components/Trading/PaperLiveTabs";
 import { useTradingStatus } from "../components/Trading/TradingShared";
+import { useBinanceLiveGate } from "../components/Trading/BinanceLiveGate";
 import { useBinanceAccount } from "../hooks/useBinanceAccount";
 import { BINANCE_TRADE_COLUMNS, BinanceTradeDetail } from "../lib/binanceTradeColumns";
 import { api } from "../services/api";
 import type { AppData } from "../hooks/useAppData";
+
+const STAGE_LABEL: Record<string, string> = {
+  intent: "Strategy Intent",
+  risk_gate: "Risk Gate Decision",
+  router: "Execution Router",
+  exchange: "Exchange Order",
+  audit: "Audit",
+};
 
 type Props = AppData;
 
@@ -115,13 +126,57 @@ export default function ExecutionPage({ executionStatus, executionMetrics, showT
 
   const [tab, setTab] = useState<PaperLiveTab>("paper");
   const { status: liveStatus } = useTradingStatus();
-  const { orders, orderRows } = useBinanceAccount(showToast);
+  const gate = useBinanceLiveGate(liveStatus);
+  const { orders, orderRows, reload: reloadOrders } = useBinanceAccount(showToast);
   const [binanceBotTrades, setBinanceBotTrades] = useState<any[]>([]);
   const [auditEvents, setAuditEvents] = useState<any[]>([]);
+  const [executionLog, setExecutionLog] = useState<any>(null);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+
+  const loadExecutionLog = () => api.binanceExecutionLog(50).then((r: any) => setExecutionLog(r)).catch(() => {});
+
+  const runAction = async (fn: () => Promise<any>, okMessage: string) => {
+    setActionBusy(true);
+    try {
+      await fn();
+      showToast(okMessage, "success");
+    } catch (e: any) {
+      showToast(e?.message || "Action failed", "error");
+    } finally {
+      setActionBusy(false);
+      await Promise.all([reloadOrders(), loadExecutionLog()]);
+    }
+  };
+
+  const handleRetrySync = async () => {
+    setSyncing(true);
+    try {
+      await api.tradingSync();
+      showToast("Execution state re-synced", "success");
+    } catch (e: any) {
+      showToast(e?.message || "Sync failed", "error");
+    } finally {
+      setSyncing(false);
+      await reloadOrders();
+    }
+  };
+
+  const handleExportExecutionLog = () => {
+    const events: any[] = executionLog?.events || [];
+    const lines = ["time,stage,event,mode,symbol,detail"];
+    for (const e of events) {
+      const detail = e.detail ? JSON.stringify(e.detail).replace(/"/g, "'") : "";
+      lines.push(`${e.created_at ?? ""},${e.stage},${e.event},${e.mode ?? ""},${e.symbol ?? ""},"${detail}"`);
+    }
+    downloadBlob(`binance_execution_log_${new Date().toISOString().slice(0, 10)}.csv`, lines.join("\n"), "text/csv");
+  };
 
   useEffect(() => {
     api.botTradesBinance().then((res) => setBinanceBotTrades(res?.trades || [])).catch(() => {});
     api.portfolioAudit(50).then((res) => setAuditEvents(res?.events || [])).catch(() => {});
+    loadExecutionLog();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
@@ -147,23 +202,35 @@ export default function ExecutionPage({ executionStatus, executionMetrics, showT
 
       {tab === "binance" ? (
         <>
-          <Card title="Binance Connection" wide>
+          <Card
+            title="Binance Connection"
+            wide
+            right={
+              <button className="mini-btn" disabled={syncing} onClick={handleRetrySync}>
+                <RotateCw size={13} /> {syncing ? "Syncing…" : "Retry Sync"}
+              </button>
+            }
+          >
             <div className="kv-grid">
               <div>
+                <span className="tile-label">Execution Provider</span>
+                <b className="tile-value">{liveStatus?.active_mode === "BINANCE_LIVE" ? "Binance Live" : "None (locked)"}</b>
+              </div>
+              <div className="align-right">
                 <span className="tile-label">API Status</span>
                 <b className="tile-value">{liveStatus?.binance_configured ? "Configured" : "Not Configured"}</b>
               </div>
-              <div className="align-right">
+              <div>
                 <span className="tile-label">Connected</span>
                 <b className={`tile-value ${liveStatus?.binance_connected ? "green" : "red"}`}>
                   {liveStatus?.binance_connected ? "Yes" : "No"}
                 </b>
               </div>
-              <div>
+              <div className="align-right">
                 <span className="tile-label">Active Mode</span>
                 <b className="tile-value">{liveStatus?.active_mode || "—"}</b>
               </div>
-              <div className="align-right">
+              <div>
                 <span className="tile-label">Kill Switch</span>
                 <b className={`tile-value ${liveStatus?.kill_switch_active ? "red" : "green"}`}>
                   {liveStatus?.kill_switch_active ? "ACTIVE" : "OFF"}
@@ -177,13 +244,87 @@ export default function ExecutionPage({ executionStatus, executionMetrics, showT
             )}
           </Card>
 
-          <Card title={`Real Open Orders (${orderRows.length})`} full>
+          <Card
+            title="Execution Pipeline"
+            full
+            right={
+              <button className="mini-btn" onClick={handleExportExecutionLog}>
+                <Download size={13} /> Export Log
+              </button>
+            }
+          >
+            <div className="chip-row" style={{ marginBottom: 14 }}>
+              {["intent", "risk_gate", "router", "exchange"].map((stage, i, arr) => (
+                <Fragment key={stage}>
+                  <span className="chip">{STAGE_LABEL[stage]}</span>
+                  {i < arr.length - 1 && <ArrowRight size={13} className="exec-route-arrow" />}
+                </Fragment>
+              ))}
+            </div>
+            {executionLog ? (
+              <div className="kv-grid">
+                {["intent", "risk_gate", "router", "exchange"].map((stage) => {
+                  const entry = executionLog.last_by_stage?.[stage];
+                  return (
+                    <div key={stage}>
+                      <span className="tile-label">Last {STAGE_LABEL[stage]}</span>
+                      {entry ? (
+                        <>
+                          <b className="tile-value" style={{ fontSize: 13 }}>
+                            {entry.symbol ? `${entry.symbol} — ` : ""}
+                            {entry.event.replace(/_/g, " ")}
+                          </b>
+                          <span className="mll-dim" style={{ fontSize: 11 }}>
+                            <LocalTime value={entry.created_at} label="Recorded" />
+                            {entry.detail?.reason ? ` — ${entry.detail.reason}` : ""}
+                          </span>
+                        </>
+                      ) : (
+                        <b className="tile-value" style={{ fontSize: 13 }}>—</b>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="analytics-empty">No execution events recorded yet.</p>
+            )}
+            <p className="regime-desc" style={{ marginTop: 12 }}>
+              Manual retries of a rejected order are intentionally not offered here — resubmit through normal bot/
+              manual flow so the risk gate re-evaluates current conditions.
+            </p>
+          </Card>
+
+          <Card title={`Real Open Orders (${orderRows.length})`} full
+            right={
+              orderRows.length > 0 ? (
+                <button
+                  className="mini-btn"
+                  disabled={actionBusy || !gate.canCancelOrders}
+                  title={!gate.canCancelOrders ? gate.disabledReason ?? "" : ""}
+                  onClick={() => runAction(() => api.binanceCancelAllOrders(), "All Binance orders canceled")}
+                >
+                  Cancel All
+                </button>
+              ) : undefined
+            }
+          >
             <AutoCardTable
               columns={BINANCE_ORDER_COLUMNS}
               rows={orderRows}
               keyField={(o: any) => o.order_id}
               titleColumn="symbol"
               statusColumn="side"
+              renderActions={(o: any) => (
+                <button
+                  className="mini-btn"
+                  disabled={actionBusy || !gate.canCancelOrders}
+                  title={!gate.canCancelOrders ? gate.disabledReason ?? "" : "Cancel this order"}
+                  onClick={() => runAction(() => api.binanceCancelOrder(o.symbol, o.order_id), "Order canceled")}
+                >
+                  Cancel
+                </button>
+              )}
               emptyMessage={orders?.available === false ? orders?.reason || "Unavailable" : "No open Binance orders"}
             />
           </Card>

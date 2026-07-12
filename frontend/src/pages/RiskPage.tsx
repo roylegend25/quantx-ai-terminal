@@ -1,157 +1,19 @@
-import { useEffect, useState } from "react";
-import { createPortal } from "react-dom";
-import { AlertTriangle, OctagonX } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { OctagonX, RefreshCw, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import Card from "../components/Layout/Card";
 import RiskStatusCard from "../components/Dashboard/RiskStatusCard";
 import PaperLiveTabs, { type PaperLiveTab } from "../components/Trading/PaperLiveTabs";
+import CloseAllPositionsModal from "../components/Trading/CloseAllPositionsModal";
+import RiskLimitsModal from "../components/Trading/RiskLimitsModal";
+import RiskSettingsForm from "../components/Trading/RiskSettingsForm";
+import BinanceRiskStatusCard from "../components/Trading/BinanceRiskStatusCard";
+import BinanceDecisionStatusCard from "../components/Trading/BinanceDecisionStatusCard";
 import { useTradingStatus } from "../components/Trading/TradingShared";
 import { useBinanceAccount } from "../hooks/useBinanceAccount";
+import { useAdminServerConfig } from "../hooks/useAdminServerConfig";
 import { fmtLocalDateTime, fmtPct, fmtUsd } from "../lib/format";
 import { api } from "../services/api";
 import type { AppData } from "../hooks/useAppData";
-
-const CLOSE_ALL_PHRASE = "CLOSE ALL POSITIONS";
-
-/** Typed-confirmation gate for the one genuinely new, high-risk action on
- *  this page - closing every open Binance position in one go. Reuses the
- *  existing single-position close endpoint per position (no new backend
- *  bulk-close surface), so each close still goes through the same
- *  server-side risk-gate and audit checks as any other close. */
-function CloseAllPositionsModal({
-  positionCount,
-  busy,
-  onClose,
-  onConfirm,
-}: {
-  positionCount: number;
-  busy: boolean;
-  onClose: () => void;
-  onConfirm: () => void;
-}) {
-  const [text, setText] = useState("");
-  const ready = text.trim() === CLOSE_ALL_PHRASE;
-
-  return createPortal(
-    <div className="modal-overlay" onClick={() => !busy && onClose()}>
-      <div className="modal-card risk-modal" onClick={(e) => e.stopPropagation()}>
-        <h3>Close ALL {positionCount} Binance position{positionCount === 1 ? "" : "s"}?</h3>
-        <p className="risk-modal-error">
-          <AlertTriangle size={14} /> Sends a real reduce-only MARKET order for every open Binance position, one at a
-          time. This uses real funds and cannot be undone.
-        </p>
-        <label className="live-unlock-phrase">
-          <span className="tile-label">
-            Type <b>{CLOSE_ALL_PHRASE}</b> to confirm
-          </span>
-          <input
-            type="text"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder={CLOSE_ALL_PHRASE}
-            autoComplete="off"
-            spellCheck={false}
-          />
-        </label>
-        <div className="modal-actions">
-          <button className="mini-btn" onClick={onClose} disabled={busy}>
-            Cancel
-          </button>
-          <button className="btn-danger" onClick={onConfirm} disabled={!ready || busy}>
-            {busy ? "Closing…" : "Close All Positions"}
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body
-  );
-}
-
-type RiskSettingsData = {
-  min_confidence_to_trade: number;
-  max_risk_per_trade_pct: number;
-  max_daily_loss_pct: number;
-  max_weekly_loss_pct: number;
-  max_drawdown_pct: number;
-  max_consecutive_losses: number;
-  max_open_positions: number;
-  max_position_size_usd: number;
-  allow_long: boolean;
-  allow_short: boolean;
-  cooldown_minutes: number;
-  paper_trading_enabled: boolean;
-  updated_at: string | null;
-};
-
-const OPEN_POSITIONS_OPTIONS = [1, 2, 3, 4, 5];
-
-const PRESETS: { key: string; label: string; badge?: string; confidence: number; risk: number }[] = [
-  { key: "conservative", label: "Conservative", confidence: 0.7, risk: 0.5 },
-  { key: "balanced", label: "Balanced", confidence: 0.6, risk: 1.0 },
-  { key: "aggressive", label: "Aggressive", badge: "PAPER ONLY", confidence: 0.45, risk: 1.5 },
-];
-
-function RiskSlider({
-  label,
-  value,
-  min,
-  max,
-  step,
-  format,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  format: (v: number) => string;
-  onChange: (v: number) => void;
-}) {
-  return (
-    <div className="risk-field">
-      <div className="risk-field-head">
-        <span className="tile-label">{label}</span>
-        <b className="risk-field-value">{format(value)}</b>
-      </div>
-      <input
-        type="range"
-        className="risk-slider"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-      />
-    </div>
-  );
-}
-
-function RiskToggle({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <div className="risk-toggle-row">
-      <span className="tile-label" style={{ marginBottom: 0 }}>
-        {label}
-      </span>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        className={`toggle-switch ${checked ? "on" : ""}`}
-        onClick={() => onChange(!checked)}
-      >
-        <span className="toggle-knob" />
-      </button>
-    </div>
-  );
-}
 
 export default function RiskPage(props: AppData) {
   const { portfolio, positions, history, dashboard, prediction, showToast } = props;
@@ -159,16 +21,104 @@ export default function RiskPage(props: AppData) {
   const tradeRisk = prediction?.risk;
 
   const [tab, setTab] = useState<PaperLiveTab>("paper");
-  const [settings, setSettings] = useState<RiskSettingsData | null>(null);
-  const [draft, setDraft] = useState<RiskSettingsData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
 
   const { status: liveStatus, reload: reloadStatus } = useTradingStatus();
   const { summary, positionRows: binancePositionRows, busy: binanceBusy, run: runBinance, reload: reloadBinance } =
     useBinanceAccount(showToast);
   const [showCloseAll, setShowCloseAll] = useState(false);
   const [killSwitchBusy, setKillSwitchBusy] = useState(false);
+  const [switchingToPaper, setSwitchingToPaper] = useState(false);
+  const [reloadingConfig, setReloadingConfig] = useState(false);
+  const [showRiskLimits, setShowRiskLimits] = useState(false);
+  const [riskStatus, setRiskStatus] = useState<any>(null);
+  const [riskStatusError, setRiskStatusError] = useState(false);
+  const [binanceDecision, setBinanceDecision] = useState<any>(null);
+  const [binanceDecisionError, setBinanceDecisionError] = useState(false);
+  // True only until the very first fetch attempt settles - distinguishes
+  // "still loading" from "errored" so the cards don't flash an unavailable
+  // state while a slow signed Binance read is still in flight.
+  const [liveStatusLoading, setLiveStatusLoading] = useState(true);
+  const { config: adminConfig, forbidden: adminForbidden, reload: reloadAdminConfig } = useAdminServerConfig();
+
+  // Separate from the Paper tab's dashboard/prediction-driven state above -
+  // these two calls hit the Binance/live-only endpoints and must never be
+  // backfilled with paper values. liveStatusBusyRef prevents a slow request
+  // (e.g. a real Binance read) from overlapping with the next poll tick.
+  const liveStatusBusyRef = useRef(false);
+  const reloadBinanceLiveStatus = useCallback(async () => {
+    if (liveStatusBusyRef.current) return;
+    liveStatusBusyRef.current = true;
+    try {
+      await Promise.all([
+        api
+          .binanceRiskStatus()
+          .then((r: any) => {
+            setRiskStatus(r);
+            setRiskStatusError(false);
+          })
+          .catch(() => setRiskStatusError(true)),
+        api
+          .binanceDecisionStatus()
+          .then((r: any) => {
+            setBinanceDecision(r);
+            setBinanceDecisionError(false);
+          })
+          .catch(() => setBinanceDecisionError(true)),
+      ]);
+    } finally {
+      liveStatusBusyRef.current = false;
+      setLiveStatusLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    reloadBinanceLiveStatus();
+    const id = window.setInterval(reloadBinanceLiveStatus, 8000);
+    return () => window.clearInterval(id);
+  }, [reloadBinanceLiveStatus]);
+
+  // Extra immediate refresh the moment the Binance Live tab is opened, so
+  // switching in never shows up-to-8s-stale numbers.
+  useEffect(() => {
+    if (tab === "binance") reloadBinanceLiveStatus();
+  }, [tab, reloadBinanceLiveStatus]);
+
+  async function handleSwitchToPaper() {
+    setSwitchingToPaper(true);
+    try {
+      await api.lockBinanceLive();
+      showToast("Switched back to Paper trading — live lock re-armed", "success");
+      await Promise.all([reloadStatus(), reloadBinance(), reloadBinanceLiveStatus()]);
+    } catch (e: any) {
+      showToast(e?.message || "Failed to switch to Paper mode", "error");
+    } finally {
+      setSwitchingToPaper(false);
+    }
+  }
+
+  async function handleReloadConfig() {
+    setReloadingConfig(true);
+    try {
+      await api.adminReloadConfig();
+      showToast("Backend config reloaded", "success");
+      await Promise.all([reloadStatus(), reloadAdminConfig(), reloadBinanceLiveStatus()]);
+    } catch (e: any) {
+      showToast(e?.message || "Reload failed", "error");
+    } finally {
+      setReloadingConfig(false);
+    }
+  }
+
+  async function handleSaveRiskLimits(limits: Record<string, unknown>) {
+    try {
+      await api.adminUpdateRiskLimits(limits);
+      showToast("Risk limits updated", "success");
+      setShowRiskLimits(false);
+      await Promise.all([reloadStatus(), reloadAdminConfig(), reloadBinanceLiveStatus()]);
+    } catch (e: any) {
+      showToast(e?.message || "Failed to update risk limits", "error");
+    }
+  }
 
   async function handleCloseAllPositions() {
     setShowCloseAll(false);
@@ -185,6 +135,7 @@ export default function RiskPage(props: AppData) {
       }
       if (failed > 0) throw new Error(`Closed ${ok}, ${failed} failed — check Open Positions`);
     }, `Closed ${ok} Binance position${ok === 1 ? "" : "s"}`);
+    await reloadBinanceLiveStatus();
   }
 
   async function handleEmergencyStop(active: boolean) {
@@ -192,72 +143,13 @@ export default function RiskPage(props: AppData) {
     try {
       await api.killSwitch(active, active ? "risk page emergency stop" : undefined);
       showToast(active ? "Kill switch ACTIVATED — all trading halted" : "Kill switch deactivated", "success");
-      await Promise.all([reloadStatus(), reloadBinance()]);
+      await Promise.all([reloadStatus(), reloadBinance(), reloadBinanceLiveStatus()]);
     } catch (e: any) {
       showToast(e?.message || "Kill switch action failed", "error");
     } finally {
       setKillSwitchBusy(false);
     }
   }
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .riskSettingsGet()
-      .then((data: RiskSettingsData) => {
-        if (cancelled) return;
-        setSettings(data);
-        setDraft(data);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  function patchDraft(patch: Partial<RiskSettingsData>) {
-    setDraft((d) => (d ? { ...d, ...patch } : d));
-  }
-
-  function applyPreset(preset: (typeof PRESETS)[number]) {
-    patchDraft({ min_confidence_to_trade: preset.confidence, max_risk_per_trade_pct: preset.risk });
-  }
-
-  async function handleSave() {
-    if (!draft) return;
-    setSaving(true);
-    try {
-      const { updated_at, ...patch } = draft;
-      const res = await api.riskSettingsUpdate(patch);
-      setSettings(res);
-      setDraft(res);
-      showToast("Risk settings saved");
-    } catch (e: any) {
-      showToast(e?.message || "Failed to save risk settings", "error");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handleReset() {
-    setSaving(true);
-    try {
-      const res = await api.riskSettingsReset();
-      setSettings(res);
-      setDraft(res);
-      showToast("Risk settings reset to defaults");
-    } catch (e: any) {
-      showToast(e?.message || "Failed to reset risk settings", "error");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const confidenceLowered = !!(draft && settings && draft.min_confidence_to_trade < settings.min_confidence_to_trade);
-  const riskIncreased = !!(draft && settings && draft.max_risk_per_trade_pct > settings.max_risk_per_trade_pct);
-  const dirty = !!(draft && settings && JSON.stringify(draft) !== JSON.stringify(settings));
 
   const confidence = prediction?.confidence;
   const requiredConfidence = tradeRisk?.required_confidence;
@@ -269,12 +161,26 @@ export default function RiskPage(props: AppData) {
         <p className="regime-desc">
           {tab === "paper"
             ? "Editable paper-mode risk limits and the bot's live decision status."
-            : "Read-only Binance Real Money risk snapshot, plus emergency controls. Limits are edited from Binance Real → Server Trading Control (admin-only)."}
+            : "Live Binance risk controls. Actions are protected by the server lock, live unlock, and risk gate."}
         </p>
       </Card>
 
       {tab === "binance" ? (
         <>
+          <BinanceRiskStatusCard
+            data={riskStatus}
+            loading={liveStatusLoading}
+            errored={riskStatusError}
+            onRefresh={reloadBinanceLiveStatus}
+          />
+
+          <BinanceDecisionStatusCard
+            data={binanceDecision}
+            loading={liveStatusLoading}
+            errored={binanceDecisionError}
+            onRefresh={reloadBinanceLiveStatus}
+          />
+
           <Card title="Binance Live Risk" full className="live-danger-card">
             <div className="kv-grid">
               <div>
@@ -299,15 +205,31 @@ export default function RiskPage(props: AppData) {
               </div>
               <div>
                 <span className="tile-label">Max Daily Loss</span>
-                <b className="tile-value">{fmtUsd(liveStatus?.max_daily_loss_usdt)}</b>
+                <b className="tile-value">{fmtUsd(riskStatus?.max_daily_loss_usdt ?? liveStatus?.max_daily_loss_usdt)}</b>
               </div>
               <div className="align-right">
+                <span className="tile-label">Daily Loss Used</span>
+                <b className="tile-value red">{riskStatus?.available ? fmtUsd(riskStatus?.daily_loss_used_usdt) : "—"}</b>
+              </div>
+              <div>
                 <span className="tile-label">Available Balance</span>
                 <b className="tile-value">{summary?.available ? fmtUsd(summary?.available_balance) : "—"}</b>
               </div>
-              <div>
+              <div className="align-right">
                 <span className="tile-label">Margin Used</span>
                 <b className="tile-value">{summary?.available ? fmtUsd(summary?.margin_used) : "—"}</b>
+              </div>
+              <div>
+                <span className="tile-label">Free Margin</span>
+                <b className="tile-value">{riskStatus?.available ? fmtUsd(riskStatus?.free_margin) : "—"}</b>
+              </div>
+              <div className="align-right">
+                <span className="tile-label">Wallet Balance</span>
+                <b className="tile-value">{riskStatus?.available ? fmtUsd(riskStatus?.wallet_balance) : "—"}</b>
+              </div>
+              <div>
+                <span className="tile-label">Total Notional Exposure</span>
+                <b className="tile-value">{riskStatus?.available ? fmtUsd(riskStatus?.total_notional_exposure) : "—"}</b>
               </div>
               <div className="align-right">
                 <span className="tile-label">Nearest Liq. Distance</span>
@@ -319,9 +241,16 @@ export default function RiskPage(props: AppData) {
               </div>
               <div>
                 <span className="tile-label">Open Positions</span>
-                <b className="tile-value">{binancePositionRows.length}</b>
+                <b className="tile-value">
+                  {binancePositionRows.length}
+                  {riskStatus?.max_open_positions != null ? ` of ${riskStatus.max_open_positions}` : ""}
+                </b>
               </div>
               <div className="align-right">
+                <span className="tile-label">Open Order Risk</span>
+                <b className="tile-value">{riskStatus?.open_orders ?? "—"}</b>
+              </div>
+              <div>
                 <span className="tile-label">Kill Switch</span>
                 <b className={`tile-value ${liveStatus?.kill_switch_active ? "red" : "green"}`}>
                   {liveStatus?.kill_switch_active ? "ACTIVE" : "OFF"}
@@ -351,7 +280,9 @@ export default function RiskPage(props: AppData) {
                 className="mini-btn"
                 disabled={binanceBusy}
                 onClick={() =>
-                  runBinance(() => api.binanceCancelAllOrders(), "All Binance orders canceled")
+                  runBinance(() => api.binanceCancelAllOrders(), "All Binance orders canceled").then(
+                    reloadBinanceLiveStatus
+                  )
                 }
               >
                 Cancel All Binance Orders
@@ -363,6 +294,30 @@ export default function RiskPage(props: AppData) {
               >
                 Close All Binance Positions
               </button>
+              <button
+                className="mini-btn"
+                disabled={switchingToPaper || (liveStatus?.active_mode || "PAPER") === "PAPER"}
+                onClick={handleSwitchToPaper}
+                title="Re-arms the live lock — the unlock ceremony is required again to return to Binance Live"
+              >
+                <ShieldCheck size={13} /> {switchingToPaper ? "Switching…" : "Switch back to Paper"}
+              </button>
+              <button
+                className="mini-btn"
+                disabled={adminForbidden || !adminConfig}
+                title={adminForbidden ? "Admin privileges required" : "Edit server-side risk limits"}
+                onClick={() => setShowRiskLimits(true)}
+              >
+                <SlidersHorizontal size={13} /> Edit Risk Limits
+              </button>
+              <button
+                className="mini-btn"
+                disabled={adminForbidden || reloadingConfig}
+                title={adminForbidden ? "Admin privileges required" : "Re-apply the server .env's allowed trading keys"}
+                onClick={handleReloadConfig}
+              >
+                <RefreshCw size={13} /> {reloadingConfig ? "Reloading…" : "Reload Backend Config"}
+              </button>
             </div>
           </Card>
 
@@ -372,6 +327,15 @@ export default function RiskPage(props: AppData) {
               busy={binanceBusy}
               onClose={() => setShowCloseAll(false)}
               onConfirm={handleCloseAllPositions}
+            />
+          )}
+
+          {showRiskLimits && adminConfig && (
+            <RiskLimitsModal
+              config={adminConfig}
+              busy={false}
+              onClose={() => setShowRiskLimits(false)}
+              onSave={handleSaveRiskLimits}
             />
           )}
         </>
@@ -416,171 +380,10 @@ export default function RiskPage(props: AppData) {
         </div>
       </Card>
 
-      <Card title="Risk Limits" full>
-        {loading || !draft ? (
-          <p className="regime-desc">Loading risk settings…</p>
-        ) : (
-          <>
-            <p className="regime-desc">
-              Editable paper-mode limits. Changes take effect on the next prediction/scheduler cycle - no restart
-              needed. Live trading remains permanently locked in this build.
-            </p>
+      <RiskSettingsForm showToast={showToast} />
 
-            <div className="risk-presets">
-              {PRESETS.map((preset) => (
-                <button key={preset.key} type="button" className="preset-btn" onClick={() => applyPreset(preset)}>
-                  {preset.label}
-                  {preset.badge && <span className="badge badge-red risk-preset-badge">{preset.badge}</span>}
-                  <span className="preset-btn-sub">
-                    {Math.round(preset.confidence * 100)}% conf · {preset.risk}% risk
-                  </span>
-                </button>
-              ))}
-            </div>
-
-            <div className="risk-settings-grid">
-              <RiskSlider
-                label="Confidence Threshold"
-                value={draft.min_confidence_to_trade}
-                min={0.05}
-                max={0.95}
-                step={0.01}
-                format={(v) => `${Math.round(v * 100)}%`}
-                onChange={(v) => patchDraft({ min_confidence_to_trade: v })}
-              />
-              <RiskSlider
-                label="Risk Per Trade"
-                value={draft.max_risk_per_trade_pct}
-                min={0.1}
-                max={5}
-                step={0.1}
-                format={(v) => `${v.toFixed(1)}%`}
-                onChange={(v) => patchDraft({ max_risk_per_trade_pct: v })}
-              />
-              <RiskSlider
-                label="Daily Loss Limit"
-                value={draft.max_daily_loss_pct}
-                min={0.5}
-                max={10}
-                step={0.5}
-                format={(v) => `${v.toFixed(1)}%`}
-                onChange={(v) => patchDraft({ max_daily_loss_pct: v })}
-              />
-              <RiskSlider
-                label="Weekly Loss Limit"
-                value={draft.max_weekly_loss_pct}
-                min={1}
-                max={30}
-                step={0.5}
-                format={(v) => `${v.toFixed(1)}%`}
-                onChange={(v) => patchDraft({ max_weekly_loss_pct: v })}
-              />
-              <RiskSlider
-                label="Max Drawdown"
-                value={draft.max_drawdown_pct}
-                min={1}
-                max={50}
-                step={1}
-                format={(v) => `${v.toFixed(0)}%`}
-                onChange={(v) => patchDraft({ max_drawdown_pct: v })}
-              />
-            </div>
-
-            {confidenceLowered && (
-              <div className="risk-warning">
-                Lower confidence threshold will increase trade frequency but may reduce accuracy.
-              </div>
-            )}
-            {riskIncreased && <div className="risk-warning">Higher risk per trade can increase drawdown.</div>}
-
-            <div className="risk-settings-grid" style={{ marginTop: 18 }}>
-              <div className="risk-field">
-                <span className="tile-label">Max Open Positions</span>
-                <div className="tf-group" style={{ marginTop: 6 }}>
-                  {OPEN_POSITIONS_OPTIONS.map((n) => (
-                    <button
-                      key={n}
-                      className={draft.max_open_positions === n ? "tf-btn active" : "tf-btn"}
-                      onClick={() => patchDraft({ max_open_positions: n })}
-                    >
-                      {n}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="risk-field">
-                <span className="tile-label">Cooldown Minutes</span>
-                <input
-                  type="number"
-                  className="risk-number-input"
-                  min={0}
-                  max={1440}
-                  step={5}
-                  value={draft.cooldown_minutes}
-                  onChange={(e) => patchDraft({ cooldown_minutes: Number(e.target.value) })}
-                />
-              </div>
-
-              <div className="risk-field">
-                <span className="tile-label">Max Consecutive Losses</span>
-                <input
-                  type="number"
-                  className="risk-number-input"
-                  min={1}
-                  max={20}
-                  step={1}
-                  value={draft.max_consecutive_losses}
-                  onChange={(e) => patchDraft({ max_consecutive_losses: Number(e.target.value) })}
-                />
-              </div>
-
-              <div className="risk-field">
-                <span className="tile-label">Max Position Size (USD)</span>
-                <input
-                  type="number"
-                  className="risk-number-input"
-                  min={10}
-                  max={100000}
-                  step={10}
-                  value={draft.max_position_size_usd}
-                  onChange={(e) => patchDraft({ max_position_size_usd: Number(e.target.value) })}
-                />
-              </div>
-
-              <RiskToggle
-                label="Long Enabled"
-                checked={draft.allow_long}
-                onChange={(v) => patchDraft({ allow_long: v })}
-              />
-              <RiskToggle
-                label="Short Enabled"
-                checked={draft.allow_short}
-                onChange={(v) => patchDraft({ allow_short: v })}
-              />
-              <RiskToggle
-                label="Paper Trading Enabled"
-                checked={draft.paper_trading_enabled}
-                onChange={(v) => patchDraft({ paper_trading_enabled: v })}
-              />
-            </div>
-
-            <div className="controls" style={{ marginTop: 20 }}>
-              <button onClick={handleSave} disabled={saving || !dirty}>
-                {saving ? "Saving…" : "Save"}
-              </button>
-              <button onClick={handleReset} disabled={saving}>
-                Reset Defaults
-              </button>
-            </div>
-
-            <p className="regime-desc" style={{ marginTop: 10 }}>
-              Last updated: {settings?.updated_at ? fmtLocalDateTime(settings.updated_at) : "—"}
-            </p>
-          </>
-        )}
-
-        <div className="kv-grid" style={{ marginTop: 20 }}>
+      <Card title="Live Decision Risk Summary">
+        <div className="kv-grid">
           <div>
             <span className="tile-label">Max Risk / Trade</span>
             <b className="tile-value">{fmtPct(risk?.max_risk_per_trade_pct, 2)}</b>

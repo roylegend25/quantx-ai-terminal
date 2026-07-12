@@ -3,13 +3,26 @@ import { createPortal } from "react-dom";
 import { AlertTriangle } from "lucide-react";
 import { api } from "../../services/api";
 
-/** Safe status from GET /api/trading/mode — the Phase 23 shape. */
+/** Safe status from GET /api/trading/mode — the Phase 23 shape, plus the
+ *  canonical Binance connectivity fields (app.api.exchange.
+ *  binance_connectivity, merged in by the /mode handler) every page should
+ *  read instead of computing its own connection status. Distinguishes
+ *  public market reachability (binance_public_connected) from key
+ *  configuration (binance_api_key/secret_configured) from the actual
+ *  signed account read (binance_account_connected/binance_signed_read_ok)
+ *  - `binance_connected` is kept as a back-compat alias of the latter. */
 export type TradingStatus = {
   active_mode: "PAPER" | "BINANCE_LIVE_LOCKED" | "BINANCE_LIVE" | string;
   paper_available: boolean;
   binance_live_available: boolean;
   binance_configured: boolean;
   binance_connected?: boolean;
+  binance_api_key_configured?: boolean;
+  binance_api_secret_configured?: boolean;
+  binance_public_connected?: boolean;
+  binance_account_connected?: boolean;
+  binance_signed_read_ok?: boolean;
+  binance_account_error?: string | null;
   binance_live_enabled_by_server: boolean;
   binance_live_unlocked_by_user: boolean;
   can_trade_binance_live: boolean;
@@ -95,7 +108,7 @@ export function LiveUnlockModal({ status, onClose, onChanged, showToast }: Unloc
     setBusy(true);
     try {
       await api.unlockBinanceLive(text.trim(), acks);
-      showToast("Binance REAL MONEY trading unlocked", "success");
+      showToast("User Live Confirmation completed.", "success");
       await onChanged();
       onClose();
     } catch (e: any) {

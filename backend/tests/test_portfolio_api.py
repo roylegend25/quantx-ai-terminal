@@ -184,6 +184,30 @@ def test_binance_and_paper_portfolios_are_separate(monkeypatch):
     # the real view carries live TP/SL from resting reduce-only orders
     assert real[0]["sl"] == 3100.0
     assert real[0]["liquidation_price"] == 4400.0
+    # MockReadClient's position has a resting SL but no TP
+    assert real[0]["protection_status"] == "MISSING_TP"
+    assert real[0]["tp"] is None
+
+
+def test_binance_positions_ignore_non_reduce_only_orders_for_protection(monkeypatch):
+    """A resting order that happens to share symbol/type but isn't
+    reduce-only/closePosition must never be counted as protection - Phase
+    27's whole point is that protection status is verified, not assumed."""
+    from app.exchanges.binance_models import BinanceOrder
+
+    class NoProtectionClient(MockReadClient):
+        async def get_open_orders(self, symbol=None):
+            return [BinanceOrder(
+                order_id=99, client_order_id="manual-1", symbol="ETHUSDT", side="SELL", position_side="BOTH",
+                type="STOP_MARKET", status="NEW", price=0.0, stop_price=3100.0, quantity=0.05,
+                executed_qty=0.0, avg_price=0.0, reduce_only=False, close_position=False,
+            )]
+
+    use_mock_read_client(monkeypatch, client=NoProtectionClient())
+    client = make_client(monkeypatch)
+    real = client.get("/api/portfolio/binance/positions").json()["positions"]
+    assert real[0]["protection_status"] == "MISSING_TP_SL"
+    assert real[0]["sl"] is None
 
 
 def test_binance_not_configured_returns_safe_unavailable(monkeypatch):
@@ -243,6 +267,47 @@ def test_binance_orders_trades_income(monkeypatch):
 
     income = client.get("/api/portfolio/binance/income").json()
     assert income["income"][0]["income_type"] == "FUNDING_FEE"
+
+
+# --------------------------------------------------- account snapshot cache
+
+def test_account_snapshot_is_cached_across_rapid_calls(monkeypatch):
+    """The Live Margin Calculator (2s poll) and other cards can call
+    binance_summary back-to-back without each one hitting Binance."""
+    call_count = {"account_info": 0}
+
+    class CountingClient(MockReadClient):
+        async def get_account_info(self):
+            call_count["account_info"] += 1
+            return await super().get_account_info()
+
+    use_mock_read_client(monkeypatch, client=CountingClient())
+    client = make_client(monkeypatch)
+
+    r1 = client.get("/api/portfolio/binance/summary").json()
+    r2 = client.get("/api/portfolio/binance/summary").json()
+
+    assert r1["total_wallet_balance"] == r2["total_wallet_balance"] == 500.0
+    assert call_count["account_info"] == 1
+
+
+def test_account_snapshot_cache_invalidates_on_client_swap(monkeypatch):
+    """Swapping the read client (key rotation, or a fresh test) must never
+    serve a stale snapshot from the previous client."""
+    use_mock_read_client(monkeypatch, client=MockReadClient())
+    client = make_client(monkeypatch)
+    client.get("/api/portfolio/binance/summary")
+
+    call_count = {"account_info": 0}
+
+    class CountingClient(MockReadClient):
+        async def get_account_info(self):
+            call_count["account_info"] += 1
+            return await super().get_account_info()
+
+    use_mock_read_client(monkeypatch, client=CountingClient())
+    client.get("/api/portfolio/binance/summary")
+    assert call_count["account_info"] == 1  # not served from the old client's cache
 
 
 # --------------------------------------------------------------- ownership
