@@ -264,6 +264,7 @@ async def live_readiness(db: Session = Depends(get_db)):
     exactly which gate is blocking, not just the first one."""
     from app.api.exchange import _binance_connected
     from app.api.portfolio import get_read_client
+    from app.exchanges.binance_snapshot_service import snapshot_service
 
     configured = modes.binance_configured()
     connected = await _binance_connected() if configured else False
@@ -281,7 +282,11 @@ async def live_readiness(db: Session = Depends(get_db)):
     balance_detail = "Binance API key not configured"
     if configured:
         try:
-            balances = await get_read_client().get_balances()
+            # Phase 29: shares the same cached balances read as
+            # /api/portfolio/binance/balances instead of its own signed
+            # call - this endpoint is polled every 10s alongside several
+            # others that all want the same number.
+            balances = await snapshot_service.get_balances(get_read_client())
             usdt_available = next((b.available for b in balances if b.asset == "USDT"), 0.0)
             balance_available = usdt_available > 0
             balance_detail = (
@@ -456,7 +461,7 @@ async def binance_risk_status(db: Session = Depends(get_db)):
     /portfolio/binance/summary on the client. Every value is read from live
     Binance account state (or the server's own trading-control state) -
     nothing here is copied from the paper ledger."""
-    from app.api.portfolio import binance_orders, binance_summary, get_read_client
+    from app.api.portfolio import binance_orders, binance_summary, get_account_snapshot, get_read_client
 
     safe = modes.exchange_safe_status(db)
     summary = await binance_summary(db=db)
@@ -470,7 +475,11 @@ async def binance_risk_status(db: Session = Depends(get_db)):
     current_leverage = None
     if account_connected and modes.binance_configured():
         try:
-            positions = await get_read_client().get_positions()
+            # Phase 29: binance_summary() above already refreshed (or
+            # served the cached) account bundle - re-reading it here costs
+            # no extra Binance call within the TTL window instead of a
+            # third independent get_positions() for the same data.
+            _, positions, _ = await get_account_snapshot(get_read_client())
             if positions:
                 current_leverage = max(p.leverage for p in positions)
         except Exception:

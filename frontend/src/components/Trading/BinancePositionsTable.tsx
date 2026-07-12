@@ -54,6 +54,11 @@ type Props = {
   gate: BinanceLiveGate;
   unavailable?: boolean;
   unavailableReason?: string | null;
+  /** Phase 29: true when this data is a cached snapshot served during a
+   *  Binance rate limit rather than a fresh read - the rows themselves are
+   *  still the last known good positions, never wiped to empty. */
+  stale?: boolean;
+  retryAfterSeconds?: number | null;
   onEdit: (position: any) => void;
   onRequestClose: (position: any) => void;
   onPartialClose: (position: any, quantity: number) => void;
@@ -119,6 +124,8 @@ export default function BinancePositionsTable({
   gate,
   unavailable,
   unavailableReason,
+  stale,
+  retryAfterSeconds,
   onEdit,
   onRequestClose,
   onPartialClose,
@@ -167,6 +174,15 @@ export default function BinancePositionsTable({
         </div>
       }
     >
+      {stale && (
+        <div className="regime-focus" style={{ marginBottom: 14 }}>
+          <span className="tile-label">
+            <RefreshCw size={13} /> Binance API Cooling Down — showing cached data
+            {retryAfterSeconds != null ? ` (retry in ${Math.ceil(retryAfterSeconds)}s)` : ""}
+          </span>
+        </div>
+      )}
+
       {unprotected.length > 0 && (
         <div className="regime-focus blocked" style={{ marginBottom: 14 }}>
           <span className="tile-label">

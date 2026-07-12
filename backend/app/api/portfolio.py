@@ -15,7 +15,7 @@ anywhere in this module can contain keys, secrets or signatures.
 
 from __future__ import annotations
 
-import time
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -33,6 +33,7 @@ from app.exchanges.binance_errors import (
     BinanceTimestampError,
 )
 from app.exchanges.binance_futures_client import BinanceFuturesClient
+from app.exchanges.binance_snapshot_service import snapshot_service
 from app.risk import settings_repository
 from app.trading import modes, protection
 
@@ -51,35 +52,17 @@ def get_read_client() -> BinanceFuturesClient:
     return _read_client
 
 
-# Phase 26: the Live Margin Calculator polls every 2s and the Execution
-# Pipeline/Risk Management endpoints poll every 8s - all of them need
-# (account, positions, daily_pnl) together. A short shared cache means
-# overlapping polls from multiple open cards cost one signed Binance round
-# trip, not one each, keeping this comfortably under Binance's per-IP
-# weight budget.
-_account_snapshot_cache: tuple[float, tuple, object] | None = None
-ACCOUNT_SNAPSHOT_TTL_SECONDS = 1.5
-
-
-async def get_account_snapshot(client: BinanceFuturesClient) -> tuple:
-    """Cache keyed on the client object's identity, not just time - so
-    swapping in a different client (production's real key rotation, or a
-    test's mock client) always invalidates immediately regardless of TTL,
-    with no separate cache-reset call for callers to remember."""
-    global _account_snapshot_cache
-    now = time.time()
-    if (
-        _account_snapshot_cache
-        and _account_snapshot_cache[2] is client
-        and now - _account_snapshot_cache[0] < ACCOUNT_SNAPSHOT_TTL_SECONDS
-    ):
-        return _account_snapshot_cache[1]
-    account = await client.get_account_info()
-    positions = await client.get_positions()
-    daily_pnl = await client.get_daily_realized_pnl()
-    snapshot = (account, positions, daily_pnl)
-    _account_snapshot_cache = (now, snapshot, client)
-    return snapshot
+# Phase 29: (account, positions, daily_pnl) together back the Live Margin
+# Calculator (2s poll), the Execution Pipeline/Risk Management endpoints (8s
+# poll) and the protection watchdog - all of them need the same three
+# numbers. This used to be its own ad hoc 1.5s cache; it now delegates to
+# app.exchanges.binance_snapshot_service, the ONE shared, rate-limiter-aware
+# cache every Binance-reading endpoint in the app goes through, so
+# overlapping polls from multiple open cards (and multiple browser tabs)
+# cost one signed Binance round trip, not one each - and a rate-limited
+# refresh returns the last known good snapshot instead of failing outright.
+async def get_account_snapshot(client: BinanceFuturesClient, force_refresh: bool = False) -> tuple:
+    return await snapshot_service.get_account_bundle(client, force_refresh=force_refresh)
 
 
 def _safe_unavailable_reason(e: Exception) -> str:
@@ -101,7 +84,18 @@ def _safe_unavailable_reason(e: Exception) -> str:
 
 
 def _binance_unavailable(e: Exception) -> dict:
-    return {"available": False, "reason": _safe_unavailable_reason(e)}
+    """Safe failure shape for a Binance-reading endpoint. When the failure
+    is a rate limit (real or the local rate limiter withholding the call -
+    see app.exchanges.binance_rate_limiter), `retry_after_seconds` lets the
+    UI show a countdown instead of a bare "try again" - never guessed, only
+    ever a value Binance itself (or a just-computed local cooldown) reported."""
+    rate_limited = isinstance(e, BinanceRateLimitError)
+    return {
+        "available": False,
+        "reason": _safe_unavailable_reason(e),
+        "rate_limited": rate_limited,
+        "retry_after_seconds": getattr(e, "retry_after_seconds", None) if rate_limited else None,
+    }
 
 
 def _risk_summary(db: Session) -> dict:
@@ -170,6 +164,24 @@ async def paper_trades(db: Session = Depends(get_db)):
 
 # =========================================================== binance space
 
+def _staleness_envelope(*sections: dict) -> dict:
+    """Folds one or more app.exchanges.binance_snapshot_service section-meta
+    dicts into the fields the UI needs to show cached data honestly instead
+    of wiping it (Phase 29, section 13): `stale` if ANY contributing section
+    served a cached value after its own refresh failed, the soonest
+    `retry_after_seconds` across them, and how old the oldest contributing
+    section is."""
+    stale = any(s["stale"] for s in sections)
+    retry_after = min((s["retry_after_seconds"] for s in sections if s["retry_after_seconds"] is not None), default=None)
+    ages = [s["age_seconds"] for s in sections if s["age_seconds"] is not None]
+    return {
+        "stale": stale,
+        "retry_after_seconds": retry_after,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "data_age_seconds": max(ages) if ages else None,
+    }
+
+
 @router.get("/binance/summary")
 async def binance_summary(db: Session = Depends(get_db)):
     if not modes.binance_configured():
@@ -202,6 +214,7 @@ async def binance_summary(db: Session = Depends(get_db)):
         "total_notional_exposure": round(total_notional, 2),
         "nearest_liquidation_distance_pct": round(nearest_liq, 2) if nearest_liq is not None else None,
         "risk": _risk_summary(db),
+        **_staleness_envelope(snapshot_service.section_meta()["account"]),
     }
 
 
@@ -210,7 +223,7 @@ async def binance_balances():
     if not modes.binance_configured():
         return {"mode": "BINANCE_LIVE", **_binance_unavailable(BinanceNotConfigured("no keys")), "balances": []}
     try:
-        rows = await get_read_client().get_balances()
+        rows = await snapshot_service.get_balances(get_read_client())
     except Exception as e:
         return {"mode": "BINANCE_LIVE", **_binance_unavailable(e), "balances": []}
     interesting = [b for b in rows if b.balance or b.available or b.asset in ("USDT", "BTC", "ETH")]
@@ -226,6 +239,7 @@ async def binance_balances():
             }
             for b in interesting
         ],
+        **_staleness_envelope(snapshot_service.section_meta()["balances"]),
     }
 
 
@@ -235,8 +249,12 @@ async def binance_positions(db: Session = Depends(get_db)):
         return {"mode": "BINANCE_LIVE", **_binance_unavailable(BinanceNotConfigured("no keys")), "positions": []}
     client = get_read_client()
     try:
-        live = await client.get_positions()
-        open_orders = await client.get_open_orders()
+        # Phase 29: shared with binance_summary/the watchdog/the margin
+        # calculator - a rate-limited refresh transparently serves the last
+        # known good positions/orders here instead of raising, so this
+        # branch is now reached only when NO good data has ever been read.
+        _, live, _ = await snapshot_service.get_account_bundle(client)
+        open_orders = await snapshot_service.get_open_orders(client)
     except Exception as e:
         return {"mode": "BINANCE_LIVE", **_binance_unavailable(e), "positions": []}
 
@@ -264,7 +282,8 @@ async def binance_positions(db: Session = Depends(get_db)):
         # and never assumed present just because a same-type order exists
         # (a plain non-reduce-only order doesn't count as protection). Algo
         # orders never appear in get_open_orders, so any tracked algo id is
-        # looked up individually and merged in (resolve_protection).
+        # looked up individually (TTL-cached, see app.trading.protection)
+        # and merged in (resolve_protection).
         row = provider_rows.get(p.symbol)
         verified = await protection.resolve_protection(
             client, p.symbol, open_orders=open_orders,
@@ -280,7 +299,11 @@ async def binance_positions(db: Session = Depends(get_db)):
             "protection_status": verified.status,
             "protection_provider": row.protection_provider if row else None,
         })
-    return {"mode": "BINANCE_LIVE", "available": True, "positions": payload}
+    meta = snapshot_service.section_meta()
+    return {
+        "mode": "BINANCE_LIVE", "available": True, "positions": payload,
+        **_staleness_envelope(meta["account"], meta["orders"]),
+    }
 
 
 @router.get("/binance/orders")
@@ -288,10 +311,13 @@ async def binance_orders():
     if not modes.binance_configured():
         return {"mode": "BINANCE_LIVE", **_binance_unavailable(BinanceNotConfigured("no keys")), "orders": []}
     try:
-        open_orders = await get_read_client().get_open_orders()
+        open_orders = await snapshot_service.get_open_orders(get_read_client())
     except Exception as e:
         return {"mode": "BINANCE_LIVE", **_binance_unavailable(e), "orders": []}
-    return {"mode": "BINANCE_LIVE", "available": True, "orders": [o.to_dict() for o in open_orders]}
+    return {
+        "mode": "BINANCE_LIVE", "available": True, "orders": [o.to_dict() for o in open_orders],
+        **_staleness_envelope(snapshot_service.section_meta()["orders"]),
+    }
 
 
 @router.get("/binance/trades")
@@ -299,28 +325,29 @@ async def binance_trades(db: Session = Depends(get_db)):
     """Real account trade history, labelled: BOT_TRADE when the order id
     matches this system's own journal, SYNCED_FROM_BINANCE otherwise (which
     covers manual exchange trades - we cannot prove authorship of orders we
-    didn't place, so they are labelled by provenance, not guessed)."""
+    didn't place, so they are labelled by provenance, not guessed). LOW
+    priority historical data (Phase 29) - shared/cached across every caller
+    rather than re-queried per symbol on every poll."""
     if not modes.binance_configured():
         return {"mode": "BINANCE_LIVE", **_binance_unavailable(BinanceNotConfigured("no keys")), "trades": []}
     client = get_read_client()
     bot_order_ids = {
         row.order_id for row in db.query(BinanceBotTrade.order_id).all()
     }
+    try:
+        trades = await snapshot_service.get_trades(client, settings.binance_allowed_symbols)
+    except Exception as e:
+        return {"mode": "BINANCE_LIVE", **_binance_unavailable(e), "trades": []}
     result = []
-    errors = 0
-    for symbol in settings.binance_allowed_symbols:
-        try:
-            for t in await client.get_trade_history(symbol, limit=50):
-                d = t.to_dict()
-                d["label"] = "BOT_TRADE" if t.order_id in bot_order_ids else "SYNCED_FROM_BINANCE"
-                result.append(d)
-        except Exception:
-            errors += 1
-            continue  # per-symbol failure must not empty the whole view
-    if errors == len(settings.binance_allowed_symbols) and settings.binance_allowed_symbols:
-        return {"mode": "BINANCE_LIVE", "available": False, "reason": "Binance unreachable", "trades": []}
+    for t in trades:
+        d = t.to_dict()
+        d["label"] = "BOT_TRADE" if t.order_id in bot_order_ids else "SYNCED_FROM_BINANCE"
+        result.append(d)
     result.sort(key=lambda t: t.get("time") or 0, reverse=True)
-    return {"mode": "BINANCE_LIVE", "available": True, "trades": result[:100]}
+    return {
+        "mode": "BINANCE_LIVE", "available": True, "trades": result[:100],
+        **_staleness_envelope(snapshot_service.section_meta()["trades"]),
+    }
 
 
 @router.get("/binance/income")
@@ -329,10 +356,13 @@ async def binance_income(limit: int = 50):
     if not modes.binance_configured():
         return {"mode": "BINANCE_LIVE", **_binance_unavailable(BinanceNotConfigured("no keys")), "income": []}
     try:
-        rows = await get_read_client().get_income_history(limit=min(max(limit, 1), 200))
+        rows = await snapshot_service.get_income(get_read_client(), limit=min(max(limit, 1), 200))
     except Exception as e:
         return {"mode": "BINANCE_LIVE", **_binance_unavailable(e), "income": []}
-    return {"mode": "BINANCE_LIVE", "available": True, "income": rows}
+    return {
+        "mode": "BINANCE_LIVE", "available": True, "income": rows,
+        **_staleness_envelope(snapshot_service.section_meta()["income"]),
+    }
 
 
 # ================================================================== audit

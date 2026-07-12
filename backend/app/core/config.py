@@ -76,6 +76,20 @@ class Settings(BaseSettings):
     binance_auto_protect_positions: bool = False
     binance_block_new_trades_if_unprotected: bool = True
 
+    # --- Phase 29: centralized Binance snapshot/rate-limit policy ---
+    # Root cause this guards against: many independent backend endpoints and
+    # frontend polling loops each calling Binance directly produced enough
+    # duplicate REST traffic to trip Binance's 429 rate limit. See
+    # app/exchanges/binance_snapshot_service.py and binance_rate_limiter.py.
+    binance_snapshot_ttl_seconds: float = 3.0
+    binance_orders_ttl_seconds: float = 3.0
+    binance_algo_ttl_seconds: float = 8.0
+    binance_income_ttl_seconds: float = 60.0
+    binance_diagnostics_ttl_seconds: float = 30.0
+    binance_watchdog_interval_seconds: float = 12.0
+    binance_rate_limit_backoff_multiplier: float = 1.5
+    binance_enable_stale_cache_on_rate_limit: bool = True
+
     @field_validator("binance_allowed_symbols", mode="before")
     @classmethod
     def _split_allowed_symbols(cls, v):

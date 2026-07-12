@@ -39,6 +39,7 @@ from app.api.portfolio import router as portfolio_router
 from app.api.trading_control import router as trading_control_router
 from app.api.bot_trades import router as bot_trades_router
 from app.api.admin_config import router as admin_config_router
+from app.api.binance_snapshot import router as binance_snapshot_router
 from app.core.env_manager import apply_to_settings as apply_env_file_to_settings
 from app.data_sources.scheduler import start_data_scheduler
 from app.trading.binance_sync import start_binance_sync
@@ -105,6 +106,7 @@ app.include_router(learning_router, dependencies=protected)
 app.include_router(portfolio_router, dependencies=protected)
 app.include_router(trading_control_router, dependencies=protected)
 app.include_router(bot_trades_router, dependencies=protected)
+app.include_router(binance_snapshot_router, dependencies=protected)
 # admin_config carries its own admin-or-403 dependency (with auditing) on
 # every route - the generic `protected` would be redundant on top.
 app.include_router(admin_config_router)

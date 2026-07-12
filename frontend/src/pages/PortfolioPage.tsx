@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, ArrowRight, OctagonX, RefreshCw, ShieldCheck } from "lucide-react";
 import Card from "../components/Layout/Card";
 import AutoCardTable from "../components/Responsive/AutoCardTable";
@@ -9,6 +9,7 @@ import type { AppData } from "../hooks/useAppData";
 import type { NavKey } from "../lib/nav";
 
 const POLL_MS = 10000;
+const HIDDEN_POLL_MS = 45000;
 
 type Props = AppData & { navigate: (key: NavKey) => void };
 
@@ -32,16 +33,54 @@ export default function PortfolioPage(props: Props) {
       api.binanceSummary().catch(() => null),
       api.binancePositions().catch(() => null),
     ]);
+    // A falsy result never overwrites the last good state, and the backend's
+    // shared snapshot cache already serves last-known-good positions (marked
+    // `stale`) instead of an empty list during a rate limit, so this never
+    // wipes real open positions to zero either.
     if (p) setPaper(p);
     if (pp) setPaperPositions(pp.positions || []);
     if (b) setBinance(b);
     if (bp) setBinancePositions(bp);
+    return bp;
   }, []);
 
+  // Phase 29: pause/extend polling while the tab is hidden or Binance is
+  // rate-limited, instead of hammering the same 10s cadence regardless.
+  const lastBinanceResultRef = useRef<any>(null);
   useEffect(() => {
-    load();
-    const id = window.setInterval(load, POLL_MS);
-    return () => window.clearInterval(id);
+    let cancelled = false;
+    let timerId: number | null = null;
+
+    const scheduleNext = () => {
+      if (timerId != null) window.clearTimeout(timerId);
+      let delay: number = document.visibilityState === "hidden" ? HIDDEN_POLL_MS : POLL_MS;
+      const last = lastBinanceResultRef.current;
+      if (last?.rate_limited && typeof last?.retry_after_seconds === "number") {
+        delay = Math.max((last.retry_after_seconds + Math.random() * 2) * 1000, POLL_MS);
+      }
+      timerId = window.setTimeout(tick, delay);
+    };
+
+    const tick = async () => {
+      lastBinanceResultRef.current = await load();
+      if (cancelled) return;
+      scheduleNext();
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible" && timerId != null) {
+        window.clearTimeout(timerId);
+        tick();
+      }
+    };
+
+    tick();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      cancelled = true;
+      if (timerId != null) window.clearTimeout(timerId);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, [load]);
 
   const onChanged = useCallback(async () => {

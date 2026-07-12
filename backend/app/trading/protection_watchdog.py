@@ -23,7 +23,12 @@ from app.db.session import SessionLocal
 from app.monitoring.logging import get_logger, log_event
 from app.trading import modes, protection, protection_provider
 
-WATCHDOG_INTERVAL_SECONDS = 8
+# Phase 29: the interval is now configurable (BINANCE_WATCHDOG_INTERVAL_SECONDS,
+# default 12s, up from a hardcoded 8s) and each scan reuses the shared
+# snapshot cache (app.exchanges.binance_snapshot_service) instead of its own
+# get_positions/get_open_orders calls, so a scan that lands inside another
+# caller's still-fresh cache window costs zero extra Binance requests.
+WATCHDOG_INTERVAL_SECONDS = settings.binance_watchdog_interval_seconds
 RUNNING = False
 logger = get_logger("quantx.protection_watchdog")
 
@@ -76,13 +81,19 @@ async def _scan_once() -> dict:
         return LAST_SCAN
 
     from app.api.portfolio import get_account_snapshot, get_read_client
+    from app.exchanges.binance_snapshot_service import snapshot_service
     from app.trading.execution_router import router as execution_router
 
     client = get_read_client()
     mode = modes.MODE_LIVE  # get_read_client() is always the production account
     try:
+        # Phase 29: reuses the same shared cache as every portfolio/risk
+        # endpoint - if a browser poll already refreshed positions/orders
+        # inside the TTL window, this scan makes zero Binance calls of its
+        # own, and a rate-limited refresh still returns the last known good
+        # data here (never an empty list mistaken for "no positions").
         _, positions, _ = await get_account_snapshot(client)
-        open_orders = await client.get_open_orders()
+        open_orders = await snapshot_service.get_open_orders(client)
     except Exception as e:
         LAST_SCAN = {"checked_at": now, "unprotected": [], "repair_failed": [], "critical": False,
                     "available": False, "reason": repr(e)}

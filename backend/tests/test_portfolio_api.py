@@ -3,6 +3,8 @@ strictly separate surfaces - paper always available, Binance read through a
 read-only production client with safe error classification - plus the
 ownership rule that one user cannot touch another user's paper position."""
 
+import asyncio
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -19,6 +21,7 @@ from app.exchanges.binance_models import (
     BinancePosition,
     BinanceUserTrade,
 )
+from app.exchanges.binance_snapshot_service import snapshot_service
 from app.trading import modes
 
 
@@ -36,6 +39,7 @@ def clean_state(monkeypatch):
     finally:
         db.close()
     monkeypatch.setattr(portfolio_module, "_read_client", None)
+    snapshot_service.reset()
     yield
     modes.set_mode(modes.MODE_PAPER)
 
@@ -250,6 +254,37 @@ def test_binance_rate_limit_returns_safe_warning(monkeypatch):
     data = client.get("/api/portfolio/binance/balances").json()
     assert data["available"] is False
     assert "Rate limited" in data["reason"]
+
+
+def test_binance_positions_never_wiped_on_rate_limit(monkeypatch):
+    """Phase 29, section 13: a rate-limited refresh must serve the last
+    known good positions (marked stale), never an empty list - the
+    original bug this fixes showed "Real Open Positions (0)" during a
+    transient 429 even though the account genuinely had one open position."""
+    calls = {"n": 0}
+
+    class FlakyClient(MockReadClient):
+        async def get_positions(self, symbol=None):
+            calls["n"] += 1
+            if calls["n"] > 1:
+                raise BinanceRateLimitError("Too many requests", status=429)
+            return await super().get_positions(symbol)
+
+    use_mock_read_client(monkeypatch, client=FlakyClient())
+    client = make_client(monkeypatch)
+
+    first = client.get("/api/portfolio/binance/positions").json()
+    assert first["available"] is True
+    assert len(first["positions"]) == 1
+
+    # Simulate the TTL having elapsed (or a manual sync) by forcing the
+    # next refresh directly - it will hit the client's rate-limit failure.
+    asyncio.run(snapshot_service.get_account_bundle(portfolio_module._read_client, force_refresh=True))
+
+    second = client.get("/api/portfolio/binance/positions").json()
+    assert second["available"] is True
+    assert len(second["positions"]) == 1  # never wiped to []
+    assert second["stale"] is True
 
 
 def test_binance_orders_trades_income(monkeypatch):

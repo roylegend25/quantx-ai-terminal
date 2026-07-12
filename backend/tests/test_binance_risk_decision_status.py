@@ -16,6 +16,7 @@ import app.api.trading_control as tc
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.db.models import BinanceBotTrade, Trade, TradingAuditLog, TradingControl
+from app.exchanges.binance_snapshot_service import snapshot_service
 from app.trading import modes
 from tests.test_portfolio_api import MockReadClient, configure_keys, open_paper_trade, use_mock_read_client
 
@@ -35,6 +36,7 @@ def clean_state(monkeypatch):
     finally:
         db.close()
     monkeypatch.setattr(portfolio_module, "_read_client", None)
+    snapshot_service.reset()
     yield
     modes.set_mode(modes.MODE_PAPER)
 

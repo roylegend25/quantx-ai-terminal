@@ -301,6 +301,10 @@ export const api = {
   binanceOrders: () => getJson("/api/portfolio/binance/orders"),
   binanceTrades: () => getJson("/api/portfolio/binance/trades"),
   binanceIncome: (limit = 50) => getJson(`/api/portfolio/binance/income?limit=${limit}`),
+  // ---- Phase 29: one shared snapshot instead of N separate polling loops ----
+  binanceSnapshot: () => getJson("/api/binance/snapshot"),
+  binanceSnapshotRefresh: () => postJson("/api/binance/snapshot/refresh"),
+  binanceRateLimitStatus: () => getJson("/api/binance/rate-limit-status"),
   portfolioAudit: (limit = 50) => getJson(`/api/portfolio/audit?limit=${limit}`),
   botTradesPaper: (limit = 100) => getJson(`/api/bot/trades/paper?limit=${limit}`),
   botTradesBinance: (limit = 100) => getJson(`/api/bot/trades/binance?limit=${limit}`),

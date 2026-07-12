@@ -9,7 +9,42 @@ agree - see PROTECTION_STALE_LOCAL below.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
+
+# Phase 29 (section 11): algo orders never appear in get_open_orders, so
+# resolve_protection looks up each tracked algo id individually - the
+# positions endpoint, the watchdog scan and every risk/portfolio card that
+# calls resolve_protection would otherwise re-query the SAME algoId several
+# times a minute. Cached process-wide, keyed by algo id, for a few seconds -
+# an active algo order's status/price don't change on their own between
+# ticks, so a short TTL costs nothing in freshness but removes the repeat
+# Binance calls.
+_algo_lookup_cache: dict[int, tuple[float, object]] = {}
+
+
+def _algo_ttl() -> float:
+    from app.core.config import settings
+    return settings.binance_algo_ttl_seconds
+
+
+async def _get_active_algo_cached(algo, algo_id: int | None):
+    if not algo_id:
+        return None
+    cached = _algo_lookup_cache.get(algo_id)
+    now = time.time()
+    if cached and now - cached[0] < _algo_ttl():
+        return cached[1]
+    order = await algo.get_active(algo_id)
+    _algo_lookup_cache[algo_id] = (now, order)
+    return order
+
+
+def reset_algo_lookup_cache() -> None:
+    """Test hook + call after any placement/cancel of an algo order so the
+    very next verification never reads a just-invalidated stale entry."""
+    _algo_lookup_cache.clear()
+
 
 PROTECTED = "PROTECTED"
 MISSING_TP = "MISSING_TP"
@@ -108,7 +143,7 @@ async def resolve_protection(
         algo = BinanceAlgoProvider(client)
         for algo_id in filter(None, [tp_algo_id, sl_algo_id]):
             try:
-                order = await algo.get_active(algo_id)
+                order = await _get_active_algo_cached(algo, algo_id)
             except Exception:
                 order = None
             if order:

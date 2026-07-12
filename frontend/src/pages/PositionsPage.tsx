@@ -279,6 +279,8 @@ export default function PositionsPage(props: Props) {
             gate={gate}
             unavailable={binancePositions?.available === false}
             unavailableReason={binancePositions?.reason}
+            stale={binancePositions?.stale}
+            retryAfterSeconds={binancePositions?.retry_after_seconds}
             showToast={showToast}
             onEdit={setEditingBinance}
             onRequestClose={(p: any) =>

@@ -312,6 +312,8 @@ export default function BinanceRealPage(props: AppData) {
         gate={gate}
         unavailable={positions?.available === false}
         unavailableReason={positions?.reason}
+        stale={positions?.stale}
+        retryAfterSeconds={positions?.retry_after_seconds}
         showToast={showToast}
         onEdit={setEditing}
         onRequestClose={(p: any) =>

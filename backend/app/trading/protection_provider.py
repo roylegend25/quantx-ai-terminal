@@ -190,5 +190,10 @@ async def cancel_leg(client: BinanceFuturesClient, symbol: str, order_id: int, p
     """Cancels one tracked TP or SL order through the correct surface."""
     if provider == ALGO:
         await BinanceAlgoProvider(client).cancel(order_id)
+        # Phase 29: resolve_protection's algo lookup cache (app.trading.
+        # protection) can otherwise report this exact id as still active
+        # for up to BINANCE_ALGO_TTL_SECONDS after it was just canceled.
+        from app.trading import protection
+        protection.reset_algo_lookup_cache()
     else:
         await client.cancel_order(symbol, order_id)

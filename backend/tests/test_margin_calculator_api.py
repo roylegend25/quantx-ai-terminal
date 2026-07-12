@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.db.models import RiskSettings, TradingControl
 from app.exchanges.binance_models import BinanceAccountSummary, BinancePosition
+from app.exchanges.binance_snapshot_service import snapshot_service
 from app.trading import modes
 
 FAKE_KEY = "AKIAFAKEKEY1234567890"
@@ -91,7 +92,7 @@ def clean_state(monkeypatch):
     finally:
         db.close()
     monkeypatch.setattr(portfolio_module, "_read_client", None)
-    monkeypatch.setattr(portfolio_module, "_account_snapshot_cache", None)
+    snapshot_service.reset()
     monkeypatch.setattr(settings, "binance_api_key", FAKE_KEY)
     monkeypatch.setattr(settings, "binance_api_secret", FAKE_SECRET)
     monkeypatch.setattr(settings, "binance_max_leverage", 3.0)

@@ -44,6 +44,7 @@ from app.exchanges.binance_models import (
     BinancePosition,
     BinanceUserTrade,
 )
+from app.exchanges.binance_rate_limiter import CRITICAL, HIGH, LOW, NORMAL, limiter
 
 PROD_BASE = "https://fapi.binance.com"
 TESTNET_BASE = "https://testnet.binancefuture.com"
@@ -129,11 +130,18 @@ class BinanceFuturesClient:
         params: dict | None = None,
         signed: bool = False,
         _retried: bool = False,
+        priority: str = NORMAL,
     ):
         if signed and not self.configured:
             raise BinanceNotConfigured(
                 f"Binance {'testnet' if self.testnet else 'live'} API credentials are not configured"
             )
+        # Phase 29: the ONE gate every Binance REST call in this app passes
+        # through - raises BinanceCooldownActive (a BinanceRateLimitError)
+        # instead of making the request when this priority must not call
+        # Binance right now. See app.exchanges.binance_rate_limiter.
+        limiter.before_request(path, priority)
+
         params = params or {}
         query = self._sign(params) if signed else params
         headers = {"X-MBX-APIKEY": self._api_key} if signed else {}
@@ -144,6 +152,8 @@ class BinanceFuturesClient:
         except (httpx.TimeoutException, httpx.TransportError) as e:
             raise BinanceNetworkError(f"Binance request failed: {type(e).__name__}") from e
 
+        limiter.after_response(path, r.status_code, r.headers)
+
         if r.status_code // 100 == 2:
             return r.json()
 
@@ -152,70 +162,76 @@ class BinanceFuturesClient:
         except ValueError:
             payload = None
         error = map_binance_error(r.status_code, payload)
+        if r.status_code in (429, 418):
+            # Surfaced to callers (the snapshot service, portfolio
+            # endpoints) so they can show "retry in Ns" instead of a bare
+            # "rate limited" - sourced from the limiter, which just parsed
+            # this exact response's Retry-After header.
+            error.retry_after_seconds = limiter.status().get("retry_after_seconds")
 
         # One transparent retry after re-syncing the clock: timestamp drift
         # is an environment problem, not a caller decision.
         if isinstance(error, BinanceTimestampError) and signed and not _retried:
             await self._sync_time()
-            return await self._request(method, path, params, signed=True, _retried=True)
+            return await self._request(method, path, params, signed=True, _retried=True, priority=priority)
 
         raise error
 
-    async def _get(self, path: str, params: dict | None = None, signed: bool = False):
-        return await self._request("GET", path, params, signed)
+    async def _get(self, path: str, params: dict | None = None, signed: bool = False, priority: str = NORMAL):
+        return await self._request("GET", path, params, signed, priority=priority)
 
-    async def _post(self, path: str, params: dict | None = None):
+    async def _post(self, path: str, params: dict | None = None, priority: str = CRITICAL):
         if self.read_only:
             raise LiveTradingLocked("read-only Binance client - write operations are structurally disabled")
-        return await self._request("POST", path, params, signed=True)
+        return await self._request("POST", path, params, signed=True, priority=priority)
 
-    async def _delete(self, path: str, params: dict | None = None):
+    async def _delete(self, path: str, params: dict | None = None, priority: str = CRITICAL):
         if self.read_only:
             raise LiveTradingLocked("read-only Binance client - write operations are structurally disabled")
-        return await self._request("DELETE", path, params, signed=True)
+        return await self._request("DELETE", path, params, signed=True, priority=priority)
 
     # ------------------------------------------------------------ read side
 
-    async def ping(self) -> bool:
-        await self._get("/fapi/v1/ping")
+    async def ping(self, priority: str = HIGH) -> bool:
+        await self._get("/fapi/v1/ping", priority=priority)
         return True
 
-    async def get_account_info(self) -> BinanceAccountSummary:
-        return BinanceAccountSummary.from_api(await self._get("/fapi/v2/account", signed=True))
+    async def get_account_info(self, priority: str = HIGH) -> BinanceAccountSummary:
+        return BinanceAccountSummary.from_api(await self._get("/fapi/v2/account", signed=True, priority=priority))
 
-    async def get_balances(self) -> list[BinanceBalance]:
-        data = await self._get("/fapi/v2/balance", signed=True)
+    async def get_balances(self, priority: str = HIGH) -> list[BinanceBalance]:
+        data = await self._get("/fapi/v2/balance", signed=True, priority=priority)
         return [BinanceBalance.from_api(b) for b in data]
 
-    async def get_positions(self, symbol: str | None = None) -> list[BinancePosition]:
+    async def get_positions(self, symbol: str | None = None, priority: str = HIGH) -> list[BinancePosition]:
         params = {"symbol": symbol.upper()} if symbol else {}
-        data = await self._get("/fapi/v2/positionRisk", params, signed=True)
+        data = await self._get("/fapi/v2/positionRisk", params, signed=True, priority=priority)
         return [BinancePosition.from_api(p) for p in data if float(p.get("positionAmt", 0)) != 0]
 
-    async def get_open_orders(self, symbol: str | None = None) -> list[BinanceOrder]:
+    async def get_open_orders(self, symbol: str | None = None, priority: str = HIGH) -> list[BinanceOrder]:
         params = {"symbol": symbol.upper()} if symbol else {}
-        data = await self._get("/fapi/v1/openOrders", params, signed=True)
+        data = await self._get("/fapi/v1/openOrders", params, signed=True, priority=priority)
         return [BinanceOrder.from_api(o) for o in data]
 
-    async def get_order_history(self, symbol: str, limit: int = 50) -> list[BinanceOrder]:
-        data = await self._get("/fapi/v1/allOrders", {"symbol": symbol.upper(), "limit": limit}, signed=True)
+    async def get_order_history(self, symbol: str, limit: int = 50, priority: str = LOW) -> list[BinanceOrder]:
+        data = await self._get("/fapi/v1/allOrders", {"symbol": symbol.upper(), "limit": limit}, signed=True, priority=priority)
         return [BinanceOrder.from_api(o) for o in data]
 
-    async def get_trade_history(self, symbol: str, limit: int = 50) -> list[BinanceUserTrade]:
-        data = await self._get("/fapi/v1/userTrades", {"symbol": symbol.upper(), "limit": limit}, signed=True)
+    async def get_trade_history(self, symbol: str, limit: int = 50, priority: str = LOW) -> list[BinanceUserTrade]:
+        data = await self._get("/fapi/v1/userTrades", {"symbol": symbol.upper(), "limit": limit}, signed=True, priority=priority)
         return [BinanceUserTrade.from_api(t) for t in data]
 
-    async def get_mark_price(self, symbol: str) -> float:
-        data = await self._get("/fapi/v1/premiumIndex", {"symbol": symbol.upper()})
+    async def get_mark_price(self, symbol: str, priority: str = NORMAL) -> float:
+        data = await self._get("/fapi/v1/premiumIndex", {"symbol": symbol.upper()}, priority=priority)
         return float(data["markPrice"])
 
-    async def get_income_history(self, limit: int = 50, income_type: str | None = None) -> list[dict]:
+    async def get_income_history(self, limit: int = 50, income_type: str | None = None, priority: str = LOW) -> list[dict]:
         """Recent account income rows (realized PnL, commission, funding
         fees...), normalized and safe to return to the UI."""
         params: dict = {"limit": min(max(limit, 1), 1000)}
         if income_type:
             params["incomeType"] = income_type
-        data = await self._get("/fapi/v1/income", params, signed=True)
+        data = await self._get("/fapi/v1/income", params, signed=True, priority=priority)
         return [
             {
                 "symbol": row.get("symbol") or None,
@@ -228,7 +244,7 @@ class BinanceFuturesClient:
             for row in data
         ]
 
-    async def get_exchange_filters(self, symbol: str) -> dict:
+    async def get_exchange_filters(self, symbol: str, priority: str = LOW) -> dict:
         """Real per-symbol order-precision rules from Binance's public,
         unsigned exchangeInfo - minimum quantity, quantity step size and
         minimum notional. Used by the Test Order feature to submit a
@@ -242,7 +258,7 @@ class BinanceFuturesClient:
         if cached and now - cached[0] < EXCHANGE_FILTERS_TTL_SECONDS:
             return cached[1]
 
-        data = await self._get("/fapi/v1/exchangeInfo")
+        data = await self._get("/fapi/v1/exchangeInfo", priority=priority)
         info = next((s for s in data.get("symbols", []) if s.get("symbol") == symbol), None)
         if not info:
             raise BinanceInvalidSymbol(f"{symbol} not found in Binance exchangeInfo", code=-1121)
@@ -262,7 +278,7 @@ class BinanceFuturesClient:
         _exchange_filters_cache[cache_key] = (now, result)
         return result
 
-    async def get_commission_rate(self, symbol: str) -> dict:
+    async def get_commission_rate(self, symbol: str, priority: str = LOW) -> dict:
         """Real signed account commission rates for `symbol` (this account's
         actual VIP/BNB-discount tier, not a guessed constant) - GET
         /fapi/v1/commissionRate. Cached like exchange filters."""
@@ -273,7 +289,7 @@ class BinanceFuturesClient:
         if cached and now - cached[0] < EXCHANGE_FILTERS_TTL_SECONDS:
             return cached[1]
 
-        data = await self._get("/fapi/v1/commissionRate", {"symbol": symbol}, signed=True)
+        data = await self._get("/fapi/v1/commissionRate", {"symbol": symbol}, signed=True, priority=priority)
         result = {
             "maker_rate": float(data.get("makerCommissionRate", 0.0002)),
             "taker_rate": float(data.get("takerCommissionRate", 0.0004)),
@@ -281,7 +297,7 @@ class BinanceFuturesClient:
         _commission_rate_cache[cache_key] = (now, result)
         return result
 
-    async def get_leverage_brackets(self, symbol: str) -> list[dict]:
+    async def get_leverage_brackets(self, symbol: str, priority: str = LOW) -> list[dict]:
         """Real signed maintenance-margin brackets for `symbol` - GET
         /fapi/v1/leverageBracket. Used to compute an honest maintenance
         margin instead of a guessed flat rate. Cached like exchange
@@ -293,7 +309,7 @@ class BinanceFuturesClient:
         if cached and now - cached[0] < EXCHANGE_FILTERS_TTL_SECONDS:
             return cached[1]
 
-        data = await self._get("/fapi/v1/leverageBracket", {"symbol": symbol}, signed=True)
+        data = await self._get("/fapi/v1/leverageBracket", {"symbol": symbol}, signed=True, priority=priority)
         row = next((d for d in data if d.get("symbol") == symbol), None)
         brackets = [
             {
@@ -309,7 +325,7 @@ class BinanceFuturesClient:
         _leverage_brackets_cache[cache_key] = (now, brackets)
         return brackets
 
-    async def get_daily_realized_pnl(self) -> float:
+    async def get_daily_realized_pnl(self, priority: str = HIGH) -> float:
         """Sum of REALIZED_PNL income since UTC midnight - the number the
         real-trading daily-loss gate compares against."""
         midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -317,6 +333,7 @@ class BinanceFuturesClient:
             "/fapi/v1/income",
             {"incomeType": "REALIZED_PNL", "startTime": int(midnight.timestamp() * 1000), "limit": 1000},
             signed=True,
+            priority=priority,
         )
         return sum(float(row.get("income", 0)) for row in data)
 
@@ -385,10 +402,10 @@ class BinanceFuturesClient:
             params["reduceOnly"] = "true"
         return BinanceOrder.from_api(await self._post("/fapi/v1/order", params))
 
-    async def get_multi_assets_margin(self) -> bool:
+    async def get_multi_assets_margin(self, priority: str = LOW) -> bool:
         """True if Multi-Assets Mode is on - GET /fapi/v1/multiAssetsMargin.
         Diagnostic-only (Phase 28 Trading Diagnostics)."""
-        data = await self._get("/fapi/v1/multiAssetsMargin", signed=True)
+        data = await self._get("/fapi/v1/multiAssetsMargin", signed=True, priority=priority)
         return bool(data.get("multiAssetsMargin"))
 
     async def get_api_key_permissions(self) -> dict:
@@ -437,7 +454,7 @@ class BinanceFuturesClient:
         reachability of the base /fapi/v1/algoOrder resource. Diagnostic
         only, never used by the trading path."""
         try:
-            await self._get("/fapi/v1/algoOrder", {}, signed=True)
+            await self._get("/fapi/v1/algoOrder", {}, signed=True, priority=LOW)
             return {"reachable": True, "evidence": "Unexpected 200 with no algoId - endpoint reachable"}
         except BinanceError as e:
             if e.status == 404:
@@ -466,12 +483,12 @@ class BinanceFuturesClient:
             "newClientOrderId": self._client_order_id("qxdiag"),
         }
         try:
-            response = await self._post("/fapi/v1/order/test", params)
+            response = await self._post("/fapi/v1/order/test", params, priority=LOW)
             return {"ok": True, "request": params, "response": response}
         except BinanceError as e:
             return {"ok": False, "request": params, "code": e.code, "status": e.status, "message": e.message}
 
-    async def get_position_mode(self) -> bool:
+    async def get_position_mode(self, priority: str = HIGH) -> bool:
         """True if the account is in Hedge (dual-side) position mode - GET
         /fapi/v1/positionSide/dual. Cached: this almost never changes and a
         wrong value only matters for the (rare) manual switch mid-session,
@@ -482,7 +499,7 @@ class BinanceFuturesClient:
         now = time.time()
         if cached and now - cached[0] < EXCHANGE_FILTERS_TTL_SECONDS:
             return cached[1]
-        data = await self._get("/fapi/v1/positionSide/dual", signed=True)
+        data = await self._get("/fapi/v1/positionSide/dual", signed=True, priority=priority)
         hedge_mode = bool(data.get("dualSidePosition"))
         _position_mode_cache[cache_key] = (now, hedge_mode)
         return hedge_mode
