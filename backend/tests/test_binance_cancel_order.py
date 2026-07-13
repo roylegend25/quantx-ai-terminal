@@ -532,3 +532,130 @@ def test_algo_provider_cancel_requires_an_identifier():
     client = BinanceFuturesClient(api_key="k", api_secret="s", testnet=True)
     with pytest.raises(ValueError):
         asyncio.run(BinanceAlgoProvider(client).cancel())
+
+
+# ==================================== live-verified: large order-id precision
+#
+# Root cause of "row Cancel still fails, Cancel All works" (confirmed live
+# against the real account 2026-07-13): Binance futures order ids on this
+# account run up to 19 digits (e.g. 8389766233056201670), past
+# Number.MAX_SAFE_INTEGER (2^53-1, 16 digits). Serializing order_id as a
+# raw JSON number let a browser's own JSON.parse silently round it to the
+# nearest representable double BEFORE any frontend code ran, so row Cancel
+# always sent the WRONG id back and Binance correctly rejected it as
+# unknown - while Cancel All (DELETE /fapi/v1/allOpenOrders, no order_id
+# involved at all) was never affected. Fixed by serializing these ids as
+# JSON strings end to end (BinanceOrder.to_dict()); Pydantic already
+# coerces a numeric string back to Python's arbitrary-precision int
+# losslessly, so no request-model change was needed on the way in.
+
+BIG_ORDER_ID = 8389766233056201670  # exceeds 2**53 - 1
+
+
+def test_order_row_serializes_big_order_id_as_string():
+    order = make_order(order_id=BIG_ORDER_ID, type="LIMIT")
+    d = order.to_dict()
+    assert d["order_id"] == str(BIG_ORDER_ID)
+    assert isinstance(d["order_id"], str)
+
+
+def test_cancel_order_endpoint_accepts_big_order_id_as_json_string(monkeypatch):
+    """Proves the fix end-to-end at the API boundary: a request body
+    carrying order_id as a JSON *string* (exactly what a browser now sends,
+    per api.ts) reaches the classic Binance client with the value fully
+    intact - no float round-trip, no truncation."""
+    configure_keys(monkeypatch)
+    captured = {}
+
+    class CapturingProvider:
+        async def cancel_order(self, symbol, order_id=None, **kwargs):
+            captured["order_id"] = order_id
+            captured["type"] = type(order_id).__name__
+            return RouterResult(ok=True, mode=modes.MODE_LIVE, action="cancel_order",
+                                detail={"order": {"order_id": str(order_id), "status": "CANCELED"}})
+
+    monkeypatch.setattr(tc.execution_router, "_live", CapturingProvider())
+    modes.set_mode(modes.MODE_PAPER)
+    client = make_client()
+
+    r = client.post("/api/trading/binance/cancel-order",
+                    json={"symbol": "ETHUSDT", "provider": "classic", "order_id": str(BIG_ORDER_ID)})
+
+    assert r.status_code == 200, r.text
+    assert captured["order_id"] == BIG_ORDER_ID  # exact, no precision loss
+    assert captured["type"] == "int"  # Pydantic coerced the string to Python's arbitrary-precision int
+
+
+def test_position_protection_order_ids_serialize_as_strings(monkeypatch):
+    """GET /binance/positions' sl_order_id/tp_order_id feed the same Cancel
+    SL/TP buttons as the orders table's row Cancel - same precision risk,
+    same fix required."""
+    from tests.test_portfolio_api import MockReadClient, make_client, use_mock_read_client
+
+    use_mock_read_client(monkeypatch, MockReadClient())
+    client = make_client(monkeypatch)
+
+    positions = client.get("/api/portfolio/binance/positions").json()["positions"]
+    assert positions[0]["sl_order_id"] == "42"
+    assert isinstance(positions[0]["sl_order_id"], str)
+
+
+# ============================================================ debug endpoint
+
+def test_debug_endpoint_returns_safe_shape(monkeypatch):
+    configure_keys(monkeypatch)
+    client_double = MockBinanceClient(open_orders=[make_order(order_id=BIG_ORDER_ID, type="LIMIT")])
+    monkeypatch.setattr("app.api.portfolio._read_client", client_double)
+    client = make_client()
+
+    r = client.get("/api/trading/binance/open-orders/debug")
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["orders"] == [{
+        "symbol": "BTCUSDT", "type": "LIMIT", "provider": "classic",
+        "has_order_id": True, "has_client_order_id": True,
+        "has_algo_id": False, "has_client_algo_id": False,
+        "cancel_payload_preview": {
+            "symbol": "BTCUSDT", "provider": "classic",
+            "order_id_present": True, "client_order_id_present": True,
+            "algo_id_present": False, "client_algo_id_present": False,
+        },
+    }]
+
+
+def test_debug_endpoint_never_exposes_secrets(monkeypatch):
+    configure_keys(monkeypatch)
+    client_double = MockBinanceClient(open_orders=[make_order(order_id=BIG_ORDER_ID, type="LIMIT")])
+    monkeypatch.setattr("app.api.portfolio._read_client", client_double)
+    client = make_client()
+
+    r = client.get("/api/trading/binance/open-orders/debug")
+
+    assert FAKE_KEY not in r.text
+    assert FAKE_SECRET not in r.text
+    assert "signature" not in r.text.lower()
+
+
+# ===================================== endpoint-level classic vs algo routing
+
+def test_endpoint_classic_row_reaches_classic_client_not_algo(monkeypatch):
+    """A row shaped exactly like the screenshot in Debug 1 (ETHUSDT BUY
+    LIMIT, provider=classic, order_id set) must reach
+    BinanceFuturesClient.cancel_order specifically - never the Algo Order
+    API - end to end through the real endpoint + router + provider chain
+    (only the raw Binance HTTP client is mocked)."""
+    configure_keys(monkeypatch)
+    client_double = MockBinanceClient(open_orders=[make_order(order_id=BIG_ORDER_ID, symbol="ETHUSDT", type="LIMIT")])
+    provider = make_provider(client_double)
+    monkeypatch.setattr(tc.execution_router, "_live", provider)
+    modes.set_mode(modes.MODE_PAPER)
+    client = make_client()
+
+    r = client.post("/api/trading/binance/cancel-order",
+                    json={"symbol": "ETHUSDT", "provider": "classic", "order_id": str(BIG_ORDER_ID)})
+
+    assert r.status_code == 200, r.text
+    assert client_double.called("cancel_order")[0] == ("cancel_order", "ETHUSDT", BIG_ORDER_ID, None)
+    # never touches the Algo Order API surface for a classic row
+    assert not any(c[0] in ("_delete", "cancel_leg") for c in client_double.calls)

@@ -72,6 +72,7 @@ async def evaluate_real_order(
     open_positions: int | None = None,
     sl: float | None = None,
     tp: float | None = None,
+    existing_position_on_symbol: bool = False,
     db=None,
 ) -> GateResult:
     """Run the full real-order checklist. `client` is a configured
@@ -81,7 +82,21 @@ async def evaluate_real_order(
     confidence/data_reliable/spread follow the same fail-open-on-unknown
     policy as the paper gate: None means the caller had no measurement, only
     an explicit bad value vetoes. Everything about money and mode is
-    fail-closed."""
+    fail-closed.
+
+    existing_position_on_symbol (Debug 2.pdf section 7): True when the
+    exchange already reports a live, nonzero position for this exact
+    symbol. Root cause of a real production loop where the bot re-signaled
+    the same symbol every cycle and each attempt failed at the Binance
+    validation stage with "Position side cannot be changed if there exists
+    open orders." - margin type / leverage are per-symbol account settings
+    that Binance refuses to (re-)assert while a position or resting order
+    already exists for that symbol, and open_position() always tries to
+    (re-)assert them before every entry. Nothing about that failure was
+    ever a signal to retry - it was permanently unwinnable until the
+    existing position closed, yet the bot kept re-attempting it every
+    cycle, burning rate-limit budget on guaranteed-rejected orders. This
+    check stops the attempt before it ever reaches Binance."""
     checks: list[dict] = []
 
     def blocked(name: str, reason: str) -> GateResult:
@@ -158,6 +173,15 @@ async def evaluate_real_order(
     if open_positions is not None and open_positions >= risk["max_open_positions"]:
         return blocked("max_open_positions", f"Maximum open positions reached ({risk['max_open_positions']})")
     passed("max_open_positions")
+
+    if existing_position_on_symbol:
+        return blocked(
+            "existing_position_same_symbol",
+            f"{symbol} already has an open live position - no pyramiding into an existing position "
+            "(margin type/leverage cannot be re-asserted by Binance while it's open, which is what "
+            "actually rejects a duplicate entry attempt)",
+        )
+    passed("existing_position_same_symbol")
 
     required_confidence = round(risk["min_confidence_to_trade"] * 100, 1)
     if confidence is not None and confidence < required_confidence:

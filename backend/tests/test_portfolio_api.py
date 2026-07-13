@@ -292,7 +292,11 @@ def test_binance_orders_trades_income(monkeypatch):
     client = make_client(monkeypatch)
 
     orders = client.get("/api/portfolio/binance/orders").json()
-    assert orders["orders"][0]["order_id"] == 42
+    # order_id is a JSON string, not a number - real Binance order ids on
+    # this account run up to 19 digits, past Number.MAX_SAFE_INTEGER; a
+    # raw JSON number gets silently corrupted by the browser's own
+    # JSON.parse before any app code runs (see BinanceOrder.to_dict()).
+    assert orders["orders"][0]["order_id"] == "42"
     assert orders["orders"][0]["reduce_only"] is True
 
     trades = client.get("/api/portfolio/binance/trades").json()

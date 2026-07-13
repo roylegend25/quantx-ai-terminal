@@ -11,7 +11,6 @@ carries a bypass parameter.
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -22,6 +21,7 @@ from app.api.bot import BOT_STATE, update_state
 from app.core.config import settings
 from app.db.models import BinanceBotTrade, BinanceExecutionAttempt, TradingAuditLog
 from app.db.session import get_db
+from app.monitoring.logging import get_logger
 from app.risk import settings_repository
 from app.trading import margin_calculator as mc
 from app.trading import modes, protection, protection_provider
@@ -30,7 +30,14 @@ from app.trading.execution_router import _safe_error, _tracked_algo_id, router a
 from app.trading.margin import RiskValidationError, validate_risk_levels
 
 router = APIRouter(prefix="/api/trading", tags=["trading"])
-logger = logging.getLogger("quantx.trading_control")
+# Debug 1.pdf: previously `logging.getLogger(...)` directly - that logger
+# has no handler and no configured level of its own, so it silently
+# inherits the root logger's default WARNING and every .debug() call was a
+# no-op that never reached `docker logs quantx-backend`. get_logger()
+# (app.monitoring.logging) is what every other module in this app uses -
+# it attaches the real stdout/JSON handler and sets INFO, so these calls
+# are now actually visible.
+logger = get_logger("quantx.trading_control")
 
 
 # ================================================================== mode
@@ -231,13 +238,15 @@ async def binance_cancel_order(body: CancelOrderRequest, db: Session = Depends(g
     if body.provider is None and not has_classic_id and not has_algo_id:
         raise HTTPException(status_code=400, detail="Cannot cancel: missing order identifier")
 
-    # Debug 1.pdf section 9: safe, temporary debug logging - symbol/
-    # provider/which-identifier-was-present only, never the identifier
-    # values themselves, and never keys/signatures/secrets.
-    logger.debug(
-        "binance_cancel_order request symbol=%s provider=%s has_order_id=%s has_client_order_id=%s "
-        "has_algo_id=%s has_client_algo_id=%s",
-        body.symbol, body.provider, body.order_id is not None, body.client_order_id is not None,
+    # Debug 1.pdf section 2/9: safe request-shape logging only - symbol/
+    # provider/which-identifier-was-present as booleans, never the actual
+    # identifier values, and never keys/signatures/secrets. INFO (not
+    # DEBUG) so this is actually visible in `docker logs quantx-backend`
+    # without changing the process's log level - see get_logger() above.
+    logger.info(
+        "binance_cancel_order request symbol_present=%s provider=%s has_order_id=%s "
+        "has_client_order_id=%s has_algo_id=%s has_client_algo_id=%s",
+        bool(body.symbol), body.provider, body.order_id is not None, body.client_order_id is not None,
         body.algo_id is not None, body.client_algo_id is not None,
     )
 
@@ -245,9 +254,12 @@ async def binance_cancel_order(body: CancelOrderRequest, db: Session = Depends(g
         symbol=body.symbol, order_id=body.order_id, client_order_id=body.client_order_id,
         algo_id=body.algo_id, client_algo_id=body.client_algo_id, provider=body.provider,
     )
-    logger.debug(
-        "binance_cancel_order response symbol=%s ok=%s reason=%s",
-        body.symbol, result.ok, result.reason if not result.ok else None,
+    result_detail = result.detail or {}
+    endpoint_selected = "algo" if "algo_id" in (result_detail.get("order") or {}) else "classic"
+    logger.info(
+        "binance_cancel_order response symbol_present=%s ok=%s endpoint_selected=%s reason=%s",
+        bool(body.symbol), result.ok, endpoint_selected if result.ok else None,
+        result.reason if not result.ok else None,
     )
     if not result.ok:
         raise HTTPException(status_code=400, detail=result.reason or "Cancel failed")
@@ -261,6 +273,16 @@ class CancelAllRequest(BaseModel):
 
 @router.post("/binance/cancel-all-orders")
 async def binance_cancel_all_orders(body: CancelAllRequest, db: Session = Depends(get_db)):
+    # Deliberately NOT implemented as "for each open order, call the same
+    # single-order cancel function" - it calls Binance's own native bulk
+    # DELETE /fapi/v1/allOpenOrders instead (one signed call cancels every
+    # resting order for a symbol). A client-side loop would multiply
+    # rate-limit pressure exactly where section 8 asks for rate-limit
+    # safety, and would change the atomicity/partial-failure behavior of a
+    # path already confirmed working - which section "Do NOT break Cancel
+    # All" forbids risking. The two paths already share the one thing that
+    # actually matters - identifier/provider resolution - via
+    # ExecutionRouter._cancel_provider.
     _require_cancelable(db)
     if not body.confirm:
         raise HTTPException(status_code=400, detail="Explicit confirmation required to cancel all real orders (confirm=true)")
@@ -268,6 +290,41 @@ async def binance_cancel_all_orders(body: CancelAllRequest, db: Session = Depend
     if not result.ok:
         raise HTTPException(status_code=400, detail=result.reason or "Cancel-all failed")
     return result.to_dict()
+
+
+@router.get("/binance/open-orders/debug")
+async def binance_open_orders_debug():
+    """Debug 1.pdf section 7: proves, for every currently open Binance
+    order, exactly which cancel identifiers the row-level Cancel button
+    actually has to work with - reads the same cached snapshot GET
+    /binance/orders already serves (no extra Binance calls, no secrets)."""
+    from app.api.portfolio import binance_orders as _binance_orders
+
+    orders_response = await _binance_orders()
+    debug_rows = []
+    for o in orders_response.get("orders", []):
+        has_order_id = o.get("order_id") is not None
+        has_client_order_id = o.get("client_order_id") is not None
+        has_algo_id = o.get("algo_id") is not None
+        has_client_algo_id = o.get("client_algo_id") is not None
+        debug_rows.append({
+            "symbol": o.get("symbol"),
+            "type": o.get("type"),
+            "provider": o.get("provider"),
+            "has_order_id": has_order_id,
+            "has_client_order_id": has_client_order_id,
+            "has_algo_id": has_algo_id,
+            "has_client_algo_id": has_client_algo_id,
+            "cancel_payload_preview": {
+                "symbol": o.get("symbol"),
+                "provider": o.get("provider"),
+                "order_id_present": has_order_id,
+                "client_order_id_present": has_client_order_id,
+                "algo_id_present": has_algo_id,
+                "client_algo_id_present": has_client_algo_id,
+            },
+        })
+    return {"orders": debug_rows}
 
 
 # ============================================================ kill switch
@@ -699,6 +756,23 @@ async def binance_decision_status(symbol: str | None = None, db: Session = Depen
             reasons.append("Balance insufficient")
     if protection_check["passed"] is False:
         reasons.append(f"Existing live position is unprotected ({protection_check['detail']})")
+
+    # Debug 2.pdf section 7/9: mirrors real_risk_gate's
+    # existing_position_same_symbol check so the CURRENT blocker shown here
+    # never disagrees with what the real gate will actually do - without
+    # this, the UI could say "no reason to block" for a symbol that would
+    # immediately fail at the Binance validation stage (margin type/
+    # leverage cannot be re-asserted while a position already exists).
+    if account_connected and modes.binance_configured():
+        try:
+            from app.api.portfolio import get_read_client
+            existing_symbol_position = any(
+                p.symbol == symbol for p in await get_read_client().get_positions()
+            )
+            if existing_symbol_position:
+                reasons.append(f"{symbol} already has an open live position - no pyramiding")
+        except Exception:
+            pass  # a transient read failure here is not a confident "blocked" verdict either
 
     risk_gate_allowed = not reasons
     final_direction = "BLOCKED" if reasons else pred["direction"]
@@ -1661,9 +1735,13 @@ async def binance_trading_diagnostics(symbol: str | None = None, db: Session = D
     from app.trading.diagnostics import (
         build_account_diagnostics,
         build_order_type_diagnostics,
+        build_position_mode_diagnostics,
         build_protection_provider_diagnostics,
         last_protective_attempts,
     )
+    from app.exchanges.binance_rate_limiter import limiter
+    from app.exchanges.binance_snapshot_service import snapshot_service
+    from app.trading.protection_watchdog import WATCHDOG_INTERVAL_SECONDS
 
     if not modes.binance_configured():
         return {"available": False, "reason": "Binance API keys are not configured"}
@@ -1678,6 +1756,13 @@ async def binance_trading_diagnostics(symbol: str | None = None, db: Session = D
         "order_types": await build_order_type_diagnostics(client, sym),
         "protection_provider": build_protection_provider_diagnostics(modes.effective_mode(), db),
         "last_protective_attempt": last_protective_attempts(db),
+        # Debug 2.pdf section 11
+        "position_mode": await build_position_mode_diagnostics(client),
+        "rate_limit": {
+            **limiter.status(),
+            "snapshot_sections": snapshot_service.section_meta(),
+            "watchdog_interval_seconds": WATCHDOG_INTERVAL_SECONDS,
+        },
         "config": {
             "require_tp_sl": settings.binance_require_tp_sl,
             "close_if_protection_fails": settings.binance_close_if_protection_fails,

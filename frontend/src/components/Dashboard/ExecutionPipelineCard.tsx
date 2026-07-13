@@ -63,6 +63,12 @@ export default function ExecutionPipelineCard({
   const [logsLoading, setLogsLoading] = useState(false);
   const [testBusy, setTestBusy] = useState(false);
   const [testResult, setTestResult] = useState<any>(null);
+  // Debug 2.pdf section 9: a historical FAILURE starts collapsed - a red
+  // fatal-looking reason from an old, resolved attempt must never carry
+  // the same visual weight as a genuinely current blocker. Keyed by
+  // last_attempt_at so a newer historical attempt doesn't inherit a stale
+  // dismiss/expand choice left over from a previous one.
+  const [expandedHistoricalAt, setExpandedHistoricalAt] = useState<string | null>(null);
 
   async function toggleLogs() {
     const next = !logsOpen;
@@ -257,9 +263,37 @@ export default function ExecutionPipelineCard({
                   </span>
                 )}
               </span>
-              <b className={`tile-value ${executionOk ? "green" : "red"}`}>
-                {executionOk ? "Order Accepted" : `Failed — ${pipeline.final_reason || "unknown reason"}`}
-              </b>
+              {pipeline.is_historical_attempt && !executionOk && expandedHistoricalAt !== pipeline.last_attempt_at ? (
+                <>
+                  <span className="regime-desc" style={{ fontSize: 12, opacity: 0.75 }}>
+                    An old attempt failed - it is no longer today's blocker.
+                  </span>
+                  <button
+                    className="mini-btn"
+                    style={{ marginTop: 6 }}
+                    onClick={() => setExpandedHistoricalAt(pipeline.last_attempt_at)}
+                  >
+                    View historical failure details
+                  </button>
+                </>
+              ) : (
+                <>
+                  <b className={`tile-value ${executionOk ? "green" : pipeline.is_historical_attempt ? "" : "red"}`}>
+                    {executionOk ? "Order Accepted" : `Failed — ${pipeline.final_reason || "unknown reason"}`}
+                  </b>
+                  {pipeline.is_historical_attempt && !executionOk && (
+                    <div>
+                      <button
+                        className="mini-btn"
+                        style={{ marginTop: 6 }}
+                        onClick={() => setExpandedHistoricalAt(null)}
+                      >
+                        Dismiss historical attempt
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
             </>
           ) : (
             <>

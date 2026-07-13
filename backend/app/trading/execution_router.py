@@ -222,8 +222,11 @@ class BinanceExecutionProvider:
 
         # max_open_positions must count REAL exchange positions, not the
         # paper count the strategy engine happens to know about.
+        existing_position_on_symbol = False
         try:
-            open_positions = len(await self.client.get_positions())
+            live_positions = await self.client.get_positions()
+            open_positions = len(live_positions)
+            existing_position_on_symbol = any(p.symbol == symbol for p in live_positions)
         except Exception:
             pass  # keep the caller-provided count; the gate re-verifies reachability anyway
 
@@ -231,6 +234,7 @@ class BinanceExecutionProvider:
             symbol=symbol, side=side, notional_usdt=notional_usdt, leverage=leverage,
             client=self.client, confidence=confidence, data_reliable=data_reliable,
             spread_pct=spread_pct, open_positions=open_positions, sl=sl, tp=tp,
+            existing_position_on_symbol=existing_position_on_symbol,
         )
         if not gate.allowed:
             failing = next((c for c in gate.checks if not c.get("passed")), None)
@@ -261,8 +265,21 @@ class BinanceExecutionProvider:
         recorder.stage(STAGE_QUANTITY_CALCULATION, STATUS_SUCCESS)
 
         try:
-            await self.client.set_margin_type(symbol, "ISOLATED")
-            await self.client.set_leverage(symbol, int(leverage))
+            # Margin type / leverage are one-time-per-symbol account
+            # settings, not something to re-assert on every order - Binance
+            # itself refuses to change either while a position (or a
+            # resting order) already exists for the symbol, which is what
+            # actually produced "Position side cannot be changed if there
+            # exists open orders." in production every cycle the bot
+            # re-signaled an already-open symbol. The risk gate above now
+            # blocks that case before this point is ever reached in the
+            # normal flow; this skip is defense-in-depth for any other
+            # caller of open_position (e.g. is_test) - never fail a
+            # perfectly fine entry over a call that was never going to
+            # succeed anyway.
+            if not existing_position_on_symbol:
+                await self.client.set_margin_type(symbol, "ISOLATED")
+                await self.client.set_leverage(symbol, int(leverage))
         except Exception as e:
             reason = _safe_error(e)
             recorder.stage(STAGE_BINANCE_VALIDATION, STATUS_FAILED, classify_binance_error(e))
@@ -729,7 +746,12 @@ class BinanceExecutionProvider:
                 _invalidate_snapshot_after_cancel()
                 return self._result(
                     True, "cancel_order",
-                    order={"algo_id": resolved_algo_id, "client_algo_id": client_algo_id, "status": "CANCELED"},
+                    # algo_id stringified for the same JSON-number-precision
+                    # reason as BinanceOrder.to_dict() - see that docstring.
+                    order={
+                        "algo_id": str(resolved_algo_id) if resolved_algo_id is not None else None,
+                        "client_algo_id": client_algo_id, "status": "CANCELED",
+                    },
                 )
 
             order = await self.client.cancel_order(symbol, order_id=order_id, orig_client_order_id=client_order_id)

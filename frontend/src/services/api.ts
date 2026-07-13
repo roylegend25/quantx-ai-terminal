@@ -343,13 +343,26 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         symbol: params.symbol,
-        // Row identifiers may arrive as strings (Debug 1.pdf section 2's
-        // normalized shape) - Binance futures order/algo ids stay well
-        // under Number.MAX_SAFE_INTEGER, so coercing here is lossless and
-        // keeps the backend's plain `int` field simple.
-        order_id: params.orderId != null ? Number(params.orderId) : null,
+        // MUST be sent as a JSON string, never Number(...) - live-verified
+        // root cause: this account's real Binance order ids run up to 19
+        // digits (e.g. 8389766233056201670), past Number.MAX_SAFE_INTEGER
+        // (2^53-1, 16 digits). The browser's own JSON.parse (inside
+        // postJson/getJson's res.json()) already silently rounds any raw
+        // JSON *number* past that threshold to the nearest representable
+        // double the moment the orders list response is parsed - BEFORE
+        // this function ever runs - corrupting order_id from ...201670 to
+        // ...201728. Sending that corrupted id back made Binance correctly
+        // reject the cancel with "Unknown order sent." every time, which
+        // is exactly why row Cancel failed while Cancel All (which never
+        // round-trips an order_id through JSON) kept working. The backend
+        // now serializes these ids as JSON strings too (see
+        // BinanceOrder.to_dict()), so `params.orderId` is already the
+        // untouched original string by the time it gets here - String()
+        // is just a defensive no-op for any caller that still passes a
+        // small numeric id directly (e.g. a literal in a test).
+        order_id: params.orderId != null ? String(params.orderId) : null,
         client_order_id: params.clientOrderId ?? null,
-        algo_id: params.algoId != null ? Number(params.algoId) : null,
+        algo_id: params.algoId != null ? String(params.algoId) : null,
         client_algo_id: params.clientAlgoId ?? null,
         provider: params.provider ?? null,
       }),

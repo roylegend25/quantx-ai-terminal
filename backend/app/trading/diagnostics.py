@@ -202,3 +202,96 @@ def last_protective_attempts(db) -> dict:
         "protective_sl_stage": stages.get("protective_sl_submitted"),
         "protection_confirmed_stage": stages.get("protection_confirmed"),
     }
+
+
+# ================================================== Debug 2.pdf sections 7-8-11
+#
+# Position mode (hedge vs one-way) is a per-account Binance setting, not a
+# per-order one. Nothing in this app's live order-placement path ever
+# calls the mutating POST /fapi/v1/positionSide/dual - every order already
+# adapts its own parameters to whatever mode get_position_mode() (a plain
+# read) currently reports, see execution_router.open_position and
+# app.exchanges.binance_futures_client._place_protective_order. The actual
+# root cause of the observed "Position side cannot be changed if there
+# exists open orders." rejection was margin type / leverage - a DIFFERENT
+# pair of per-symbol account settings that WAS being (re-)asserted on
+# every entry via set_margin_type/set_leverage, which Binance refuses to
+# change while a position or resting order already exists for that
+# symbol - fixed at the source in real_risk_gate.py's
+# existing_position_same_symbol check.
+#
+# ensure_position_mode_for_trading() exists for the OTHER interpretation
+# of this bug (section 8's literal ask): a safety guard for any FUTURE
+# admin "switch position mode" action, so it inherits this exact rule
+# instead of ever repeating the mistake this bug is named after - it is
+# not wired into the live order-placement path today because nothing
+# there needs it (this app adapts to the current mode rather than
+# requiring one).
+
+async def ensure_position_mode_for_trading(
+    client: BinanceFuturesClient, expected_hedge_mode: bool | None = None,
+) -> dict:
+    """Read-only safety guard - NEVER itself calls the mutating position-
+    mode endpoint. Returns PASS when there's nothing to reconcile (no
+    expectation given, or the account already matches it); BLOCKED when a
+    mismatch exists AND open positions/orders would make Binance refuse
+    the change anyway; SETUP_REQUIRED when a mismatch exists but the
+    account is empty enough that an explicit admin action could safely
+    fix it. A caller that actually wants to change the mode still has to
+    call client._post("/fapi/v1/positionSide/dual", ...) itself, deliberately,
+    only when this returns SETUP_REQUIRED."""
+    current_hedge_mode = await client.get_position_mode()
+    current_label = "HEDGE" if current_hedge_mode else "ONE-WAY"
+
+    if expected_hedge_mode is None or current_hedge_mode == expected_hedge_mode:
+        return {
+            "status": "PASS", "current_mode": current_label, "expected_mode": current_label,
+            "open_positions_count": None, "open_orders_count": None,
+            "mode_change_allowed": None, "reason": None,
+        }
+
+    expected_label = "HEDGE" if expected_hedge_mode else "ONE-WAY"
+    positions = await client.get_positions()
+    open_orders = await client.get_open_orders()
+    if positions or open_orders:
+        return {
+            "status": "BLOCKED", "current_mode": current_label, "expected_mode": expected_label,
+            "open_positions_count": len(positions), "open_orders_count": len(open_orders),
+            "mode_change_allowed": False,
+            "reason": "Position mode cannot be changed while open orders or positions exist. "
+                      "Cancel orders/close positions first, then run setup.",
+        }
+    return {
+        "status": "SETUP_REQUIRED", "current_mode": current_label, "expected_mode": expected_label,
+        "open_positions_count": 0, "open_orders_count": 0,
+        "mode_change_allowed": True,
+        "reason": "Mode mismatch with no open positions/orders - an explicit admin setup action may change it.",
+    }
+
+
+async def build_position_mode_diagnostics(client: BinanceFuturesClient) -> dict:
+    """Section 11 diagnostics panel: current mode + how many positions/
+    orders exist right now (informational - this app has no single
+    "expected" mode of its own, see the module note above)."""
+    mode_result = await _safe(ensure_position_mode_for_trading(client))
+    positions_result = await _safe(client.get_positions())
+    orders_result = await _safe(client.get_open_orders())
+
+    open_positions_count = len(positions_result["value"]) if positions_result["available"] else None
+    open_orders_count = len(orders_result["value"]) if orders_result["available"] else None
+
+    return {
+        "current_mode": mode_result["value"]["current_mode"] if mode_result["available"] else None,
+        "current_mode_error": mode_result.get("reason"),
+        "expected_mode": None,  # no enforced expectation - this app adapts to whichever mode is set
+        "open_orders_count": open_orders_count,
+        "open_positions_count": open_positions_count,
+        "mode_change_allowed": bool(open_positions_count == 0 and open_orders_count == 0)
+        if open_positions_count is not None and open_orders_count is not None else None,
+        "last_mode_change_attempt": None,  # no code path ever attempts one - see module note
+        "reason": (
+            "Position mode changes are blocked while any position or open order exists"
+            if (open_positions_count or open_orders_count)
+            else "No open positions/orders - mode changes would be permitted if ever attempted"
+        ),
+    }

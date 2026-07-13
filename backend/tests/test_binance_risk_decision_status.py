@@ -232,6 +232,28 @@ def test_decision_status_allowed_when_fully_ready(monkeypatch):
     assert body["blocked_reasons"] == []
 
 
+def test_decision_status_blocks_symbol_that_already_has_a_position(monkeypatch):
+    """Debug 2.pdf section 7/9: the CURRENT blocker shown to the UI must
+    never disagree with what the real risk gate will actually do - without
+    this, decision-status could say ETHUSDT is clear to trade while the
+    gate (and, before this fix, Binance itself) would reject it because a
+    live ETHUSDT position already exists."""
+    from app.risk import settings_repository as risk_settings_repo
+    go_fully_ready(monkeypatch, client=FullyProtectedMockClient())
+    real_get_settings = risk_settings_repo.get_settings
+    monkeypatch.setattr(
+        risk_settings_repo, "get_settings",
+        lambda db=None: {**real_get_settings(db=db), "max_open_positions": 5},
+    )
+    monkeypatch.setattr(prediction_module, "prediction", fake_prediction(confidence=90.0))
+    client = make_client()
+
+    body = client.get("/api/trading/binance/decision-status?symbol=ETHUSDT").json()
+
+    assert body["risk_gate_allowed"] is False
+    assert any("already has an open live position" in r for r in body["blocked_reasons"])
+
+
 def test_decision_status_does_not_use_paper_state(monkeypatch):
     open_paper_trade(pnl=999999.0)
     use_mock_read_client(monkeypatch)

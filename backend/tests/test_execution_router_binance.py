@@ -165,6 +165,37 @@ def test_testnet_open_places_market_order_with_leverage_and_protective_orders(mo
     assert result.detail["sl_order_id"] and result.detail["tp_order_id"]
 
 
+def test_open_position_blocked_when_symbol_already_has_a_position(monkeypatch):
+    """End-to-end reproduction of the real production loop (Debug 2.pdf
+    section 7): a live BTCUSDT position already exists, the bot re-signals
+    BTCUSDT again - the gate must block it before any Binance call is
+    made, so a guaranteed-rejected order (and the wasted rate-limit
+    budget/repeated "Position side cannot be changed..." failures it
+    produced every cycle) can never happen again."""
+    from app.core.config import settings
+    from app.risk import settings_repository
+    monkeypatch.setattr(settings, "binance_max_notional_per_trade", 200.0)
+    # bump the total-count cap above 1 so it's the symbol-specific check
+    # under test that fires, not the unrelated max_open_positions one
+    settings_repository.update_settings({"max_open_positions": 5})
+    try:
+        client = MockBinanceClient(position=btc_long_position())
+        provider = make_provider(client)
+
+        result = asyncio.run(provider.open_position(
+            symbol="BTCUSDT", side="LONG", notional_usdt=100.0, leverage=2.0,
+            sl=48000.0, tp=55000.0,
+        ))
+
+        assert not result.ok
+        assert "already has an open live position" in result.reason
+        assert not client.called("set_margin_type")
+        assert not client.called("set_leverage")
+        assert not client.called("place_market_order")
+    finally:
+        settings_repository.reset_settings()
+
+
 def test_testnet_open_blocked_by_gate_places_nothing():
     client = MockBinanceClient()
     provider = make_provider(client)

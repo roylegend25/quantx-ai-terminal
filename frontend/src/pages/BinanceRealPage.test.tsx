@@ -123,8 +123,14 @@ describe("BinanceRealPage", () => {
 
 // ------------------------------------------------- row-level Cancel (Debug 1)
 
+// order_id/algo_id are strings with 19 digits, matching the real shape the
+// backend now sends (see BinanceOrder.to_dict()) - a live-verified bug
+// showed this account's real Binance order ids exceed
+// Number.MAX_SAFE_INTEGER, so these fixtures deliberately use ids a plain
+// JS Number could not round-trip exactly, to guard against ever
+// reintroducing a Number(...)/parseInt coercion on this path.
 const classicOrder = {
-  order_id: 998877,
+  order_id: "8389766233056201670",
   client_order_id: "qx-1",
   algo_id: null,
   client_algo_id: null,
@@ -144,7 +150,7 @@ const classicOrder = {
 const algoOrder = {
   order_id: null,
   client_order_id: null,
-  algo_id: 55201,
+  algo_id: "9007199254740993123",
   client_algo_id: "qxa-77",
   provider: "algo",
   source: "binance_real",
@@ -175,7 +181,7 @@ describe("BinanceRealPage row-level Cancel", () => {
 
     await waitFor(() => expect(api.binanceCancelOrder).toHaveBeenCalledWith({
       symbol: "ETHUSDT",
-      orderId: 998877,
+      orderId: "8389766233056201670",
       clientOrderId: "qx-1",
       algoId: null,
       clientAlgoId: null,
@@ -194,7 +200,7 @@ describe("BinanceRealPage row-level Cancel", () => {
       symbol: "BTCUSDT",
       orderId: null,
       clientOrderId: null,
-      algoId: 55201,
+      algoId: "9007199254740993123",
       clientAlgoId: "qxa-77",
       provider: "algo",
     }));

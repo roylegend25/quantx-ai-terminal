@@ -294,8 +294,13 @@ async def binance_positions(db: Session = Depends(get_db)):
             "id": local_ids.get(p.symbol),
             "sl": verified.sl_price,
             "tp": verified.tp_price,
-            "sl_order_id": verified.sl_order_id,
-            "tp_order_id": verified.tp_order_id,
+            # Stringified for the same reason BinanceOrder.to_dict() is -
+            # these ids (classic or algo, either surface) can exceed
+            # Number.MAX_SAFE_INTEGER, and the Cancel SL/TP buttons send
+            # this value straight back as a cancel identifier (see
+            # BinanceRealPage.handleCancelProtective / PositionsPage).
+            "sl_order_id": str(verified.sl_order_id) if verified.sl_order_id is not None else None,
+            "tp_order_id": str(verified.tp_order_id) if verified.tp_order_id is not None else None,
             "protection_status": verified.status,
             "protection_provider": row.protection_provider if row else None,
         })

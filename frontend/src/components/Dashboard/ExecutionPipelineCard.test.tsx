@@ -93,6 +93,43 @@ describe("ExecutionPipelineCard", () => {
     expect(screen.getByText(/Execution Failed/)).toBeInTheDocument();
   });
 
+  it("collapses a historical failure by default and never shows it as Execution Failed", () => {
+    const pipeline = makePipeline({
+      execution_ok: false,
+      final_reason: "Position side cannot be changed if there exists open orders.",
+      is_historical_attempt: true,
+    });
+    render(<ExecutionPipelineCard symbol="BTCUSDT" pipeline={pipeline} onRefresh={onRefresh} showToast={showToast} />);
+
+    expect(screen.queryByText(/Execution Failed/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Historical/)).toBeInTheDocument();
+    expect(screen.queryByText(/Position side cannot be changed/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View historical failure details" })).toBeInTheDocument();
+  });
+
+  it("expands a historical failure's exact reason on demand, and can be dismissed again", async () => {
+    const pipeline = makePipeline({
+      execution_ok: false,
+      final_reason: "Position side cannot be changed if there exists open orders.",
+      is_historical_attempt: true,
+    });
+    render(<ExecutionPipelineCard symbol="BTCUSDT" pipeline={pipeline} onRefresh={onRefresh} showToast={showToast} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "View historical failure details" }));
+    expect(screen.getByText(/Position side cannot be changed/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Dismiss historical attempt" }));
+    expect(screen.queryByText(/Position side cannot be changed/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View historical failure details" })).toBeInTheDocument();
+  });
+
+  it("does not collapse a historical attempt that succeeded", () => {
+    const pipeline = makePipeline({ execution_ok: true, is_historical_attempt: true });
+    render(<ExecutionPipelineCard symbol="BTCUSDT" pipeline={pipeline} onRefresh={onRefresh} showToast={showToast} />);
+    expect(screen.getByText("Order Accepted")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "View historical failure details" })).not.toBeInTheDocument();
+  });
+
   it("does not show the failure banner when no execution has been attempted yet", () => {
     const pipeline = makePipeline({ execution_attempted: false, execution_ok: null });
     render(<ExecutionPipelineCard symbol="BTCUSDT" pipeline={pipeline} onRefresh={onRefresh} showToast={showToast} />);

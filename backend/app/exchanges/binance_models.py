@@ -119,7 +119,22 @@ class BinanceOrder:
         )
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        """order_id is serialized as a string, not a JSON number - Binance
+        futures order ids on this account run up to 19 digits (e.g.
+        8389766233056201670), far past Number.MAX_SAFE_INTEGER (2^53-1,
+        16 digits). A browser's JSON.parse silently rounds any JSON number
+        past that threshold to the nearest representable double BEFORE any
+        application code runs, corrupting the id (confirmed live: id
+        ...201670 round-trips through a JS double as ...201728) - Binance
+        then rejects a cancel-by-id call with "Unknown order sent." even
+        though the request looked entirely correct at every other layer.
+        Emitting it as a JSON string sidesteps this entirely: JS preserves
+        string values exactly, and the backend already accepts a numeric
+        string back for order_id (Pydantic coerces str -> Python's
+        arbitrary-precision int losslessly - see CancelOrderRequest)."""
+        d = asdict(self)
+        d["order_id"] = str(d["order_id"])
+        return d
 
 
 @dataclass

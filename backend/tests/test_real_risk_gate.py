@@ -164,6 +164,36 @@ def test_max_open_positions_blocked():
     assert "Maximum open positions" in result.reason
 
 
+# ------------------------- Debug 2.pdf section 7: no pyramiding a symbol
+
+def test_existing_position_on_symbol_blocked():
+    """Root cause of the production loop where the bot re-signaled ETHUSDT
+    every cycle and each attempt failed at Binance validation with
+    'Position side cannot be changed if there exists open orders.' -
+    margin type/leverage can't be re-asserted while a position already
+    exists for the symbol, so a duplicate entry was always doomed. The
+    gate must block it before it ever reaches Binance."""
+    result = run_gate(existing_position_on_symbol=True)
+    assert not result.allowed
+    assert "already has an open live position" in result.reason
+    check = next(c for c in result.checks if c["check"] == "existing_position_same_symbol")
+    assert check["passed"] is False
+
+
+def test_no_existing_position_on_symbol_passes():
+    result = run_gate(existing_position_on_symbol=False)
+    assert result.allowed, result.reason
+    check = next(c for c in result.checks if c["check"] == "existing_position_same_symbol")
+    assert check["passed"] is True
+
+
+def test_existing_position_on_different_symbol_does_not_block():
+    """The block is symbol-specific - a position open on BTCUSDT must never
+    prevent a fresh, legitimate entry on ETHUSDT."""
+    result = run_gate(symbol="ETHUSDT", existing_position_on_symbol=False)
+    assert result.allowed, result.reason
+
+
 # ------------------------------------------------- Phase 27: TP/SL required
 
 def test_live_entry_without_take_profit_blocked():

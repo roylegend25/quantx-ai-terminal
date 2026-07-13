@@ -54,6 +54,12 @@ class DiagnosticsMockClient:
     async def get_positions(self, symbol=None):
         return self._positions
 
+    async def get_open_orders(self, symbol=None):
+        return []
+
+    async def get_position_mode(self):
+        return bool(self._position_mode.get("dualSidePosition"))
+
     async def get_api_key_permissions(self):
         if self._fail_permissions:
             raise RuntimeError("apiRestrictions not permitted for this key")
@@ -103,6 +109,68 @@ def test_account_diagnostics_degrades_gracefully_when_permissions_unavailable():
     assert result["api_permissions_error"] is not None
     # the rest of the response is still populated
     assert result["position_mode"] == "ONE-WAY"
+
+
+# ------------------------------------------ Debug 2.pdf section 7/8: position mode
+
+def test_ensure_position_mode_passes_with_no_expectation():
+    client = DiagnosticsMockClient()
+    result = asyncio.run(diagnostics.ensure_position_mode_for_trading(client))
+    assert result["status"] == "PASS"
+    assert result["current_mode"] == "ONE-WAY"
+
+
+def test_ensure_position_mode_passes_when_already_matching():
+    client = DiagnosticsMockClient(position_mode={"dualSidePosition": False})
+    result = asyncio.run(diagnostics.ensure_position_mode_for_trading(client, expected_hedge_mode=False))
+    assert result["status"] == "PASS"
+
+
+def test_ensure_position_mode_blocks_mismatch_with_open_positions():
+    """The exact rule this bug is named after: never change position mode
+    while any position or open order exists."""
+    from app.exchanges.binance_models import BinancePosition
+
+    client = DiagnosticsMockClient(
+        position_mode={"dualSidePosition": False},
+        positions=[BinancePosition(
+            symbol="ETHUSDT", side="SHORT", quantity=0.05, entry_price=3000.0, mark_price=2990.0,
+            leverage=2.0, margin_type="isolated", liquidation_price=4400.0,
+            unrealized_pnl=0.5, margin_used=75.0, notional=149.5,
+        )],
+    )
+    result = asyncio.run(diagnostics.ensure_position_mode_for_trading(client, expected_hedge_mode=True))
+
+    assert result["status"] == "BLOCKED"
+    assert result["mode_change_allowed"] is False
+    assert result["open_positions_count"] == 1
+    assert "Cancel orders/close positions first" in result["reason"]
+
+
+def test_ensure_position_mode_allows_setup_when_account_is_empty():
+    client = DiagnosticsMockClient(position_mode={"dualSidePosition": False})
+    result = asyncio.run(diagnostics.ensure_position_mode_for_trading(client, expected_hedge_mode=True))
+
+    assert result["status"] == "SETUP_REQUIRED"
+    assert result["mode_change_allowed"] is True
+    assert result["open_positions_count"] == 0
+    assert result["open_orders_count"] == 0
+
+
+def test_position_mode_diagnostics_reports_counts_and_allowed():
+    from app.exchanges.binance_models import BinancePosition
+
+    client = DiagnosticsMockClient(positions=[BinancePosition(
+        symbol="ETHUSDT", side="SHORT", quantity=0.05, entry_price=3000.0, mark_price=2990.0,
+        leverage=2.0, margin_type="isolated", liquidation_price=4400.0,
+        unrealized_pnl=0.5, margin_used=75.0, notional=149.5,
+    )])
+    result = asyncio.run(diagnostics.build_position_mode_diagnostics(client))
+
+    assert result["current_mode"] == "ONE-WAY"
+    assert result["open_positions_count"] == 1
+    assert result["open_orders_count"] == 0
+    assert result["mode_change_allowed"] is False
 
 
 def test_order_type_diagnostics_reports_documented_vs_actual_endpoint():
@@ -239,6 +307,13 @@ def test_diagnostics_endpoint_returns_full_report(monkeypatch):
     assert body["protection_provider"]["provider"] == "auto"
     assert body["last_protective_attempt"]["available"] is False
     assert body["config"]["require_tp_sl"] is True
+    # Debug 2.pdf section 11
+    assert body["position_mode"]["current_mode"] == "ONE-WAY"
+    assert body["position_mode"]["open_positions_count"] == 0
+    assert body["position_mode"]["open_orders_count"] == 0
+    assert body["position_mode"]["mode_change_allowed"] is True
+    assert body["rate_limit"]["source"] == "rate_limiter"
+    assert "watchdog_interval_seconds" in body["rate_limit"]
 
 
 def test_diagnostics_unavailable_when_not_configured(monkeypatch):

@@ -39,6 +39,18 @@ _RANK = {CRITICAL: 0, HIGH: 1, NORMAL: 2, LOW: 3}
 
 DEFAULT_SOFT_COOLDOWN_SECONDS = 5.0
 DEFAULT_HARD_BAN_SECONDS = 120.0
+# Root cause of a cooldown that "never clears" (e.g. showing "retry in
+# 985s" long after the rate-limit snapshot service was added): HIGH/
+# CRITICAL priority calls (positions, orders, balance, cancel, repair) are
+# deliberately exempt from the soft-cooldown gate in before_request() - if
+# Binance is still genuinely limiting the IP, each one of those keeps
+# landing a fresh 429, and the exponential backoff below
+# (base * multiplier ** consecutive_429) had no ceiling, so a real streak
+# of ~14 consecutive 429s could compound past 900+ seconds before the
+# window ever had a chance to actually expire. This cap bounds our OWN
+# compounding; an explicit Retry-After Binance sends on any single 429 is
+# still honored even past this cap (see after_response).
+MAX_SOFT_COOLDOWN_SECONDS = 120.0
 
 
 class BinanceCooldownActive(BinanceRateLimitError):
@@ -73,6 +85,7 @@ class BinanceRateLimiter:
         self._consecutive_429 = 0
         self._last_429_at: float | None = None
         self._last_418_at: float | None = None
+        self._last_success_at: float | None = None
         self._last_retry_after: float | None = None
         self._weight_used_1m: int | None = None
         self._order_count_1m: int | None = None
@@ -137,28 +150,57 @@ class BinanceRateLimiter:
             self._consecutive_429 += 1
             base = self._retry_after_seconds(headers, default=DEFAULT_SOFT_COOLDOWN_SECONDS)
             backoff = base * (self.backoff_multiplier ** (self._consecutive_429 - 1))
+            # Cap our OWN compounding growth - never cap below Binance's
+            # own explicit Retry-After for THIS response (`base`), only
+            # the multiplier's runaway growth across many consecutive
+            # violations. See MAX_SOFT_COOLDOWN_SECONDS above.
+            backoff = min(backoff, max(base, MAX_SOFT_COOLDOWN_SECONDS))
             self._last_429_at = time.time()
             self._cooldown_until = time.time() + backoff
             self._last_retry_after = backoff
             return
 
-        # Any non-429/418 response is real evidence Binance is currently
-        # fine with this IP - reset the consecutive-429 streak so the next
-        # 429 (if any) starts backoff from the base again. An active
-        # cooldown/ban is never cleared early by this - it always expires
-        # on its own schedule, never "early released" by an unrelated
-        # successful call.
+        # Any non-429/418 response is live, current, authoritative proof
+        # Binance is fine with this IP against the exact same rate-limit
+        # window it enforces - unlike a merely-elapsed timer, this is
+        # actual confirmation. A 2xx now clears an active soft cooldown
+        # early and resets the consecutive-429 streak (section 3: "when
+        # cooldown expires... if successful, clear cooldown, reset
+        # repeated-429 counter, mark healthy"). A hard 418 ban is never
+        # cleared this way - only CRITICAL calls can even reach Binance
+        # during one, and a single such success is deliberately not
+        # trusted to end an IP-level ban early.
         if status_code // 100 == 2:
             self._consecutive_429 = 0
+            self._cooldown_until = 0.0
+            self._last_success_at = time.time()
 
     def _retry_after_seconds(self, headers, default: float) -> float:
+        """Binance's Retry-After is normally a small RFC 7231 delta-
+        seconds value, but defends against two malformed shapes: a
+        millisecond epoch timestamp and a bare epoch-seconds timestamp -
+        either would otherwise be read as a literal seconds-to-wait value
+        and produce a cooldown lasting until sometime next century."""
         value = headers.get("Retry-After") or headers.get("retry-after")
         if value is None:
             return default
         try:
-            return max(float(value), 1.0)
+            parsed = float(value)
         except ValueError:
             return default
+        if parsed <= 120:
+            return max(parsed, 1.0)
+        now = time.time()
+        if parsed > now * 1000 * 0.5:
+            # looks like a millisecond epoch timestamp
+            return max((parsed / 1000.0) - now, 1.0)
+        if parsed > now:
+            # looks like a bare epoch-seconds timestamp
+            return max(parsed - now, 1.0)
+        # An unusually large plain delta-seconds value - respected as-is
+        # (this is what lets an explicit, valid, longer Retry-After from
+        # Binance survive the soft-cooldown cap above).
+        return parsed
 
     # ------------------------------------------------------------- status
 
@@ -186,6 +228,14 @@ class BinanceRateLimiter:
                 ({"endpoint": k, "count": v.count} for k, v in self._endpoints.items()),
                 key=lambda x: -x["count"],
             )[:10],
+            # Debug 2.pdf section 3: additive fields, same units/shape as
+            # the ones above (epoch seconds, not ISO strings) so no
+            # existing caller needs to change.
+            "cooldown_active": cooling_down,
+            "ban_active": banned,
+            "consecutive_429s": self._consecutive_429,
+            "last_success_at": self._last_success_at,
+            "source": "rate_limiter",
         }
 
     def reset(self) -> None:
