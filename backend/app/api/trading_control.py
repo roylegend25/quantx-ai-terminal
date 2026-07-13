@@ -11,6 +11,7 @@ carries a bypass parameter.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -29,6 +30,7 @@ from app.trading.execution_router import _safe_error, _tracked_algo_id, router a
 from app.trading.margin import RiskValidationError, validate_risk_levels
 
 router = APIRouter(prefix="/api/trading", tags=["trading"])
+logger = logging.getLogger("quantx.trading_control")
 
 
 # ================================================================== mode
@@ -197,26 +199,56 @@ async def binance_update_position_risk(position_id: int, body: PositionRiskUpdat
 
 
 class CancelOrderRequest(BaseModel):
-    symbol: str
-    # order_id (classic DELETE /fapi/v1/order) or algo_id (algo DELETE
-    # /fapi/v1/algoOrder) - whichever the row actually carries. client_*
-    # variants are accepted for forward-compatibility with the row shape
-    # in Debug 1.pdf section 1 but are not yet resolvable to a numeric id
-    # on their own (this app's own orders never surface only a client id).
+    # symbol/order_id are Optional here (not required) purely so a missing
+    # value fails with a safe, explicit 400 below instead of FastAPI's
+    # generic 422 - see Debug 1.pdf section 3 ("missing symbol returns
+    # 400"). provider, when given, must be "classic" or "algo"; when
+    # omitted it's inferred from whichever identifiers are present -
+    # classic needs order_id or client_order_id, algo needs algo_id or
+    # client_algo_id (Debug 1.pdf section 2).
+    symbol: str | None = None
+    provider: str | None = None
     order_id: int | None = None
     client_order_id: str | None = None
     algo_id: int | None = None
     client_algo_id: str | None = None
-    provider: str | None = None
 
 
 @router.post("/binance/cancel-order")
 async def binance_cancel_order(body: CancelOrderRequest, db: Session = Depends(get_db)):
     _require_cancelable(db)
-    resolved_id = body.order_id if body.order_id is not None else body.algo_id
-    if resolved_id is None:
-        raise HTTPException(status_code=400, detail="Cannot cancel: missing order id")
-    result = await execution_router.cancel_order(symbol=body.symbol, order_id=resolved_id)
+    if not body.symbol:
+        raise HTTPException(status_code=400, detail="Cannot cancel: missing symbol")
+    if body.provider is not None and body.provider not in ("classic", "algo"):
+        raise HTTPException(status_code=400, detail=f"Cannot cancel: invalid provider '{body.provider}'")
+
+    has_classic_id = body.order_id is not None or body.client_order_id is not None
+    has_algo_id = body.algo_id is not None or body.client_algo_id is not None
+    if body.provider == "classic" and not has_classic_id:
+        raise HTTPException(status_code=400, detail="Cannot cancel: missing order identifier")
+    if body.provider == "algo" and not has_algo_id:
+        raise HTTPException(status_code=400, detail="Cannot cancel: missing order identifier")
+    if body.provider is None and not has_classic_id and not has_algo_id:
+        raise HTTPException(status_code=400, detail="Cannot cancel: missing order identifier")
+
+    # Debug 1.pdf section 9: safe, temporary debug logging - symbol/
+    # provider/which-identifier-was-present only, never the identifier
+    # values themselves, and never keys/signatures/secrets.
+    logger.debug(
+        "binance_cancel_order request symbol=%s provider=%s has_order_id=%s has_client_order_id=%s "
+        "has_algo_id=%s has_client_algo_id=%s",
+        body.symbol, body.provider, body.order_id is not None, body.client_order_id is not None,
+        body.algo_id is not None, body.client_algo_id is not None,
+    )
+
+    result = await execution_router.cancel_order(
+        symbol=body.symbol, order_id=body.order_id, client_order_id=body.client_order_id,
+        algo_id=body.algo_id, client_algo_id=body.client_algo_id, provider=body.provider,
+    )
+    logger.debug(
+        "binance_cancel_order response symbol=%s ok=%s reason=%s",
+        body.symbol, result.ok, result.reason if not result.ok else None,
+    )
     if not result.ok:
         raise HTTPException(status_code=400, detail=result.reason or "Cancel failed")
     return result.to_dict()

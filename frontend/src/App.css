@@ -431,6 +431,57 @@ button, select, input {
   background: rgba(255,93,115,0.25);
 }
 
+/* ---------- Design system toggle (Classic <-> Premium Dark) ----------
+   Deliberately theme-neutral: uses translucent-white overlays (work on any
+   dark background) plus var(--c-purple-rgb) for the active state, which
+   resolves correctly in both Classic (per-accent) and Premium (indigo, see
+   premium/tokens.css) without any [data-design] branching needed here. */
+.design-toggle {
+  display: flex;
+  gap: 8px;
+  padding: 4px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+}
+
+.design-toggle-compact {
+  padding: 3px;
+  gap: 6px;
+}
+
+.design-toggle-opt {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: #9095ac;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 9px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.design-toggle-opt:hover {
+  color: white;
+  background: rgba(255,255,255,0.06);
+}
+
+.design-toggle-opt.active {
+  color: white;
+  background: rgba(var(--c-purple-rgb), 0.22);
+  box-shadow: inset 0 0 0 1px rgba(var(--c-purple-rgb), 0.4);
+}
+
+.design-toggle-check {
+  margin-left: auto;
+  color: var(--c-green);
+}
+
 /* ---------- Topbar ---------- */
 
 .topbar {

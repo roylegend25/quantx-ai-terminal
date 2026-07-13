@@ -147,7 +147,7 @@ class PaperExecutionProvider:
         return RouterResult(ok=True, mode=self.mode, action="sync_orders",
                             detail={"synced": 0, "note": "paper ledger is local - nothing to sync"})
 
-    async def cancel_order(self, symbol: str, order_id: int, **kwargs) -> RouterResult:
+    async def cancel_order(self, symbol: str, order_id: int | None = None, **kwargs) -> RouterResult:
         return RouterResult(ok=False, mode=self.mode, action="cancel_order",
                             reason="paper mode has no resting exchange orders to cancel")
 
@@ -694,23 +694,46 @@ class BinanceExecutionProvider:
         except Exception as e:
             return self._result(False, "sync_orders", reason=_safe_error(e))
 
-    async def cancel_order(self, symbol: str, order_id: int, **kwargs) -> RouterResult:
-        """Cancels a resting order by id. Phase 26 Algo Order Provider: an
-        id that matches this position's tracked tp_algo_id/sl_algo_id is an
-        Algo Order API id, not a classic order id - the UI never needs to
-        know which surface a given id belongs to, this routes it correctly
-        either way (the two id spaces cannot collide - Binance's own
-        classic orderId and algoId sequences are independent, but a match
-        here is checked against OUR tracked id, not a guess)."""
+    async def cancel_order(
+        self, symbol: str, order_id: int | None = None, client_order_id: str | None = None,
+        algo_id: int | None = None, client_algo_id: str | None = None, provider: str | None = None,
+        **kwargs,
+    ) -> RouterResult:
+        """Cancels a resting order by whichever identifier(s) it carries.
+        Phase 26 Algo Order Provider / Debug 1.pdf section 1: an id that
+        matches this position's tracked tp_algo_id/sl_algo_id is an Algo
+        Order API id, not a classic order id - callers that only ever knew
+        one generic id (the pre-Debug-1 Cancel SL/TP buttons) keep working
+        unchanged via that inference. Callers that already know the
+        provider (the Real Open Orders row Cancel button, which reads it
+        straight off the normalized order row) route directly, and never
+        guess between orderId/algoId or mix classic and algo params on the
+        same request."""
         symbol = symbol.upper()
         try:
-            if order_id in (_tracked_algo_id(self.mode, symbol, "tp"), _tracked_algo_id(self.mode, symbol, "sl")):
-                await protection_provider.cancel_leg(self.client, symbol, order_id, protection_provider.ALGO)
-                modes.audit("order_canceled", symbol=symbol, detail={"order_id": order_id, "provider": "algo"})
+            is_algo = provider == "algo" or (
+                provider is None and (algo_id is not None or client_algo_id is not None)
+            )
+            candidate_id = algo_id if algo_id is not None else order_id
+            if not is_algo and provider is None and candidate_id is not None:
+                if candidate_id in (_tracked_algo_id(self.mode, symbol, "tp"), _tracked_algo_id(self.mode, symbol, "sl")):
+                    is_algo = True
+
+            if is_algo:
+                resolved_algo_id = algo_id if algo_id is not None else order_id
+                await protection_provider.cancel_leg(
+                    self.client, symbol, resolved_algo_id, protection_provider.ALGO, client_algo_id=client_algo_id,
+                )
+                audit_id = resolved_algo_id if resolved_algo_id is not None else client_algo_id
+                modes.audit("order_canceled", symbol=symbol, detail={"order_id": audit_id, "provider": "algo"})
                 _invalidate_snapshot_after_cancel()
-                return self._result(True, "cancel_order", order={"algo_id": order_id, "status": "CANCELED"})
-            order = await self.client.cancel_order(symbol, order_id)
-            modes.audit("order_canceled", symbol=symbol, detail={"order_id": order_id, "provider": "classic"})
+                return self._result(
+                    True, "cancel_order",
+                    order={"algo_id": resolved_algo_id, "client_algo_id": client_algo_id, "status": "CANCELED"},
+                )
+
+            order = await self.client.cancel_order(symbol, order_id=order_id, orig_client_order_id=client_order_id)
+            modes.audit("order_canceled", symbol=symbol, detail={"order_id": order.order_id, "provider": "classic"})
             _invalidate_snapshot_after_cancel()
             return self._result(True, "cancel_order", order=order.to_dict())
         except Exception as e:

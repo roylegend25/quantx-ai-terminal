@@ -1,6 +1,7 @@
-"""Row-level "Cancel" on Real Open Orders (Debug 1.pdf section 1-4).
+"""Row-level "Cancel" on Real Open Orders (Debug 1.pdf: single Cancel not
+working while Cancel All works).
 
-Two confirmed root causes, each covered here:
+Confirmed root causes, each covered here:
 
 1. cancel_order/cancel_all_orders never invalidated the shared Binance
    snapshot cache, so the frontend's own immediate post-cancel refresh
@@ -11,6 +12,9 @@ Two confirmed root causes, each covered here:
    trading mode to be exactly BINANCE_LIVE (_require_live), even though
    canceling a resting real order is a de-risking safety action that must
    work regardless of active mode - see ExecutionRouter._cancel_provider.
+3. Only orderId/algoId were ever resolvable - a row carrying only a
+   client_order_id/client_algo_id (or an unrecognized `provider`) had no
+   safe path to cancel at all.
 """
 
 import asyncio
@@ -60,28 +64,35 @@ def configure_keys(monkeypatch):
 
 
 class FakeCancelProvider:
-    """Endpoint-layer double: records what the router forwards without
-    touching a real BinanceFuturesClient."""
+    """Endpoint/router-layer double: records the exact identifier set
+    forwarded to it, without touching a real BinanceFuturesClient."""
 
     def __init__(self, ok=True, reason=None):
         self.ok = ok
         self.reason = reason
-        self.calls: list[tuple] = []
+        self.calls: list[dict] = []
 
-    async def cancel_order(self, symbol, order_id, **kwargs):
-        self.calls.append(("cancel_order", symbol, order_id))
+    async def cancel_order(self, symbol, order_id=None, client_order_id=None,
+                           algo_id=None, client_algo_id=None, provider=None, **kwargs):
+        self.calls.append({
+            "action": "cancel_order", "symbol": symbol, "order_id": order_id,
+            "client_order_id": client_order_id, "algo_id": algo_id,
+            "client_algo_id": client_algo_id, "provider": provider,
+        })
         if not self.ok:
             return RouterResult(ok=False, mode=modes.MODE_LIVE, action="cancel_order", reason=self.reason)
         return RouterResult(ok=True, mode=modes.MODE_LIVE, action="cancel_order",
                             detail={"order": {"order_id": order_id, "status": "CANCELED"}})
 
     async def cancel_all_orders(self, symbol=None, **kwargs):
-        self.calls.append(("cancel_all_orders", symbol))
+        self.calls.append({"action": "cancel_all_orders", "symbol": symbol})
         return RouterResult(ok=True, mode=modes.MODE_LIVE, action="cancel_all_orders",
                             detail={"canceled_symbols": ["BTCUSDT"]})
 
 
 # ======================================================= provider-level ====
+# BinanceExecutionProvider.cancel_order against a mocked BinanceFuturesClient
+# - no network, exercises the real classic/algo routing + cache invalidation.
 
 def test_cancel_order_classic_by_order_id_invalidates_snapshot():
     client = MockBinanceClient(open_orders=[make_order(order_id=101, type="LIMIT")])
@@ -92,8 +103,21 @@ def test_cancel_order_classic_by_order_id_invalidates_snapshot():
     result = asyncio.run(provider.cancel_order(symbol="BTCUSDT", order_id=101))
 
     assert result.ok, result.reason
-    assert client.called("cancel_order")[0][1:] == ("BTCUSDT", 101)
+    assert client.called("cancel_order")[0] == ("cancel_order", "BTCUSDT", 101, None)
     assert snapshot_service._orders.fetched_at == 0.0  # invalidated, not just overwritten
+
+
+def test_cancel_order_classic_by_client_order_id_only():
+    """A row that only ever carries a clientOrderId (no numeric orderId)
+    must still be cancelable - origClientOrderId is Binance's own
+    documented alternative identifier for DELETE /fapi/v1/order."""
+    client = MockBinanceClient()
+    provider = make_provider(client)
+
+    result = asyncio.run(provider.cancel_order(symbol="BTCUSDT", client_order_id="qx-abc123"))
+
+    assert result.ok, result.reason
+    assert client.called("cancel_order")[0] == ("cancel_order", "BTCUSDT", None, "qx-abc123")
 
 
 def test_cancel_order_algo_by_tracked_algo_id_invalidates_snapshot(monkeypatch):
@@ -111,8 +135,8 @@ def test_cancel_order_algo_by_tracked_algo_id_invalidates_snapshot(monkeypatch):
 
     client = MockBinanceClient()
 
-    async def fake_cancel_leg(c, symbol, algo_id, provider_name):
-        client.calls.append(("cancel_leg", symbol, algo_id, provider_name))
+    async def fake_cancel_leg(c, symbol, algo_id, provider_name, client_algo_id=None, client_order_id=None):
+        client.calls.append(("cancel_leg", symbol, algo_id, provider_name, client_algo_id))
 
     from app.trading import protection_provider
     monkeypatch.setattr(protection_provider, "cancel_leg", fake_cancel_leg)
@@ -123,14 +147,49 @@ def test_cancel_order_algo_by_tracked_algo_id_invalidates_snapshot(monkeypatch):
     result = asyncio.run(provider.cancel_order(symbol="BTCUSDT", order_id=7788))
 
     assert result.ok, result.reason
-    assert ("cancel_leg", "BTCUSDT", 7788, "algo") in client.calls
+    assert ("cancel_leg", "BTCUSDT", 7788, "algo", None) in client.calls
     assert snapshot_service._orders.fetched_at == 0.0
+
+
+def test_cancel_order_algo_by_explicit_provider_and_algo_id(monkeypatch):
+    """A row that already carries provider="algo" + algo_id routes directly
+    to the algo surface - no DB lookup / tracked-id inference needed."""
+    client = MockBinanceClient()
+
+    async def fake_cancel_leg(c, symbol, algo_id, provider_name, client_algo_id=None, client_order_id=None):
+        client.calls.append(("cancel_leg", symbol, algo_id, provider_name, client_algo_id))
+
+    from app.trading import protection_provider
+    monkeypatch.setattr(protection_provider, "cancel_leg", fake_cancel_leg)
+    provider = make_provider(client)
+
+    result = asyncio.run(provider.cancel_order(symbol="ETHUSDT", algo_id=8899, provider="algo"))
+
+    assert result.ok, result.reason
+    assert ("cancel_leg", "ETHUSDT", 8899, "algo", None) in client.calls
+    assert not client.called("cancel_order")  # never touches the classic endpoint
+
+
+def test_cancel_order_algo_by_client_algo_id_only(monkeypatch):
+    client = MockBinanceClient()
+
+    async def fake_cancel_leg(c, symbol, algo_id, provider_name, client_algo_id=None, client_order_id=None):
+        client.calls.append(("cancel_leg", symbol, algo_id, provider_name, client_algo_id))
+
+    from app.trading import protection_provider
+    monkeypatch.setattr(protection_provider, "cancel_leg", fake_cancel_leg)
+    provider = make_provider(client)
+
+    result = asyncio.run(provider.cancel_order(symbol="ETHUSDT", client_algo_id="qxa-xyz", provider="algo"))
+
+    assert result.ok, result.reason
+    assert ("cancel_leg", "ETHUSDT", None, "algo", "qxa-xyz") in client.calls
 
 
 def test_failed_cancel_does_not_invalidate_snapshot():
     client = MockBinanceClient()
 
-    async def failing_cancel(symbol, order_id):
+    async def failing_cancel(symbol, order_id=None, orig_client_order_id=None):
         raise RuntimeError("Unknown order sent.")
 
     client.cancel_order = failing_cancel
@@ -153,7 +212,8 @@ def test_router_cancel_order_reaches_real_provider_while_mode_is_paper(monkeypat
     result = asyncio.run(execution_router.cancel_order(symbol="BTCUSDT", order_id=555))
 
     assert result.ok, result.reason
-    assert fake.calls == [("cancel_order", "BTCUSDT", 555)]
+    assert fake.calls == [{"action": "cancel_order", "symbol": "BTCUSDT", "order_id": 555,
+                           "client_order_id": None, "algo_id": None, "client_algo_id": None, "provider": None}]
 
 
 def test_router_cancel_all_orders_reaches_real_provider_while_locked(monkeypatch):
@@ -166,7 +226,7 @@ def test_router_cancel_all_orders_reaches_real_provider_while_locked(monkeypatch
     result = asyncio.run(execution_router.cancel_all_orders())
 
     assert result.ok, result.reason
-    assert fake.calls == [("cancel_all_orders", None)]
+    assert fake.calls == [{"action": "cancel_all_orders", "symbol": None}]
 
 
 def test_router_cancel_order_fails_closed_when_server_lock_off(monkeypatch):
@@ -192,37 +252,24 @@ def test_endpoint_cancel_order_works_in_paper_mode(monkeypatch):
     r = client.post("/api/trading/binance/cancel-order", json={"symbol": "BTCUSDT", "order_id": 12345})
 
     assert r.status_code == 200, r.text
-    assert fake.calls == [("cancel_order", "BTCUSDT", 12345)]
+    assert fake.calls[0]["order_id"] == 12345
+    assert fake.calls[0]["symbol"] == "BTCUSDT"
 
 
-def test_endpoint_cancel_all_orders_works_in_paper_mode(monkeypatch):
+def test_endpoint_cancel_order_classic_by_client_order_id(monkeypatch):
     configure_keys(monkeypatch)
     fake = FakeCancelProvider()
     monkeypatch.setattr(tc.execution_router, "_live", fake)
     modes.set_mode(modes.MODE_PAPER)
     client = make_client()
 
-    r = client.post("/api/trading/binance/cancel-all-orders", json={"confirm": True})
+    r = client.post("/api/trading/binance/cancel-order",
+                    json={"symbol": "BTCUSDT", "provider": "classic", "client_order_id": "qx-abc"})
 
     assert r.status_code == 200, r.text
-    assert fake.calls == [("cancel_all_orders", None)]
-
-
-def test_endpoint_cancel_order_missing_identifier_returns_400(monkeypatch):
-    configure_keys(monkeypatch)
-    client = make_client()
-
-    r = client.post("/api/trading/binance/cancel-order", json={"symbol": "BTCUSDT"})
-
-    assert r.status_code == 400
-    assert "missing order id" in r.json()["detail"].lower()
-
-
-def test_endpoint_cancel_order_requires_binance_configured():
-    client = make_client()  # no keys configured
-    r = client.post("/api/trading/binance/cancel-order", json={"symbol": "BTCUSDT", "order_id": 1})
-    assert r.status_code == 400
-    assert "not configured" in r.json()["detail"].lower()
+    assert fake.calls[0]["client_order_id"] == "qx-abc"
+    assert fake.calls[0]["order_id"] is None
+    assert fake.calls[0]["provider"] == "classic"
 
 
 def test_endpoint_cancel_order_uses_algo_id_when_order_id_absent(monkeypatch):
@@ -235,7 +282,75 @@ def test_endpoint_cancel_order_uses_algo_id_when_order_id_absent(monkeypatch):
     r = client.post("/api/trading/binance/cancel-order", json={"symbol": "BTCUSDT", "algo_id": 9001})
 
     assert r.status_code == 200, r.text
-    assert fake.calls == [("cancel_order", "BTCUSDT", 9001)]
+    assert fake.calls[0]["algo_id"] == 9001
+    assert fake.calls[0]["order_id"] is None
+
+
+def test_endpoint_cancel_order_algo_by_client_algo_id(monkeypatch):
+    configure_keys(monkeypatch)
+    fake = FakeCancelProvider()
+    monkeypatch.setattr(tc.execution_router, "_live", fake)
+    modes.set_mode(modes.MODE_PAPER)
+    client = make_client()
+
+    r = client.post("/api/trading/binance/cancel-order",
+                    json={"symbol": "ETHUSDT", "provider": "algo", "client_algo_id": "qxa-999"})
+
+    assert r.status_code == 200, r.text
+    assert fake.calls[0]["client_algo_id"] == "qxa-999"
+    assert fake.calls[0]["algo_id"] is None
+    assert fake.calls[0]["provider"] == "algo"
+
+
+def test_endpoint_cancel_order_missing_identifier_returns_400(monkeypatch):
+    configure_keys(monkeypatch)
+    client = make_client()
+
+    r = client.post("/api/trading/binance/cancel-order", json={"symbol": "BTCUSDT"})
+
+    assert r.status_code == 400
+    assert "missing order identifier" in r.json()["detail"].lower()
+
+
+def test_endpoint_cancel_order_missing_symbol_returns_400(monkeypatch):
+    configure_keys(monkeypatch)
+    client = make_client()
+
+    r = client.post("/api/trading/binance/cancel-order", json={"order_id": 1})
+
+    assert r.status_code == 400
+    assert "missing symbol" in r.json()["detail"].lower()
+
+
+def test_endpoint_cancel_order_invalid_provider_returns_400(monkeypatch):
+    configure_keys(monkeypatch)
+    client = make_client()
+
+    r = client.post("/api/trading/binance/cancel-order",
+                    json={"symbol": "BTCUSDT", "order_id": 1, "provider": "iceberg"})
+
+    assert r.status_code == 400
+    assert "invalid provider" in r.json()["detail"].lower()
+
+
+def test_endpoint_cancel_order_provider_classic_requires_classic_identifier(monkeypatch):
+    """provider="classic" with only an algo_id present must not silently
+    cancel the wrong surface - it's a 400, not a guess."""
+    configure_keys(monkeypatch)
+    client = make_client()
+
+    r = client.post("/api/trading/binance/cancel-order",
+                    json={"symbol": "BTCUSDT", "provider": "classic", "algo_id": 1})
+
+    assert r.status_code == 400
+    assert "missing order identifier" in r.json()["detail"].lower()
+
+
+def test_endpoint_cancel_order_requires_binance_configured():
+    client = make_client()  # no keys configured
+    r = client.post("/api/trading/binance/cancel-order", json={"symbol": "BTCUSDT", "order_id": 1})
+    assert r.status_code == 400
+    assert "not configured" in r.json()["detail"].lower()
 
 
 def test_endpoint_cancel_order_writes_audit_log(monkeypatch):
@@ -255,8 +370,25 @@ def test_endpoint_cancel_order_writes_audit_log(monkeypatch):
         events = db.query(TradingAuditLog).filter(TradingAuditLog.event == "order_canceled").all()
         assert len(events) == 1
         assert events[0].detail["order_id"] == 42
+        assert events[0].detail["provider"] == "classic"
     finally:
         db.close()
+
+
+def test_endpoint_cancel_order_invalidates_snapshot(monkeypatch):
+    configure_keys(monkeypatch)
+    client_double = MockBinanceClient(open_orders=[make_order(order_id=77, type="LIMIT")])
+    provider = make_provider(client_double)
+    provider.mode = modes.MODE_LIVE
+    monkeypatch.setattr(tc.execution_router, "_live", provider)
+    modes.set_mode(modes.MODE_PAPER)
+    snapshot_service._orders.fetched_at = 9e18
+    client = make_client()
+
+    r = client.post("/api/trading/binance/cancel-order", json={"symbol": "BTCUSDT", "order_id": 77})
+
+    assert r.status_code == 200, r.text
+    assert snapshot_service._orders.fetched_at == 0.0
 
 
 def test_endpoint_cancel_order_never_exposes_secrets(monkeypatch):
@@ -274,6 +406,19 @@ def test_endpoint_cancel_order_never_exposes_secrets(monkeypatch):
     assert "signature" not in r.text.lower()
 
 
+def test_endpoint_cancel_all_orders_works_in_paper_mode(monkeypatch):
+    configure_keys(monkeypatch)
+    fake = FakeCancelProvider()
+    monkeypatch.setattr(tc.execution_router, "_live", fake)
+    modes.set_mode(modes.MODE_PAPER)
+    client = make_client()
+
+    r = client.post("/api/trading/binance/cancel-all-orders", json={"confirm": True})
+
+    assert r.status_code == 200, r.text
+    assert fake.calls == [{"action": "cancel_all_orders", "symbol": None}]
+
+
 def test_endpoint_cancel_all_orders_still_requires_confirm(monkeypatch):
     configure_keys(monkeypatch)
     fake = FakeCancelProvider()
@@ -285,3 +430,105 @@ def test_endpoint_cancel_all_orders_still_requires_confirm(monkeypatch):
 
     assert r.status_code == 400
     assert not fake.calls
+
+
+# ============================================== exchange-client parameter shape
+#
+# Debug 1.pdf section 4/5: verifies the actual parameter NAMES sent to
+# Binance for both cancel surfaces, independent of the router/endpoint
+# layers above (no mocking of cancel_order/cancel itself - only the raw
+# signed _delete transport, so a regression in param-name construction
+# can't hide behind a higher-level mock).
+
+def test_classic_client_sends_order_id_param():
+    from app.exchanges.binance_futures_client import BinanceFuturesClient
+
+    client = BinanceFuturesClient(api_key="k", api_secret="s", testnet=True)
+    captured = {}
+
+    async def fake_delete(path, params=None, priority=None):
+        captured["path"] = path
+        captured["params"] = params
+        return {"symbol": "BTCUSDT", "orderId": 555, "status": "CANCELED"}
+
+    client._delete = fake_delete
+    asyncio.run(client.cancel_order("btcusdt", order_id=555))
+
+    assert captured["path"] == "/fapi/v1/order"
+    assert captured["params"] == {"symbol": "BTCUSDT", "orderId": 555}
+    assert "origClientOrderId" not in captured["params"]
+
+
+def test_classic_client_sends_orig_client_order_id_param():
+    from app.exchanges.binance_futures_client import BinanceFuturesClient
+
+    client = BinanceFuturesClient(api_key="k", api_secret="s", testnet=True)
+    captured = {}
+
+    async def fake_delete(path, params=None, priority=None):
+        captured["path"] = path
+        captured["params"] = params
+        return {"symbol": "BTCUSDT", "orderId": 0, "clientOrderId": "qx-abc", "status": "CANCELED"}
+
+    client._delete = fake_delete
+    asyncio.run(client.cancel_order("btcusdt", orig_client_order_id="qx-abc"))
+
+    assert captured["params"] == {"symbol": "BTCUSDT", "origClientOrderId": "qx-abc"}
+    assert "orderId" not in captured["params"]
+
+
+def test_classic_client_cancel_requires_an_identifier():
+    from app.exchanges.binance_futures_client import BinanceFuturesClient
+
+    client = BinanceFuturesClient(api_key="k", api_secret="s", testnet=True)
+    with pytest.raises(ValueError):
+        asyncio.run(client.cancel_order("BTCUSDT"))
+
+
+def test_algo_provider_sends_algo_id_param():
+    from app.exchanges.binance_algo_provider import BinanceAlgoProvider
+    from app.exchanges.binance_futures_client import BinanceFuturesClient
+
+    client = BinanceFuturesClient(api_key="k", api_secret="s", testnet=True)
+    captured = {}
+
+    async def fake_delete(path, params=None):
+        captured["path"] = path
+        captured["params"] = params
+        return {"algoId": 8899, "code": "200"}
+
+    client._delete = fake_delete
+    asyncio.run(BinanceAlgoProvider(client).cancel(algo_id=8899))
+
+    assert captured["path"] == "/fapi/v1/algoOrder"
+    assert captured["params"] == {"algoId": 8899}
+    assert "clientAlgoId" not in captured["params"]
+    assert "orderId" not in captured["params"]
+
+
+def test_algo_provider_sends_client_algo_id_param():
+    from app.exchanges.binance_algo_provider import BinanceAlgoProvider
+    from app.exchanges.binance_futures_client import BinanceFuturesClient
+
+    client = BinanceFuturesClient(api_key="k", api_secret="s", testnet=True)
+    captured = {}
+
+    async def fake_delete(path, params=None):
+        captured["path"] = path
+        captured["params"] = params
+        return {"clientAlgoId": "qxa-999", "code": "200"}
+
+    client._delete = fake_delete
+    asyncio.run(BinanceAlgoProvider(client).cancel(client_algo_id="qxa-999"))
+
+    assert captured["params"] == {"clientAlgoId": "qxa-999"}
+    assert "algoId" not in captured["params"]
+
+
+def test_algo_provider_cancel_requires_an_identifier():
+    from app.exchanges.binance_algo_provider import BinanceAlgoProvider
+    from app.exchanges.binance_futures_client import BinanceFuturesClient
+
+    client = BinanceFuturesClient(api_key="k", api_secret="s", testnet=True)
+    with pytest.raises(ValueError):
+        asyncio.run(BinanceAlgoProvider(client).cancel())

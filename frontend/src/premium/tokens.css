@@ -1,0 +1,74 @@
+/**
+ * Premium Dark design tokens. Scoped entirely under [data-design="premium"]
+ * so Classic's :root values (App.css) are never touched - the two systems
+ * can never fight over the same declaration.
+ *
+ * Deliberate exception: the --c-green/--c-red/--c-yellow/--c-purple/--c-blue/
+ * --c-cyan(+rgb) block below re-declares the SAME variable names Classic
+ * uses. This is intentional, not a collision: ProChartCanvas.tsx reads its
+ * palette purely from getComputedStyle(document.documentElement) for those
+ * six names (see readTheme() in that file), so redefining them here is how
+ * the canvas chart picks up Premium colors with zero code changes. Every
+ * other Premium token uses the qp- prefix and has no Classic equivalent.
+ */
+[data-design="premium"] {
+  /* ---- surfaces ---- */
+  --qp-bg: #080a0f;
+  --qp-surface-1: #10131a;
+  --qp-surface-2: #151923;
+  --qp-surface-3: #1a1f2b;
+  --qp-border: rgba(255, 255, 255, 0.08);
+  --qp-border-strong: rgba(255, 255, 255, 0.14);
+
+  /* ---- text ---- */
+  --qp-text-primary: #f4f6fa;
+  --qp-text-secondary: #9aa3b5;
+  --qp-text-muted: #687186;
+
+  /* ---- brand / accent ---- */
+  --qp-accent: #6366f1;
+  --qp-accent-strong: #818cf8;
+  --qp-accent-soft: rgba(99, 102, 241, 0.14);
+  --qp-accent-rgb: 99, 102, 241;
+
+  /* ---- trading semantics (professional exchange tones, not neon) ---- */
+  --qp-green: #16c784;
+  --qp-red: #f6465d;
+  --qp-amber: #f0b429;
+  --qp-green-rgb: 22, 199, 132;
+  --qp-red-rgb: 246, 70, 93;
+  --qp-amber-rgb: 240, 180, 41;
+
+  /* ---- market/exchange brand accents (status + logo contexts only) ---- */
+  --qp-binance-yellow: #f0b90b;
+  --qp-btc-orange: #f7931a;
+  --qp-eth-blue: #627eea;
+  --qp-eth-silver: #8a9ba8;
+
+  /* ---- elevation / radius (reuses Classic's physical spacing scale from
+     App.css :root so both systems agree on the same numbers) ---- */
+  --qp-radius-sm: 10px;
+  --qp-radius-md: 14px;
+  --qp-radius-lg: var(--card-radius, 20px);
+  --qp-shadow-card: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 12px 24px -12px rgba(0, 0, 0, 0.55);
+
+  color-scheme: dark;
+  background: var(--qp-bg);
+  color: var(--qp-text-primary);
+
+  /* Chart canvas free-ride - see file doc comment above. */
+  --c-green: var(--qp-green);
+  --c-red: var(--qp-red);
+  --c-yellow: var(--qp-amber);
+  --c-purple: var(--qp-accent);
+  --c-blue: #5b8def;
+  --c-cyan: #4fd1c5;
+  --c-purple-rgb: var(--qp-accent-rgb);
+  --c-blue-rgb: 91, 141, 239;
+  --c-cyan-rgb: 79, 209, 197;
+}
+
+[data-design="premium"] body,
+[data-design="premium"] #root {
+  background: var(--qp-bg);
+}

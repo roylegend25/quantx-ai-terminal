@@ -100,10 +100,10 @@ class MockBinanceClient:
         self.open_orders.append(order)
         return order
 
-    async def cancel_order(self, symbol, order_id):
-        self.calls.append(("cancel_order", symbol, order_id))
+    async def cancel_order(self, symbol, order_id=None, orig_client_order_id=None):
+        self.calls.append(("cancel_order", symbol, order_id, orig_client_order_id))
         self.open_orders = [o for o in self.open_orders if o.order_id != order_id]
-        return make_order(order_id=order_id, status="CANCELED")
+        return make_order(order_id=order_id or 0, status="CANCELED")
 
     async def cancel_all_orders(self, symbol):
         self.calls.append(("cancel_all_orders", symbol))

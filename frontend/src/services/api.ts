@@ -327,10 +327,32 @@ export const api = {
     }),
   binanceUpdatePositionRisk: (id: number, patch: { stop_loss?: number | null; take_profit?: number | null }) =>
     patchJson(`/api/trading/binance/positions/${id}/risk`, patch),
-  binanceCancelOrder: (symbol: string, orderId: number) =>
+  // Accepts the full normalized order-row identifier set (Debug 1.pdf
+  // section 2/6) - orderId alone still works for the pre-existing Cancel
+  // SL/TP callers, which only ever knew one generic id and rely on the
+  // backend's tracked-algo-id inference (see execution_router.cancel_order).
+  binanceCancelOrder: (params: {
+    symbol: string;
+    orderId?: number | string | null;
+    clientOrderId?: string | null;
+    algoId?: number | string | null;
+    clientAlgoId?: string | null;
+    provider?: "classic" | "algo" | null;
+  }) =>
     postJson("/api/trading/binance/cancel-order", {
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ symbol, order_id: orderId }),
+      body: JSON.stringify({
+        symbol: params.symbol,
+        // Row identifiers may arrive as strings (Debug 1.pdf section 2's
+        // normalized shape) - Binance futures order/algo ids stay well
+        // under Number.MAX_SAFE_INTEGER, so coercing here is lossless and
+        // keeps the backend's plain `int` field simple.
+        order_id: params.orderId != null ? Number(params.orderId) : null,
+        client_order_id: params.clientOrderId ?? null,
+        algo_id: params.algoId != null ? Number(params.algoId) : null,
+        client_algo_id: params.clientAlgoId ?? null,
+        provider: params.provider ?? null,
+      }),
     }),
   binanceCancelAllOrders: (symbol?: string) =>
     postJson("/api/trading/binance/cancel-all-orders", {

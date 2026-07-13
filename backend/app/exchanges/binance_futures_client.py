@@ -586,10 +586,19 @@ class BinanceFuturesClient:
             quantity=quantity, client_order_id=client_order_id, prefix="qxtp", hedge_mode=hedge_mode,
         )
 
-    async def cancel_order(self, symbol: str, order_id: int) -> BinanceOrder:
-        return BinanceOrder.from_api(
-            await self._delete("/fapi/v1/order", {"symbol": symbol.upper(), "orderId": int(order_id)})
-        )
+    async def cancel_order(
+        self, symbol: str, order_id: int | None = None, orig_client_order_id: str | None = None
+    ) -> BinanceOrder:
+        """Cancels by orderId when given; falls back to origClientOrderId
+        (Binance accepts either, never both) - see Debug 1.pdf section 4."""
+        if order_id is None and not orig_client_order_id:
+            raise ValueError("cancel_order requires order_id or orig_client_order_id")
+        params = {"symbol": symbol.upper()}
+        if order_id is not None:
+            params["orderId"] = int(order_id)
+        else:
+            params["origClientOrderId"] = orig_client_order_id
+        return BinanceOrder.from_api(await self._delete("/fapi/v1/order", params))
 
     async def cancel_all_orders(self, symbol: str) -> dict:
         return await self._delete("/fapi/v1/allOpenOrders", {"symbol": symbol.upper()})

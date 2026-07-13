@@ -1,3 +1,26 @@
+import type { ComponentType } from "react";
+import {
+  LayoutDashboard,
+  Brain,
+  Rows3,
+  ChartLine,
+  Radio,
+  Settings,
+  ShieldAlert,
+  FileText,
+  FlaskConical,
+  Activity,
+  Siren,
+  Zap,
+  Boxes,
+  Microscope,
+  Wallet,
+  NotebookPen,
+  CircleDollarSign,
+  History,
+  Stethoscope,
+} from "lucide-react";
+
 export type NavKey =
   | "dashboard"
   | "portfolio"
@@ -49,3 +72,30 @@ export const NAV_SECTIONS: { label: string; keys: NavKey[] }[] = [
   { label: "Analysis", keys: ["backtesting", "model-center", "research-lab", "stress-test"] },
   { label: "System", keys: ["logs", "system-status"] },
 ];
+
+/** Single source of truth for the NavKey -> icon mapping. Sidebar.tsx and
+ * MobileBottomNav.tsx historically each kept their own byte-identical copy
+ * of this map; new (Premium) nav surfaces should import this instead of
+ * adding a third copy. Classic's two existing copies are left as-is to
+ * keep this an additive change. */
+export const NAV_ICONS: Record<NavKey, ComponentType<{ size?: number }>> = {
+  dashboard: LayoutDashboard,
+  portfolio: Wallet,
+  "paper-trading": NotebookPen,
+  "binance-real": CircleDollarSign,
+  "bot-trades": History,
+  predictions: Brain,
+  positions: Rows3,
+  performance: ChartLine,
+  market: Radio,
+  "bot-settings": Settings,
+  risk: ShieldAlert,
+  logs: FileText,
+  backtesting: FlaskConical,
+  "system-status": Activity,
+  "stress-test": Siren,
+  execution: Zap,
+  "model-center": Boxes,
+  "research-lab": Microscope,
+  "trading-diagnostics": Stethoscope,
+};

@@ -186,14 +186,20 @@ async def place_protection(*, client: BinanceFuturesClient, mode: str, symbol: s
                             latency_ms=latency_ms, migrated=migrated)
 
 
-async def cancel_leg(client: BinanceFuturesClient, symbol: str, order_id: int, provider: str) -> None:
-    """Cancels one tracked TP or SL order through the correct surface."""
+async def cancel_leg(
+    client: BinanceFuturesClient, symbol: str, order_id: int | None, provider: str,
+    client_algo_id: str | None = None, client_order_id: str | None = None,
+) -> None:
+    """Cancels one tracked TP or SL order through the correct surface.
+    `order_id` is an algoId when provider is ALGO, a classic orderId
+    otherwise - either may be omitted in favor of its client_* twin (Debug
+    1.pdf section 5), but never both for the same surface."""
     if provider == ALGO:
-        await BinanceAlgoProvider(client).cancel(order_id)
+        await BinanceAlgoProvider(client).cancel(algo_id=order_id, client_algo_id=client_algo_id)
         # Phase 29: resolve_protection's algo lookup cache (app.trading.
         # protection) can otherwise report this exact id as still active
         # for up to BINANCE_ALGO_TTL_SECONDS after it was just canceled.
         from app.trading import protection
         protection.reset_algo_lookup_cache()
     else:
-        await client.cancel_order(symbol, order_id)
+        await client.cancel_order(symbol, order_id=order_id, orig_client_order_id=client_order_id)

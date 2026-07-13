@@ -315,8 +315,25 @@ async def binance_orders():
     except Exception as e:
         return {"mode": "BINANCE_LIVE", **_binance_unavailable(e), "orders": []}
     return {
-        "mode": "BINANCE_LIVE", "available": True, "orders": [o.to_dict() for o in open_orders],
+        "mode": "BINANCE_LIVE", "available": True, "orders": [_normalize_order_row(o) for o in open_orders],
         **_staleness_envelope(snapshot_service.section_meta()["orders"]),
+    }
+
+
+def _normalize_order_row(order) -> dict:
+    """Debug 1.pdf section 2: every row the row-level Cancel button reads
+    is self-describing, so the frontend never has to guess which
+    identifier(s) are safe to send back. GET /binance/orders is backed by
+    client.get_open_orders(), which only ever returns classic orders -
+    Algo TP/SL orders never appear in Binance's own openOrders response
+    (they're surfaced separately, via each position's tp/sl_order_id) - so
+    every row here is unconditionally "classic" with no algo identifiers."""
+    return {
+        **order.to_dict(),
+        "client_algo_id": None,
+        "algo_id": None,
+        "provider": "classic",
+        "source": "binance_real",
     }
 
 

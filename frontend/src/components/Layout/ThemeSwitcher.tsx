@@ -3,11 +3,13 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { Check, Sparkles, X } from "lucide-react";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import type { UseThemeReturn } from "../../hooks/useTheme";
+import type { UseDesignSystemReturn } from "../../hooks/useDesignSystem";
 import { CONTEXT_PRESETS, ROTATION_OPTIONS, THEMES, THEME_MAP, type ThemeId } from "../../lib/themes";
+import DesignSystemToggle from "./DesignSystemToggle";
 
-type Props = { theme: UseThemeReturn };
+type Props = { theme: UseThemeReturn; designSystem: UseDesignSystemReturn };
 
-function ThemeSwitcher({ theme }: Props) {
+function ThemeSwitcher({ theme, designSystem }: Props) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const isMobile = useMediaQuery("(max-width: 640px)");
@@ -91,6 +93,11 @@ function ThemeSwitcher({ theme }: Props) {
               </div>
 
               <div className="theme-panel-body">
+                <section className="theme-section">
+                  <span className="theme-section-title">Design System</span>
+                  <DesignSystemToggle designSystem={designSystem} />
+                </section>
+
                 <section className="theme-section">
                   <span className="theme-section-title">Recommended For You</span>
                   <button

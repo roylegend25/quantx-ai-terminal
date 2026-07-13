@@ -70,9 +70,9 @@ class AlgoMockClient:
     async def place_stop_loss(self, symbol, position_side, stop_price, quantity=None, client_order_id=None, hedge_mode=False):
         return await self._classic_leg("sl", symbol, position_side, stop_price, quantity, hedge_mode)
 
-    async def cancel_order(self, symbol, order_id):
-        self.calls.append(("classic_cancel", symbol, order_id))
-        return make_order(order_id=order_id, status="CANCELED")
+    async def cancel_order(self, symbol, order_id=None, orig_client_order_id=None):
+        self.calls.append(("classic_cancel", symbol, order_id, orig_client_order_id))
+        return make_order(order_id=order_id or 0, status="CANCELED")
 
     async def get_open_orders(self, symbol=None):
         return []
@@ -231,7 +231,7 @@ def test_cancel_leg_routes_algo_to_delete_algo_order():
 def test_cancel_leg_routes_classic_to_cancel_order():
     client = AlgoMockClient()
     asyncio.run(protection_provider.cancel_leg(client, "ETHUSDT", 101, protection_provider.CLASSIC))
-    assert client.called("classic_cancel")[0] == ("classic_cancel", "ETHUSDT", 101)
+    assert client.called("classic_cancel")[0] == ("classic_cancel", "ETHUSDT", 101, None)
 
 
 # -------------------------------------------------------- capability module

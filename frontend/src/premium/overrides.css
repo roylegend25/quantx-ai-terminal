@@ -1,0 +1,246 @@
+/**
+ * Tier-B reskin layer. Every rule here targets classNames that already
+ * exist in App.css and are emitted, unmodified, by logic-owning components
+ * we deliberately do NOT fork for Premium (PredictionChart/ProChartCanvas,
+ * BinancePositionsTable, EditRiskModal, ProtectPositionModal,
+ * TradingModeRow, ServerTradingControlCard, ExecutionPipelineCard,
+ * LiveMarginCalculatorCard, RiskStatusCard, AutoCardTable, the ~12 generic
+ * pages rendered inside PremiumGenericPage, etc.) plus the badge/table/card
+ * primitives those components render via <Card>.
+ *
+ * Every selector is guarded by [data-design="premium"] so nothing here can
+ * ever apply while Classic is active, and every guarded rule has strictly
+ * higher specificity than its bare Classic counterpart, so load order never
+ * matters.
+ */
+
+[data-design="premium"] .card,
+[data-design="premium"] .stack-card {
+  background: var(--qp-surface-1);
+  border: 1px solid var(--qp-border);
+  border-radius: var(--qp-radius-lg);
+  box-shadow: var(--qp-shadow-card);
+}
+
+[data-design="premium"] .card:hover,
+[data-design="premium"] .stack-card:hover {
+  border-color: var(--qp-border-strong);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 18px 36px -14px rgba(0, 0, 0, 0.65);
+}
+
+[data-design="premium"] .card-title {
+  color: var(--qp-text-secondary);
+}
+
+[data-design="premium"] .page-grid {
+  gap: 16px;
+}
+
+[data-design="premium"] .tf-btn {
+  color: var(--qp-text-secondary);
+}
+
+[data-design="premium"] .tf-btn:not(.active):hover {
+  color: var(--qp-text-primary);
+  background: var(--qp-surface-2);
+}
+
+[data-design="premium"] .icon-btn {
+  color: var(--qp-text-secondary);
+  background: var(--qp-surface-2);
+  border-color: var(--qp-border);
+}
+
+[data-design="premium"] .icon-btn:hover {
+  color: var(--qp-text-primary);
+  background: var(--qp-surface-3);
+}
+
+/* ---- badges: professional exchange tones instead of neon hex literals ---- */
+[data-design="premium"] .badge {
+  background: var(--qp-accent-soft);
+  border-color: rgba(var(--qp-accent-rgb), 0.35);
+  color: var(--qp-accent-strong);
+}
+
+[data-design="premium"] .badge-green {
+  background: rgba(var(--qp-green-rgb), 0.14);
+  border-color: rgba(var(--qp-green-rgb), 0.35);
+  color: var(--qp-green);
+}
+
+[data-design="premium"] .badge-red {
+  background: rgba(var(--qp-red-rgb), 0.14);
+  border-color: rgba(var(--qp-red-rgb), 0.35);
+  color: var(--qp-red);
+}
+
+[data-design="premium"] .badge-orange {
+  background: rgba(var(--qp-amber-rgb), 0.14);
+  border-color: rgba(var(--qp-amber-rgb), 0.35);
+  color: var(--qp-amber);
+}
+
+/* ---- tables (AutoCardTable, BinancePositionsTable, journal tables, etc.) ---- */
+[data-design="premium"] .data-table th {
+  color: var(--qp-text-muted);
+}
+
+[data-design="premium"] .data-table td {
+  border-top-color: var(--qp-border);
+  color: var(--qp-text-primary);
+}
+
+/* ---- modals (EditRiskModal, ProtectPositionModal, CloseAllPositionsModal, RiskLimitsModal) ---- */
+[data-design="premium"] .modal-overlay {
+  background: rgba(3, 4, 8, 0.72);
+}
+
+[data-design="premium"] .modal-card {
+  background: var(--qp-surface-2);
+  border-color: var(--qp-border-strong);
+}
+
+[data-design="premium"] .modal-card p {
+  color: var(--qp-text-secondary);
+}
+
+[data-design="premium"] .toast {
+  background: var(--qp-surface-3);
+  border-color: var(--qp-border-strong);
+  color: var(--qp-text-primary);
+}
+
+/* ---- prediction chart chrome (ProChartCanvas itself free-rides via the
+   --c-* token override in tokens.css; these are the surrounding controls
+   PredictionChart.tsx renders around the canvas) ---- */
+[data-design="premium"] .pc-dropdown-btn {
+  background: var(--qp-surface-2);
+  border-color: var(--qp-border);
+  color: var(--qp-text-secondary);
+}
+
+[data-design="premium"] .pc-dropdown-btn:hover {
+  background: var(--qp-surface-3);
+  color: var(--qp-text-primary);
+}
+
+[data-design="premium"] .pc-indicators-panel {
+  background: var(--qp-surface-2);
+  border-color: var(--qp-border-strong);
+}
+
+[data-design="premium"] .pc-legend-item {
+  color: var(--qp-text-secondary);
+}
+
+[data-design="premium"] .pc-tile {
+  background: var(--qp-surface-2);
+  border-color: var(--qp-border);
+}
+
+[data-design="premium"] .pc-tile-sub {
+  color: var(--qp-text-muted);
+}
+
+[data-design="premium"] .pc-tooltip {
+  background: var(--qp-surface-3);
+  border-color: var(--qp-border-strong);
+}
+
+[data-design="premium"] .pc-tooltip-time {
+  color: var(--qp-text-muted);
+}
+
+[data-design="premium"] .pc-fullscreen {
+  background: linear-gradient(180deg, var(--qp-surface-2), var(--qp-bg));
+}
+
+[data-design="premium"] .pc-mini-gauge-inner {
+  background: var(--qp-surface-1);
+}
+
+/* ---- coming-soon / empty panels used by unbuilt sections ---- */
+[data-design="premium"] .coming-soon-panel {
+  background: var(--qp-surface-1);
+  border-color: var(--qp-border);
+  color: var(--qp-text-secondary);
+}
+
+/* ---- AutoCardTable's mobile stacked-card fallback (used, unmodified, by
+   every generic page's tables below 768px) ---- */
+[data-design="premium"] .auto-card {
+  background: var(--qp-surface-1);
+  border-color: var(--qp-border);
+}
+
+[data-design="premium"] .auto-card-open {
+  border-color: rgba(var(--qp-accent-rgb), 0.4);
+}
+
+[data-design="premium"] .auto-card-chevron {
+  color: var(--qp-text-muted);
+}
+
+[data-design="premium"] .auto-card-badge {
+  background: var(--qp-surface-3);
+  color: var(--qp-text-secondary);
+}
+
+[data-design="premium"] .auto-card-detail,
+[data-design="premium"] .auto-card-actions {
+  border-top-color: var(--qp-border);
+}
+
+[data-design="premium"] .auto-card-row-clickable:hover {
+  background: var(--qp-surface-2);
+}
+
+[data-design="premium"] .tile-label {
+  color: var(--qp-text-muted);
+}
+
+[data-design="premium"] .tile-value {
+  color: var(--qp-text-primary);
+}
+
+[data-design="premium"] .analytics-empty {
+  color: var(--qp-text-secondary);
+}
+
+/* ---- common text/surface primitives reused across every generic page
+   (Predictions, Risk, Execution, Model Center, Paper Trading, Research Lab,
+   Bot Trades, System Status, Logs, Backtesting, Stress Test, Bot Settings,
+   Market Analysis, Trading Diagnostics) ---- */
+[data-design="premium"] .regime-desc,
+[data-design="premium"] .card-title,
+[data-design="premium"] .eyebrow {
+  color: var(--qp-text-secondary);
+}
+
+[data-design="premium"] .status-note {
+  background: var(--qp-surface-2);
+  border-left-color: var(--qp-border-strong);
+}
+
+[data-design="premium"] .filter-select {
+  background: var(--qp-surface-2);
+  border-color: var(--qp-border);
+  color: var(--qp-text-primary);
+}
+
+[data-design="premium"] .mini-btn.link-btn,
+[data-design="premium"] .link-btn {
+  color: var(--qp-accent-strong);
+}
+
+/* ---- extra bottom clearance on phone: Premium's denser card stacking
+   (e.g. Portfolio's paper+Binance preview cards) can sit closer to the
+   fixed bottom nav than Classic's equivalent layout - a slightly larger
+   reserve keeps content from ever crowding the nav rather than depending
+   on Classic's baseline 32px being enough for every possible content mix. */
+@media (max-width: 767px) {
+  [data-design="premium"] .main-has-bottom-nav {
+    padding-bottom: calc(56px + var(--bottom-nav-height, 64px) + env(safe-area-inset-bottom, 0px));
+  }
+}

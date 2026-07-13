@@ -169,8 +169,13 @@ class BinanceAlgoProvider:
             client_algo_id_prefix="qxasl",
         )
 
-    async def cancel(self, algo_id: int) -> dict:
-        return await self.client._delete("/fapi/v1/algoOrder", {"algoId": int(algo_id)})
+    async def cancel(self, algo_id: int | None = None, client_algo_id: str | None = None) -> dict:
+        """Cancels by algoId when given; falls back to clientAlgoId - see
+        Debug 1.pdf section 5. Never sends a classic orderId here."""
+        if algo_id is None and not client_algo_id:
+            raise ValueError("cancel requires algo_id or client_algo_id")
+        params = {"algoId": int(algo_id)} if algo_id is not None else {"clientAlgoId": client_algo_id}
+        return await self.client._delete("/fapi/v1/algoOrder", params)
 
     async def get(self, algo_id: int) -> AlgoOrder | None:
         """None if Binance reports the order doesn't exist (-2013) - that

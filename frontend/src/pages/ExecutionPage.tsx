@@ -132,6 +132,7 @@ export default function ExecutionPage({ executionStatus, executionMetrics, showT
   const [auditEvents, setAuditEvents] = useState<any[]>([]);
   const [executionLog, setExecutionLog] = useState<any>(null);
   const [actionBusy, setActionBusy] = useState(false);
+  const [cancelingKey, setCancelingKey] = useState<string | number | null>(null);
   const [syncing, setSyncing] = useState(false);
 
   const loadExecutionLog = () => api.binanceExecutionLog(50).then((r: any) => setExecutionLog(r)).catch(() => {});
@@ -146,6 +147,18 @@ export default function ExecutionPage({ executionStatus, executionMetrics, showT
     } finally {
       setActionBusy(false);
       await Promise.all([reloadOrders(), loadExecutionLog()]);
+    }
+  };
+
+  // Row-scoped wrapper (Debug 1.pdf section 6): shows "Canceling..." only
+  // on the clicked row, and refreshes orders immediately from the
+  // response instead of waiting on the normal poll cadence.
+  const runRowCancel = async (rowKey: string | number, fn: () => Promise<any>, okMessage: string) => {
+    setCancelingKey(rowKey);
+    try {
+      await runAction(fn, okMessage);
+    } finally {
+      setCancelingKey(null);
     }
   };
 
@@ -315,22 +328,41 @@ export default function ExecutionPage({ executionStatus, executionMetrics, showT
               keyField={(o: any) => o.order_id}
               titleColumn="symbol"
               statusColumn="side"
-              renderActions={(o: any) => (
-                <button
-                  className="mini-btn"
-                  disabled={actionBusy || !gate.canCancelOrders || o.order_id == null}
-                  title={
-                    o.order_id == null
-                      ? "Cannot cancel: missing order id"
-                      : !gate.canCancelOrders
-                        ? gate.cancelDisabledReason ?? ""
-                        : "Cancel this order"
-                  }
-                  onClick={() => runAction(() => api.binanceCancelOrder(o.symbol, o.order_id), "Order canceled")}
-                >
-                  Cancel
-                </button>
-              )}
+              renderActions={(o: any) => {
+                const rowKey = o.order_id ?? o.client_order_id ?? o.algo_id ?? o.client_algo_id;
+                const missingId = rowKey == null;
+                const isCanceling = cancelingKey !== null && cancelingKey === rowKey;
+                return (
+                  <button
+                    className="mini-btn"
+                    disabled={actionBusy || !gate.canCancelOrders || missingId}
+                    title={
+                      missingId
+                        ? "Cannot cancel: missing order identifier"
+                        : !gate.canCancelOrders
+                          ? gate.cancelDisabledReason ?? ""
+                          : "Cancel this order"
+                    }
+                    onClick={() =>
+                      runRowCancel(
+                        rowKey,
+                        () =>
+                          api.binanceCancelOrder({
+                            symbol: o.symbol,
+                            orderId: o.order_id,
+                            clientOrderId: o.client_order_id,
+                            algoId: o.algo_id,
+                            clientAlgoId: o.client_algo_id,
+                            provider: o.provider,
+                          }),
+                        "Order canceled"
+                      )
+                    }
+                  >
+                    {isCanceling ? "Canceling…" : "Cancel"}
+                  </button>
+                );
+              }}
               emptyMessage={orders?.available === false ? orders?.reason || "Unavailable" : "No open Binance orders"}
             />
           </Card>

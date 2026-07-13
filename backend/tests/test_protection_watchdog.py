@@ -206,7 +206,7 @@ class RepairMockClient(WatchdogMockClient):
             }
         raise AssertionError(f"unexpected POST {path}")
 
-    async def cancel_order(self, symbol, order_id):
+    async def cancel_order(self, symbol, order_id=None, orig_client_order_id=None):
         return None
 
     async def place_market_order(self, symbol, side, quantity, reduce_only=False, client_order_id=None):

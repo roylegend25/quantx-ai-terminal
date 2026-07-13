@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useState } from "react";
 import "./App.css";
+import "./premium/index.css";
 import Sidebar from "./components/Layout/Sidebar";
 import MobileBottomNav from "./components/Layout/MobileBottomNav";
 import Topbar from "./components/Layout/Topbar";
@@ -8,8 +9,24 @@ import DashboardPage from "./pages/DashboardPage";
 import { useAppData } from "./hooks/useAppData";
 import { useAuth } from "./hooks/useAuth";
 import { useTheme } from "./hooks/useTheme";
+import { useDesignSystem } from "./hooks/useDesignSystem";
 import { useMediaQuery } from "./hooks/useMediaQuery";
 import type { NavKey } from "./lib/nav";
+import PremiumSidebar from "./premium/components/PremiumSidebar";
+import PremiumTopbar from "./premium/components/PremiumTopbar";
+import PremiumBottomNav from "./premium/components/PremiumBottomNav";
+import PremiumDashboardPage from "./premium/pages/PremiumDashboardPage";
+
+// Lazy, matching the Classic pages they wrap below - each of these
+// statically imports its Classic counterpart (PositionsPage etc.), so
+// keeping them eager would pull those Classic bundles into the main chunk
+// even when Premium mode is off (see INEFFECTIVE_DYNAMIC_IMPORT build warning
+// this fixes).
+const PremiumPositionsPage = lazy(() => import("./premium/pages/PremiumPositionsPage"));
+const PremiumPortfolioPage = lazy(() => import("./premium/pages/PremiumPortfolioPage"));
+const PremiumBinanceRealPage = lazy(() => import("./premium/pages/PremiumBinanceRealPage"));
+const PremiumPerformancePage = lazy(() => import("./premium/pages/PremiumPerformancePage"));
+const PremiumGenericPage = lazy(() => import("./premium/pages/PremiumGenericPage"));
 
 const PortfolioPage = lazy(() => import("./pages/PortfolioPage"));
 const PaperTradingPage = lazy(() => import("./pages/PaperTradingPage"));
@@ -39,6 +56,8 @@ function App() {
   const [active, setActive] = useState<NavKey>("dashboard");
   const data = useAppData(authed);
   const theme = useTheme();
+  const designSystem = useDesignSystem();
+  const isPremium = designSystem.mode === "premium";
   const isPhoneNav = useMediaQuery("(max-width: 767px)");
 
   const handleStopBot = useCallback(() => {
@@ -53,7 +72,7 @@ function App() {
     return <LoginPage onSuccess={onLoginSuccess} />;
   }
 
-  function renderPage() {
+  function renderClassicPage() {
     switch (active) {
       case "dashboard":
         return <DashboardPage {...data} navigate={setActive} />;
@@ -98,17 +117,58 @@ function App() {
     }
   }
 
+  /** Bespoke Premium pages get hero-quality custom compositions; the
+   * remaining ~12 pages reuse their existing, unmodified Classic component
+   * inside one shared PremiumGenericPage shell (see plan: Tier B). */
+  function renderPage() {
+    if (!isPremium) return renderClassicPage();
+
+    switch (active) {
+      case "dashboard":
+        return <PremiumDashboardPage {...data} navigate={setActive} />;
+      case "positions":
+        return <PremiumPositionsPage {...data} navigate={setActive} />;
+      case "portfolio":
+        return <PremiumPortfolioPage {...data} navigate={setActive} />;
+      case "binance-real":
+        return <PremiumBinanceRealPage {...data} />;
+      case "performance":
+        return <PremiumPerformancePage {...data} />;
+      default:
+        return <PremiumGenericPage activeKey={active}>{renderClassicPage()}</PremiumGenericPage>;
+    }
+  }
+
   const botStatusLabel = (data.botStatus?.status || data.dashboard?.bot?.status || "").toUpperCase();
 
   return (
-    <div className="app">
+    <div className={isPremium ? "app qp-app" : "app"}>
       {isPhoneNav ? (
-        <MobileBottomNav
+        isPremium ? (
+          <PremiumBottomNav
+            active={active}
+            onNavigate={setActive}
+            onStopBot={handleStopBot}
+            onLogout={logout}
+            isBotLive={botStatusLabel === "RUNNING"}
+          />
+        ) : (
+          <MobileBottomNav
+            active={active}
+            onNavigate={setActive}
+            onStopBot={handleStopBot}
+            onLogout={logout}
+            isBotLive={botStatusLabel === "RUNNING"}
+          />
+        )
+      ) : isPremium ? (
+        <PremiumSidebar
           active={active}
           onNavigate={setActive}
+          botStatus={data.botStatus}
+          dashboard={data.dashboard}
           onStopBot={handleStopBot}
           onLogout={logout}
-          isBotLive={botStatusLabel === "RUNNING"}
         />
       ) : (
         <Sidebar
@@ -122,13 +182,17 @@ function App() {
       )}
 
       <main className={isPhoneNav ? "main main-has-bottom-nav" : "main"}>
-        <Topbar dashboard={data.dashboard} theme={theme} activeKey={active} />
+        {isPremium ? (
+          <PremiumTopbar dashboard={data.dashboard} theme={theme} designSystem={designSystem} activeKey={active} />
+        ) : (
+          <Topbar dashboard={data.dashboard} theme={theme} designSystem={designSystem} activeKey={active} />
+        )}
 
         {data.toast && <div className={`toast ${data.toastTone === "error" ? "toast-error" : ""}`}>{data.toast}</div>}
 
         <Suspense fallback={<PageFallback />}>{renderPage()}</Suspense>
 
-        <footer className="app-footer">Built with ❤️ for serious traders</footer>
+        {!isPremium && <footer className="app-footer">Built with ❤️ for serious traders</footer>}
       </main>
     </div>
   );

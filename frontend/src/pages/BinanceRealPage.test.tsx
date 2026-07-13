@@ -120,3 +120,175 @@ describe("BinanceRealPage", () => {
     expect(container.textContent).not.toMatch(/api[_-]?secret/i);
   });
 });
+
+// ------------------------------------------------- row-level Cancel (Debug 1)
+
+const classicOrder = {
+  order_id: 998877,
+  client_order_id: "qx-1",
+  algo_id: null,
+  client_algo_id: null,
+  provider: "classic",
+  source: "binance_real",
+  symbol: "ETHUSDT",
+  side: "BUY",
+  type: "LIMIT",
+  status: "NEW",
+  price: 1750.0,
+  stop_price: 0,
+  quantity: 0.049,
+  reduce_only: false,
+  close_position: false,
+};
+
+const algoOrder = {
+  order_id: null,
+  client_order_id: null,
+  algo_id: 55201,
+  client_algo_id: "qxa-77",
+  provider: "algo",
+  source: "binance_real",
+  symbol: "BTCUSDT",
+  side: "SELL",
+  type: "STOP_MARKET",
+  status: "NEW",
+  price: 0,
+  stop_price: 61800,
+  quantity: 0.01,
+  reduce_only: true,
+  close_position: false,
+};
+
+async function renderWithOrders(orders: any[]) {
+  (api.binanceOrders as ReturnType<typeof vi.fn>).mockResolvedValue({ available: true, orders });
+  render(<BinanceRealPage {...({ showToast } as any)} />);
+  await screen.findByText(`Real Open Orders (${orders.length})`);
+}
+
+describe("BinanceRealPage row-level Cancel", () => {
+  it("sends symbol + order_id + provider classic for a classic order", async () => {
+    (api.binanceCancelOrder as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true });
+    await renderWithOrders([classicOrder]);
+
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Confirm" }));
+
+    await waitFor(() => expect(api.binanceCancelOrder).toHaveBeenCalledWith({
+      symbol: "ETHUSDT",
+      orderId: 998877,
+      clientOrderId: "qx-1",
+      algoId: null,
+      clientAlgoId: null,
+      provider: "classic",
+    }));
+  });
+
+  it("sends algo_id + provider algo for an algo order", async () => {
+    (api.binanceCancelOrder as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true });
+    await renderWithOrders([algoOrder]);
+
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Confirm" }));
+
+    await waitFor(() => expect(api.binanceCancelOrder).toHaveBeenCalledWith({
+      symbol: "BTCUSDT",
+      orderId: null,
+      clientOrderId: null,
+      algoId: 55201,
+      clientAlgoId: "qxa-77",
+      provider: "algo",
+    }));
+  });
+
+  it("shows a row-scoped loading state while canceling", async () => {
+    let resolveCancel: (v: any) => void = () => {};
+    (api.binanceCancelOrder as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise((resolve) => {
+        resolveCancel = resolve;
+      })
+    );
+    await renderWithOrders([classicOrder]);
+
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Confirm" }));
+
+    await screen.findByRole("button", { name: "Canceling…" });
+    resolveCancel({ ok: true });
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Canceling…" })).not.toBeInTheDocument());
+  });
+
+  it("shows a success toast and refreshes orders after a successful cancel", async () => {
+    (api.binanceCancelOrder as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true });
+    await renderWithOrders([classicOrder]);
+    const callsBefore = (api.binanceOrders as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Confirm" }));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith("Order canceled", "success"));
+    await waitFor(() =>
+      expect((api.binanceOrders as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(callsBefore)
+    );
+  });
+
+  it("shows a safe error and keeps the row visible when cancel fails", async () => {
+    (api.binanceCancelOrder as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("Unknown order sent."));
+    await renderWithOrders([classicOrder]);
+
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Confirm" }));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith("Unknown order sent.", "error"));
+    expect(screen.getByText("ETHUSDT")).toBeInTheDocument();
+  });
+
+  it("disables row Cancel and explains why when no identifier is present", async () => {
+    await renderWithOrders([{ ...classicOrder, order_id: null, client_order_id: null, algo_id: null, client_algo_id: null }]);
+    const cancelBtn = screen.getByRole("button", { name: "Cancel" });
+    expect(cancelBtn).toBeDisabled();
+    expect(cancelBtn).toHaveAttribute("title", "Cannot cancel: missing order identifier");
+  });
+
+  it("still renders and cancels via Cancel All alongside a working row Cancel", async () => {
+    (api.binanceCancelAllOrders as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true });
+    (api.tradingMode as ReturnType<typeof vi.fn>).mockResolvedValue({ ...baseStatus, active_mode: "BINANCE_LIVE" });
+    await renderWithOrders([classicOrder]);
+
+    const cancelAllBtn = screen.getByRole("button", { name: "Cancel All" });
+    expect(cancelAllBtn).toBeInTheDocument();
+    await userEvent.click(cancelAllBtn);
+    await userEvent.click(await screen.findByRole("button", { name: "Confirm" }));
+
+    await waitFor(() => expect(api.binanceCancelAllOrders).toHaveBeenCalled());
+    // row Cancel is untouched by exercising Cancel All
+    expect(api.binanceCancelOrder).not.toHaveBeenCalled();
+  });
+
+  it("row Cancel button is visible and tappable on a mobile viewport", async () => {
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = (query: string) =>
+      ({
+        matches: query.includes("max-width: 767px"),
+        media: query,
+        onchange: null,
+        addListener: () => {},
+        removeListener: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        dispatchEvent: () => false,
+      }) as unknown as MediaQueryList;
+    try {
+      (api.binanceCancelOrder as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true });
+      await renderWithOrders([classicOrder]);
+
+      const cancelBtn = screen.getByRole("button", { name: "Cancel" });
+      expect(cancelBtn).toBeVisible();
+      expect(cancelBtn).toBeEnabled();
+      await userEvent.click(cancelBtn);
+      await userEvent.click(await screen.findByRole("button", { name: "Confirm" }));
+      await waitFor(() => expect(api.binanceCancelOrder).toHaveBeenCalled());
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
+  });
+});

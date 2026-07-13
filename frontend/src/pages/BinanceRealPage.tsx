@@ -67,6 +67,7 @@ export default function BinanceRealPage(props: AppData) {
 
   const [editing, setEditing] = useState<any>(null);
   const [readiness, setReadiness] = useState<any>(null);
+  const [cancelingKey, setCancelingKey] = useState<string | number | null>(null);
 
   const mode = status?.active_mode || "PAPER";
   const isLive = mode === "BINANCE_LIVE";
@@ -110,7 +111,10 @@ export default function BinanceRealPage(props: AppData) {
   const handleCancelProtective = (p: any, kind: "sl" | "tp") => {
     const orderId = kind === "sl" ? p.sl_order_id : p.tp_order_id;
     if (orderId == null) return;
-    return run(() => api.binanceCancelOrder(p.symbol, orderId), `${kind.toUpperCase()} order canceled`);
+    // sl_order_id/tp_order_id is one generic id that may live on either
+    // surface (protection_provider) - no `provider` sent here, the
+    // backend infers classic vs algo from its own tracked ids.
+    return run(() => api.binanceCancelOrder({ symbol: p.symbol, orderId }), `${kind.toUpperCase()} order canceled`);
   };
 
   return (
@@ -369,8 +373,10 @@ export default function BinanceRealPage(props: AppData) {
           titleColumn="symbol"
           statusColumn="side"
           renderActions={(o: any) => {
-            const missingId = o.order_id == null;
-            const disabledReason = missingId ? "Cannot cancel: missing order id" : gate.cancelDisabledReason ?? "";
+            const rowKey = o.order_id ?? o.client_order_id ?? o.algo_id ?? o.client_algo_id;
+            const missingId = rowKey == null;
+            const disabledReason = missingId ? "Cannot cancel: missing order identifier" : gate.cancelDisabledReason ?? "";
+            const isCanceling = cancelingKey !== null && cancelingKey === rowKey;
             return (
               <button
                 className="mini-btn"
@@ -378,13 +384,31 @@ export default function BinanceRealPage(props: AppData) {
                 title={!gate.canCancelOrders || missingId ? disabledReason : ""}
                 onClick={() =>
                   setConfirm({
-                    title: `Cancel real order #${o.order_id}?`,
+                    title: `Cancel real order #${o.order_id ?? o.client_order_id}?`,
                     body: `${o.type} ${o.side} on ${o.symbol} will be canceled on Binance.`,
-                    action: () => run(() => api.binanceCancelOrder(o.symbol, o.order_id), "Order canceled"),
+                    action: async () => {
+                      setCancelingKey(rowKey);
+                      try {
+                        await run(
+                          () =>
+                            api.binanceCancelOrder({
+                              symbol: o.symbol,
+                              orderId: o.order_id,
+                              clientOrderId: o.client_order_id,
+                              algoId: o.algo_id,
+                              clientAlgoId: o.client_algo_id,
+                              provider: o.provider,
+                            }),
+                          "Order canceled"
+                        );
+                      } finally {
+                        setCancelingKey(null);
+                      }
+                    },
                   })
                 }
               >
-                Cancel
+                {isCanceling ? "Canceling…" : "Cancel"}
               </button>
             );
           }}

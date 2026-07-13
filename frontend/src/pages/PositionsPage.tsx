@@ -232,7 +232,10 @@ export default function PositionsPage(props: Props) {
   const handleCancelProtective = (p: any, kind: "sl" | "tp") => {
     const orderId = kind === "sl" ? p.sl_order_id : p.tp_order_id;
     if (orderId == null) return;
-    return runBinance(() => api.binanceCancelOrder(p.symbol, orderId), `${kind.toUpperCase()} order canceled`);
+    return runBinance(
+      () => api.binanceCancelOrder({ symbol: p.symbol, orderId }),
+      `${kind.toUpperCase()} order canceled`
+    );
   };
 
   const handleSyncBinance = () => runBinance(() => api.tradingSync(), "Re-synced from Binance");
