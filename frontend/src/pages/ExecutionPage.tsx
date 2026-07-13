@@ -301,7 +301,7 @@ export default function ExecutionPage({ executionStatus, executionMetrics, showT
                 <button
                   className="mini-btn"
                   disabled={actionBusy || !gate.canCancelOrders}
-                  title={!gate.canCancelOrders ? gate.disabledReason ?? "" : ""}
+                  title={!gate.canCancelOrders ? gate.cancelDisabledReason ?? "" : ""}
                   onClick={() => runAction(() => api.binanceCancelAllOrders(), "All Binance orders canceled")}
                 >
                   Cancel All
@@ -318,8 +318,14 @@ export default function ExecutionPage({ executionStatus, executionMetrics, showT
               renderActions={(o: any) => (
                 <button
                   className="mini-btn"
-                  disabled={actionBusy || !gate.canCancelOrders}
-                  title={!gate.canCancelOrders ? gate.disabledReason ?? "" : "Cancel this order"}
+                  disabled={actionBusy || !gate.canCancelOrders || o.order_id == null}
+                  title={
+                    o.order_id == null
+                      ? "Cannot cancel: missing order id"
+                      : !gate.canCancelOrders
+                        ? gate.cancelDisabledReason ?? ""
+                        : "Cancel this order"
+                  }
                   onClick={() => runAction(() => api.binanceCancelOrder(o.symbol, o.order_id), "Order canceled")}
                 >
                   Cancel

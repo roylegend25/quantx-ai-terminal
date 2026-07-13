@@ -6,6 +6,11 @@ type ExecutionOutcome = {
   attempted: boolean;
   ok: boolean | null;
   reason: string | null;
+  /** True when this outcome is from an older signal cycle than the one on
+   *  screen (see ExecutionPipelineCard / trading_control._is_historical_attempt) -
+   *  a stale failure (e.g. an expired rate-limit cooldown) must never be
+   *  shown as today's active blocker. */
+  historical?: boolean;
 } | null;
 
 type Props = {
@@ -34,7 +39,11 @@ function DecisionReasoningCard({ decision, regime, executionOutcome }: Props) {
   // A signal the decision engine approved, but whose live execution
   // actually failed, must never be shown as simply "allowed" - see
   // ExecutionPipelineCard for the full stage-by-stage reason.
-  const executionFailed = state === "allowed" && !!executionOutcome?.attempted && executionOutcome?.ok === false;
+  const executionFailed =
+    state === "allowed" &&
+    !!executionOutcome?.attempted &&
+    executionOutcome?.ok === false &&
+    !executionOutcome?.historical;
   const stateTone = executionFailed ? "red" : state === "allowed" ? "green" : state === "blocked" ? "red" : "yellow";
   const StateIcon = executionFailed ? XCircle : state === "allowed" ? CheckCircle2 : state === "blocked" ? XCircle : Clock3;
 

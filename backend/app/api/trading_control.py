@@ -128,6 +128,26 @@ def _require_live(db) -> None:
         raise HTTPException(status_code=409, detail=reason)
 
 
+def _require_cancelable(db) -> None:
+    """Canceling a resting real order is a de-risking safety action, not
+    order placement - see Debug 1.pdf section 2 and
+    execution_router.ExecutionRouter._cancel_provider. Unlike
+    _require_live, this must NOT depend on the bot's active trading mode
+    (PAPER/TESTNET/LIVE/LIVE_LOCKED): "Real Open Orders" always reflects
+    the real Binance account regardless of active mode, so the cancel
+    button next to it must too. The only hard blockers are the ones that
+    make it genuinely impossible to reach Binance safely right now."""
+    if not modes.binance_configured():
+        raise HTTPException(status_code=400, detail="Binance API credentials are not configured")
+    from app.exchanges.binance_rate_limiter import limiter
+    status = limiter.status()
+    if status.get("banned"):
+        raise HTTPException(
+            status_code=429,
+            detail=f"Binance temporary IP ban active - retry in {status.get('retry_after_seconds')}s",
+        )
+
+
 class ClosePositionRequest(BaseModel):
     position_id: int | None = None
     symbol: str | None = None
@@ -178,13 +198,25 @@ async def binance_update_position_risk(position_id: int, body: PositionRiskUpdat
 
 class CancelOrderRequest(BaseModel):
     symbol: str
-    order_id: int
+    # order_id (classic DELETE /fapi/v1/order) or algo_id (algo DELETE
+    # /fapi/v1/algoOrder) - whichever the row actually carries. client_*
+    # variants are accepted for forward-compatibility with the row shape
+    # in Debug 1.pdf section 1 but are not yet resolvable to a numeric id
+    # on their own (this app's own orders never surface only a client id).
+    order_id: int | None = None
+    client_order_id: str | None = None
+    algo_id: int | None = None
+    client_algo_id: str | None = None
+    provider: str | None = None
 
 
 @router.post("/binance/cancel-order")
 async def binance_cancel_order(body: CancelOrderRequest, db: Session = Depends(get_db)):
-    _require_live(db)
-    result = await execution_router.cancel_order(symbol=body.symbol, order_id=body.order_id)
+    _require_cancelable(db)
+    resolved_id = body.order_id if body.order_id is not None else body.algo_id
+    if resolved_id is None:
+        raise HTTPException(status_code=400, detail="Cannot cancel: missing order id")
+    result = await execution_router.cancel_order(symbol=body.symbol, order_id=resolved_id)
     if not result.ok:
         raise HTTPException(status_code=400, detail=result.reason or "Cancel failed")
     return result.to_dict()
@@ -197,7 +229,7 @@ class CancelAllRequest(BaseModel):
 
 @router.post("/binance/cancel-all-orders")
 async def binance_cancel_all_orders(body: CancelAllRequest, db: Session = Depends(get_db)):
-    _require_live(db)
+    _require_cancelable(db)
     if not body.confirm:
         raise HTTPException(status_code=400, detail="Explicit confirmation required to cancel all real orders (confirm=true)")
     result = await execution_router.cancel_all_orders(symbol=body.symbol)
@@ -744,6 +776,25 @@ def _stage_skeleton() -> list[dict]:
     return [{"stage": name, "status": "waiting", "reason": None, "at": None} for name in STAGE_ORDER]
 
 
+def _is_historical_attempt(attempt, last_decision_at_iso: str | None) -> bool:
+    """True when the last real order attempt predates the CURRENT signal
+    cycle - i.e. no new attempt has happened since the signal now on
+    screen was decided, so its outcome (including a stale rate-limit
+    rejection from minutes/hours ago) must never be shown as today's
+    active "Execution Failed" (Debug 1.pdf section 3/8-9). Was previously
+    hardcoded to `execution_attempted` (always true whenever any attempt
+    row existed, regardless of age) - a placeholder that never actually
+    distinguished old from current, which is exactly why an old
+    rate-limit failure kept reappearing as a fresh one."""
+    if attempt is None or attempt.created_at is None or not last_decision_at_iso:
+        return False
+    last_decision_at = datetime.fromisoformat(last_decision_at_iso)
+    attempt_at = attempt.created_at
+    if attempt_at.tzinfo is None:
+        attempt_at = attempt_at.replace(tzinfo=timezone.utc)
+    return attempt_at < last_decision_at
+
+
 @router.get("/binance/execution-pipeline")
 async def binance_execution_pipeline(symbol: str | None = None, db: Session = Depends(get_db)):
     """The current signal's decision-engine verdict overlaid with the
@@ -764,6 +815,15 @@ async def binance_execution_pipeline(symbol: str | None = None, db: Session = De
     )
 
     signal_approved = bool(decision.get("risk_gate_allowed"))
+
+    # Debug 1.pdf section 8-9: Binance cooling down right now is a
+    # completely different fact from "the last execution attempt failed" -
+    # the frontend needs both, separately, so a cooldown with no fresh
+    # attempt this cycle renders as a small "showing cached data" notice
+    # instead of ever being conflated with (or hidden behind) the
+    # execution-failed banner above.
+    from app.exchanges.binance_rate_limiter import limiter
+    rl_status = limiter.status()
 
     if attempt:
         stages_by_name = {s.get("stage"): s for s in (attempt.stages or [])}
@@ -795,7 +855,9 @@ async def binance_execution_pipeline(symbol: str | None = None, db: Session = De
         # final_reason/stages so an old protection failure never reads as
         # today's active blocker.
         "current_protection_check": decision.get("protection_check"),
-        "is_historical_attempt": execution_attempted,
+        "is_historical_attempt": _is_historical_attempt(attempt, decision.get("last_decision_at")),
+        "binance_rate_limited": rl_status["rate_limited"],
+        "binance_retry_after_seconds": rl_status["retry_after_seconds"],
         "order_id": attempt.order_id if attempt else None,
         "requested_notional": attempt.requested_notional if attempt else None,
         "requested_quantity": attempt.requested_quantity if attempt else None,

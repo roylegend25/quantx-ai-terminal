@@ -158,6 +158,82 @@ def test_pipeline_ignores_test_orders_for_the_live_signal_view(monkeypatch):
     assert body["execution_attempted"] is False  # the only attempt on file is a test order
 
 
+# --------------------------------------------------- Debug 1.pdf section 3/8-9
+#
+# Root cause of "Execution Pipeline still shows Execution Failed - Binance
+# API cooling down after a rate limit": is_historical_attempt used to be
+# hardcoded to `execution_attempted` (true whenever ANY attempt row
+# existed, no matter how old), so a stale rate-limit failure from a past
+# signal cycle kept reading as today's active blocker forever. It must
+# instead compare the attempt's timestamp against the CURRENT signal's
+# last_decision_at.
+
+def fake_prediction_at(computed_at_ms, direction="SHORT", confidence=90.0, required_confidence=70.0):
+    async def fn(symbol, interval="5m", timeframe=None, limit=220):
+        decision_engine = {
+            "active_model": {"model_type": "lightgbm-v34"},
+            "model_votes": [{"name": "Champion ML", "direction": direction, "available": True}],
+            "strategy_used": "strategy_ensemble",
+            "required_confidence": required_confidence,
+        }
+        return {
+            "direction": direction, "confidence": confidence, "target": 63100.0, "stop": 64600.0,
+            "decision_engine": decision_engine,
+            "prediction": {"direction": direction, "confidence": confidence,
+                           "decision_engine": decision_engine, "computed_at": computed_at_ms},
+        }
+    return fn
+
+
+def test_pipeline_marks_a_pre_signal_failure_as_historical(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    # The attempt failed an hour ago (e.g. a rate-limit cooldown that has
+    # long since expired); the signal on screen was computed just now.
+    monkeypatch.setattr(prediction_module, "prediction",
+                        fake_prediction_at(int(now.timestamp() * 1000), confidence=95.0))
+    seed_attempt(final_status="failed", final_reason="Binance API cooling down after a rate limit",
+                 created_at=now - timedelta(hours=1))
+    client = make_client()
+    body = client.get("/api/trading/binance/execution-pipeline?symbol=BTCUSDT").json()
+
+    assert body["execution_attempted"] is True
+    assert body["execution_ok"] is False
+    assert body["is_historical_attempt"] is True
+
+
+def test_pipeline_marks_a_same_cycle_failure_as_current(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    # The signal was computed an hour ago; the attempt (and its failure)
+    # happened just now, in direct response to it - this IS today's active
+    # blocker and must still show as "Execution Failed".
+    monkeypatch.setattr(prediction_module, "prediction",
+                        fake_prediction_at(int((now - timedelta(hours=1)).timestamp() * 1000), confidence=95.0))
+    seed_attempt(final_status="failed", final_reason="Margin is insufficient", created_at=now)
+    client = make_client()
+    body = client.get("/api/trading/binance/execution-pipeline?symbol=BTCUSDT").json()
+
+    assert body["execution_attempted"] is True
+    assert body["execution_ok"] is False
+    assert body["is_historical_attempt"] is False
+
+
+def test_pipeline_exposes_rate_limit_status_separately_from_execution_status(monkeypatch):
+    from app.exchanges.binance_rate_limiter import limiter
+    monkeypatch.setattr(prediction_module, "prediction", fake_prediction())
+    limiter._cooldown_until = __import__("time").time() + 30
+    try:
+        client = make_client()
+        body = client.get("/api/trading/binance/execution-pipeline?symbol=BTCUSDT").json()
+        assert body["binance_rate_limited"] is True
+        assert body["binance_retry_after_seconds"] > 0
+        # No attempt on file at all - this must never look like an execution failure.
+        assert body["execution_attempted"] is False
+    finally:
+        limiter.reset()
+
+
 # --------------------------------------------------------------- execution-logs
 
 def test_execution_logs_returns_full_detail_newest_first():

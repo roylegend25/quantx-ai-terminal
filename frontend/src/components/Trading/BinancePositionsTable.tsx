@@ -247,7 +247,7 @@ export default function BinancePositionsTable({
               <button
                 className="mini-btn"
                 disabled={busy || !gate.canCancelOrders}
-                title={!gate.canCancelOrders ? disabledTitle : "Cancel the resting stop-loss order"}
+                title={!gate.canCancelOrders ? gate.cancelDisabledReason ?? "" : "Cancel the resting stop-loss order"}
                 onClick={() => onCancelProtective(p, "sl")}
               >
                 Cancel SL
@@ -257,7 +257,7 @@ export default function BinancePositionsTable({
               <button
                 className="mini-btn"
                 disabled={busy || !gate.canCancelOrders}
-                title={!gate.canCancelOrders ? disabledTitle : "Cancel the resting take-profit order"}
+                title={!gate.canCancelOrders ? gate.cancelDisabledReason ?? "" : "Cancel the resting take-profit order"}
                 onClick={() => onCancelProtective(p, "tp")}
               >
                 Cancel TP

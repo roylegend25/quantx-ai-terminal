@@ -40,7 +40,12 @@ export default function DashboardPage(props: Props) {
   const { data: marginData, loading: marginLoading, errored: marginErrored, reload: reloadMargin } =
     useMarginCalculator(symbol, liveActive);
   const executionOutcome = pipeline
-    ? { attempted: !!pipeline.execution_attempted, ok: pipeline.execution_ok, reason: pipeline.final_reason }
+    ? {
+        attempted: !!pipeline.execution_attempted,
+        ok: pipeline.execution_ok,
+        reason: pipeline.final_reason,
+        historical: !!pipeline.is_historical_attempt,
+      }
     : null;
   const [editingPosition, setEditingPosition] = useState<Position | null>(null);
   const editPositionById = (id: number) => {

@@ -9,6 +9,11 @@ every call and forwards to the right provider:
     BINANCE_LIVE        -> BinanceExecutionProvider(testnet=False)
     BINANCE_LIVE_LOCKED -> everything blocked with a clear reason
 
+Cancel/cancel-all are the one documented exception (see
+ExecutionRouter._cancel_provider): they are de-risking safety actions, not
+order placement, so they reach the real account in every mode - including
+PAPER and LIVE_LOCKED - as long as one is actually configured.
+
 Real providers run every order through app/trading/real_risk_gate.py -
 there is no parameter to skip it. The kill switch is checked here as well,
 so even a provider bug can't place an order while it is active.
@@ -25,7 +30,7 @@ from app.core.config import settings
 from app.core.security import create_internal_service_token
 from app.db.models import ExchangePositionRow
 from app.db.session import SessionLocal
-from app.exchanges.binance_futures_client import BinanceFuturesClient
+from app.exchanges.binance_futures_client import BinanceFuturesClient, LiveTradingLocked
 from app.execution.execution_engine import engine as paper_engine
 from app.execution.order_router import OrderType
 from app.trading import modes, protection, protection_provider, real_risk_gate
@@ -702,9 +707,11 @@ class BinanceExecutionProvider:
             if order_id in (_tracked_algo_id(self.mode, symbol, "tp"), _tracked_algo_id(self.mode, symbol, "sl")):
                 await protection_provider.cancel_leg(self.client, symbol, order_id, protection_provider.ALGO)
                 modes.audit("order_canceled", symbol=symbol, detail={"order_id": order_id, "provider": "algo"})
+                _invalidate_snapshot_after_cancel()
                 return self._result(True, "cancel_order", order={"algo_id": order_id, "status": "CANCELED"})
             order = await self.client.cancel_order(symbol, order_id)
             modes.audit("order_canceled", symbol=symbol, detail={"order_id": order_id, "provider": "classic"})
+            _invalidate_snapshot_after_cancel()
             return self._result(True, "cancel_order", order=order.to_dict())
         except Exception as e:
             return self._result(False, "cancel_order", reason=_safe_error(e))
@@ -720,8 +727,24 @@ class BinanceExecutionProvider:
             except Exception as e:
                 errors.append(f"{sym}: {_safe_error(e)}")
         modes.audit("orders_canceled_all", detail={"symbols": canceled, "errors": errors})
+        if canceled:
+            _invalidate_snapshot_after_cancel()
         return self._result(not errors, "cancel_all_orders",
                             reason="; ".join(errors) if errors else None, canceled_symbols=canceled)
+
+
+def _invalidate_snapshot_after_cancel() -> None:
+    """A confirmed cancel changes the account's open-orders (and possibly
+    margin) state immediately. Without this, the very next read - including
+    the frontend's own post-action refresh, which fires milliseconds after
+    the cancel resolves - would still serve the pre-cancel snapshot for up
+    to BINANCE_ORDERS_TTL_SECONDS, making a successful single-order cancel
+    look like it silently did nothing (the row stays in the table) even
+    though Binance already canceled it. Same cache the TP/SL mutation path
+    already invalidates (see _bump_protection_revision)."""
+    from app.exchanges.binance_snapshot_service import snapshot_service
+    snapshot_service.invalidate_after_protection_mutation()
+    protection.reset_algo_lookup_cache()
 
 
 # Binance rejects quantities with more precision than the symbol's step
@@ -923,19 +946,42 @@ class ExecutionRouter:
                                 reason="Live trading locked")
         return await self.provider().sync_orders()
 
+    def _cancel_provider(self):
+        """Cancel/cancel-all are de-risking safety actions, not order
+        placement - unlike every other method on this router, they must
+        keep working no matter what the bot's active trading mode is
+        (PAPER, TESTNET, LIVE, or LIVE_LOCKED), as long as a real Binance
+        account is actually configured. TESTNET already resolves to a real
+        (sandboxed) client via provider(). LIVE and LIVE_LOCKED share the
+        one lazily-built live client - constructing it only requires the
+        server env lock (BINANCE_LIVE_ENABLED), not the separate per-
+        session user live-risk unlock, so an account that is merely locked
+        (server enabled, user not yet unlocked) can still cancel its own
+        resting orders. PAPER also reuses that live client rather than the
+        no-op PaperExecutionProvider.cancel_order: the bot's active mode
+        describes simulated trading, not whether a real order placed
+        earlier (or manually on the exchange) still needs to come off the
+        book - see Debug 1.pdf section 2."""
+        mode = modes.effective_mode()
+        if mode == modes.MODE_TESTNET:
+            return self._testnet
+        if self._live is None:
+            self._live = BinanceExecutionProvider(testnet=False)
+        return self._live
+
     async def cancel_order(self, **kwargs) -> RouterResult:
-        # cancel is a de-risking action: allowed even when locked, IF a real
-        # provider can be built (testnet). Locked-live cannot construct one.
-        if modes.effective_mode() == modes.MODE_LIVE_LOCKED:
-            return RouterResult(ok=False, mode=modes.MODE_LIVE_LOCKED, action="cancel_order",
-                                reason="Live trading locked - cancel orders directly on Binance")
-        return await self.provider().cancel_order(**kwargs)
+        try:
+            provider = self._cancel_provider()
+        except LiveTradingLocked as e:
+            return RouterResult(ok=False, mode=modes.effective_mode(), action="cancel_order", reason=str(e))
+        return await provider.cancel_order(**kwargs)
 
     async def cancel_all_orders(self, **kwargs) -> RouterResult:
-        if modes.effective_mode() == modes.MODE_LIVE_LOCKED:
-            return RouterResult(ok=False, mode=modes.MODE_LIVE_LOCKED, action="cancel_all_orders",
-                                reason="Live trading locked - cancel orders directly on Binance")
-        return await self.provider().cancel_all_orders(**kwargs)
+        try:
+            provider = self._cancel_provider()
+        except LiveTradingLocked as e:
+            return RouterResult(ok=False, mode=modes.effective_mode(), action="cancel_all_orders", reason=str(e))
+        return await provider.cancel_all_orders(**kwargs)
 
 
 router = ExecutionRouter()

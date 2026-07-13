@@ -393,6 +393,9 @@ def test_historical_execution_failure_does_not_change_current_protection_check(m
     )
     monkeypatch.setattr(portfolio_module, "_read_client", client)
 
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+
     db = SessionLocal()
     try:
         db.add(BinanceExecutionAttempt(
@@ -401,6 +404,7 @@ def test_historical_execution_failure_does_not_change_current_protection_check(m
                     "reason": "Existing live position is unprotected", "at": "2026-07-13T03:40:00+00:00"}],
             final_status="failed",
             final_reason="Existing live position is unprotected (ETHUSDT MISSING_TP_SL)",
+            created_at=now - timedelta(hours=3),  # genuinely stale, not merely a fixed old date
         ))
         db.commit()
     finally:
@@ -410,7 +414,7 @@ def test_historical_execution_failure_does_not_change_current_protection_check(m
         return {
             "direction": "SHORT", "confidence": 30.0, "target": 1700.0, "stop": 1900.0,
             "decision_engine": {"required_confidence": 45.0, "active_model": {}, "model_votes": []},
-            "prediction": {"computed_at": 1750000000000},
+            "prediction": {"computed_at": int(now.timestamp() * 1000)},
         }
 
     monkeypatch.setattr(prediction_module, "prediction", fake_prediction)

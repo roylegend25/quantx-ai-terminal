@@ -12,7 +12,7 @@ vi.mock("../../services/api", () => ({
 
 const gate = {
   canView: true, canTrade: true, canEditRisk: true, canCancelOrders: true, canClosePositions: true,
-  disabledReason: null, requiredSteps: [],
+  disabledReason: null, cancelDisabledReason: null, requiredSteps: [],
 };
 
 function unprotectedPosition(overrides: Partial<any> = {}) {

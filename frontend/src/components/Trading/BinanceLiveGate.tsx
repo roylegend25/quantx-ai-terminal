@@ -24,6 +24,13 @@ export type BinanceLiveGate = {
   /** First blocking reason, in priority order, or null when canTrade. Use
    *  this directly as a disabled button's title/tooltip. */
   disabledReason: string | null;
+  /** Cancel-specific reason, or null when canCancelOrders. Canceling a
+   *  resting real order is a de-risking safety action (Debug 1.pdf
+   *  section 2), not order placement - it must stay available whenever a
+   *  real account exists, regardless of active trading mode, the
+   *  server/user live locks, or the kill switch, so it is never blocked
+   *  by the same reasons trade placement is. */
+  cancelDisabledReason: string | null;
   /** Ordered list of every unmet requirement (for a checklist view). */
   requiredSteps: string[];
 };
@@ -44,6 +51,7 @@ export function evaluateBinanceLiveGate(status: TradingStatus | null, opts: Opts
       canCancelOrders: false,
       canClosePositions: false,
       disabledReason: NO_STATUS_REASON,
+      cancelDisabledReason: NO_STATUS_REASON,
       requiredSteps: [NO_STATUS_REASON],
     };
   }
@@ -75,13 +83,24 @@ export function evaluateBinanceLiveGate(status: TradingStatus | null, opts: Opts
   const requiredSteps = checks.filter((c) => !c.ok).map((c) => c.reason);
   const canTrade = requiredSteps.length === 0;
 
+  // Cancel is deliberately narrower than the trade checks above: it only
+  // needs a real, reachable Binance account - not the server/user live
+  // locks or the kill switch, which exist to gate NEW order placement.
+  const cancelChecks: { ok: boolean; reason: string }[] = [
+    { ok: !!status.binance_configured, reason: "Disabled because Binance API keys are not configured" },
+    { ok: status.binance_connected !== false, reason: "Disabled because the Binance account is not connected" },
+  ];
+  const cancelRequiredSteps = cancelChecks.filter((c) => !c.ok).map((c) => c.reason);
+  const canCancelOrders = cancelRequiredSteps.length === 0;
+
   return {
     canView: !!status.binance_configured,
     canTrade,
     canEditRisk: canTrade,
-    canCancelOrders: canTrade,
+    canCancelOrders,
     canClosePositions: canTrade,
     disabledReason: requiredSteps[0] ?? null,
+    cancelDisabledReason: cancelRequiredSteps[0] ?? null,
     requiredSteps,
   };
 }

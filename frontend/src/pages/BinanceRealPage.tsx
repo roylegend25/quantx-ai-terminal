@@ -337,7 +337,7 @@ export default function BinanceRealPage(props: AppData) {
         title={`Real Open Orders (${orderRows.length})`}
         wide
         right={
-          isLive && orderRows.length > 0 ? (
+          gate.canCancelOrders && orderRows.length > 0 ? (
             <button
               className="mini-btn"
               disabled={busy}
@@ -368,22 +368,26 @@ export default function BinanceRealPage(props: AppData) {
           keyField={(o: any) => o.order_id}
           titleColumn="symbol"
           statusColumn="side"
-          renderActions={(o: any) => (
-            <button
-              className="mini-btn"
-              disabled={busy || !isLive}
-              title={!isLive ? "Locked — unlock real trading first" : ""}
-              onClick={() =>
-                setConfirm({
-                  title: `Cancel real order #${o.order_id}?`,
-                  body: `${o.type} ${o.side} on ${o.symbol} will be canceled on Binance.`,
-                  action: () => run(() => api.binanceCancelOrder(o.symbol, o.order_id), "Order canceled"),
-                })
-              }
-            >
-              Cancel
-            </button>
-          )}
+          renderActions={(o: any) => {
+            const missingId = o.order_id == null;
+            const disabledReason = missingId ? "Cannot cancel: missing order id" : gate.cancelDisabledReason ?? "";
+            return (
+              <button
+                className="mini-btn"
+                disabled={busy || !gate.canCancelOrders || missingId}
+                title={!gate.canCancelOrders || missingId ? disabledReason : ""}
+                onClick={() =>
+                  setConfirm({
+                    title: `Cancel real order #${o.order_id}?`,
+                    body: `${o.type} ${o.side} on ${o.symbol} will be canceled on Binance.`,
+                    action: () => run(() => api.binanceCancelOrder(o.symbol, o.order_id), "Order canceled"),
+                  })
+                }
+              >
+                Cancel
+              </button>
+            );
+          }}
           emptyMessage={orders?.available === false ? orders?.reason || "Unavailable" : "No open Binance orders"}
         />
       </Card>

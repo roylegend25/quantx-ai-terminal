@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Clock, FlaskConical, ShieldCheck, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Clock, FlaskConical, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
 import AutoCardTable from "../Responsive/AutoCardTable";
 import { EXECUTION_ATTEMPT_COLUMNS, ExecutionAttemptDetail } from "../../lib/executionAttemptColumns";
 import { fmtLocalDateTime, fmtPct, fmtUsd } from "../../lib/format";
@@ -132,8 +132,15 @@ export default function ExecutionPipelineCard({
   const executionAttempted = !!pipeline?.execution_attempted;
   const executionOk = pipeline?.execution_ok;
   // The core correction this card exists for: a "signal approved" verdict
-  // must never be shown as if it were a successful execution.
-  const showExecutionFailedBanner = signalApproved && executionAttempted && executionOk === false;
+  // must never be shown as if it were a successful execution. Equally
+  // important (Debug 1.pdf section 3/8): a FAILED attempt only counts as
+  // today's active blocker if it happened during the current signal cycle
+  // - is_historical_attempt (computed backend-side against last_decision_at)
+  // routes anything older into the "Previous Execution Attempt -
+  // Historical" branch below instead, so a rate-limit cooldown that
+  // expired hours ago can never reappear as a fresh "Execution Failed".
+  const showExecutionFailedBanner =
+    signalApproved && executionAttempted && executionOk === false && !pipeline?.is_historical_attempt;
 
   return (
     <div>
@@ -174,6 +181,18 @@ export default function ExecutionPipelineCard({
               )}
             </>
           )}
+        </div>
+      )}
+
+      {/* -------- Debug 1.pdf section 8-9: Binance API status, kept
+          separate from execution status - a cooldown with no fresh
+          attempt this cycle is never shown as "Execution Failed". -------- */}
+      {!loading && pipeline?.binance_rate_limited && !showExecutionFailedBanner && (
+        <div className="regime-focus" style={{ marginBottom: 12 }}>
+          <span className="tile-label">
+            <RefreshCw size={13} style={{ verticalAlign: "-2px" }} /> Binance API cooling down — showing cached data
+            {pipeline.binance_retry_after_seconds != null ? ` (retry in ${Math.ceil(pipeline.binance_retry_after_seconds)}s)` : ""}
+          </span>
         </div>
       )}
 
