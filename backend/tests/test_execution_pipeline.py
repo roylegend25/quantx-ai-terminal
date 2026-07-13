@@ -9,7 +9,12 @@ import asyncio
 import pytest
 
 from app.db.session import SessionLocal
-from app.db.models import BinanceExecutionAttempt, ExchangePositionRow, TradingControl
+from app.db.models import (
+    BinanceExecutionAttempt,
+    BinanceProtectionCapability,
+    ExchangePositionRow,
+    TradingControl,
+)
 from app.trading import modes, real_risk_gate
 from app.trading.execution_pipeline import STAGE_ORDER, classify_binance_error
 from app.trading.execution_router import BinanceExecutionProvider
@@ -28,6 +33,12 @@ def testnet_mode():
         db.query(TradingControl).delete()
         db.query(ExchangePositionRow).delete()
         db.query(BinanceExecutionAttempt).delete()
+        # A prior test FILE (e.g. test_execution_router_binance.py's -4120
+        # migration test) may leave BINANCE_TESTNET permanently pinned to
+        # the Algo provider - this file's MockBinanceClient is classic-only,
+        # so it must start from a clean, undetected capability every time,
+        # not just whatever the previous module happened to leave behind.
+        db.query(BinanceProtectionCapability).delete()
         db.commit()
     finally:
         db.close()

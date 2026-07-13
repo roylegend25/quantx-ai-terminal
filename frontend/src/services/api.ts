@@ -356,6 +356,7 @@ export const api = {
   liveReadiness: () => getJson("/api/trading/live-readiness"),
   binanceRiskStatus: () => getJson("/api/trading/binance/risk-status"),
   binanceDecisionStatus: () => getJson("/api/trading/binance/decision-status"),
+  binanceProtectionStatus: () => getJson("/api/trading/binance/protection-status"),
   binanceExecutionLog: (limit = 50) => getJson(`/api/trading/binance/execution-log?limit=${limit}`),
   binanceExecutionPipeline: (symbol?: string) =>
     getJson(`/api/trading/binance/execution-pipeline${symbol ? `?symbol=${symbol}` : ""}`),

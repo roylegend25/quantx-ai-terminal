@@ -140,14 +140,31 @@ async def _scan_once() -> dict:
                     client=live_client, mode=mode, symbol=pos.symbol, position_side=pos.side,
                     tp=tp, sl=sl, quantity=pos.quantity, hedge_mode=hedge_mode,
                 )
+
+                # Phase 30: verify the repair against Binance's own state -
+                # the same ground-truth check every other protection
+                # mutation runs - rather than trusting result.ok alone, so
+                # the persisted status/revision is never a guess.
+                try:
+                    if result.provider_used == protection_provider.ALGO:
+                        verified = await protection.resolve_protection(
+                            live_client, pos.symbol, tp_algo_id=result.tp.order_id, sl_algo_id=result.sl.order_id,
+                        )
+                    else:
+                        verified = await protection.resolve_protection(live_client, pos.symbol)
+                    verified_status = verified.status
+                except Exception:
+                    verified_status = None
+
+                from app.trading.execution_router import _store_protection_metadata
                 if result.provider_used == protection_provider.ALGO:
-                    from app.trading.execution_router import _store_protection_metadata
                     _store_protection_metadata(mode, pos.symbol, protection_provider.ALGO,
-                                               None, None, result.tp.order_id, result.sl.order_id)
+                                               None, None, result.tp.order_id, result.sl.order_id,
+                                               protection_status=verified_status)
                 else:
-                    from app.trading.execution_router import _store_protection_metadata
                     _store_protection_metadata(mode, pos.symbol, protection_provider.CLASSIC,
-                                               result.tp.order_id, result.sl.order_id, None, None)
+                                               result.tp.order_id, result.sl.order_id, None, None,
+                                               protection_status=verified_status)
 
                 if result.ok:
                     modes.audit("watchdog_auto_protected", symbol=pos.symbol,

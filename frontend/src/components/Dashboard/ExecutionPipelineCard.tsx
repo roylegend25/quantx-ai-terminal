@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, FlaskConical, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Clock, FlaskConical, ShieldCheck, XCircle } from "lucide-react";
 import AutoCardTable from "../Responsive/AutoCardTable";
 import { EXECUTION_ATTEMPT_COLUMNS, ExecutionAttemptDetail } from "../../lib/executionAttemptColumns";
 import { fmtLocalDateTime, fmtPct, fmtUsd } from "../../lib/format";
@@ -177,6 +177,46 @@ export default function ExecutionPipelineCard({
         </div>
       )}
 
+      {/* -------- Phase 30: Current Protection Check --------
+          Computed fresh right now via the same shared resolver the real
+          risk gate uses (protection.resolve_protection /
+          check_all_positions_protected) - NEVER derived from a historical
+          BinanceExecutionAttempt row, so an old protection failure can
+          never masquerade as today's active blocker. */}
+      {!loading && pipeline?.current_protection_check && (
+        <div
+          className={`regime-focus ${
+            pipeline.current_protection_check.passed === true
+              ? "allowed"
+              : pipeline.current_protection_check.passed === false
+                ? "blocked"
+                : ""
+          }`}
+          style={{ marginBottom: 12 }}
+        >
+          <span className="tile-label">
+            <ShieldCheck size={13} style={{ verticalAlign: "-2px" }} /> Current Protection Check
+          </span>
+          <b
+            className={`tile-value ${
+              pipeline.current_protection_check.passed === true
+                ? "green"
+                : pipeline.current_protection_check.passed === false
+                  ? "red"
+                  : ""
+            }`}
+          >
+            {pipeline.current_protection_check.passed === true
+              ? "PASS"
+              : pipeline.current_protection_check.passed === false
+                ? "FAIL"
+                : "UNKNOWN"}
+            {" — "}
+            {pipeline.current_protection_check.detail}
+          </b>
+        </div>
+      )}
+
       {!loading && pipeline && (
         <div className={`regime-focus ${showExecutionFailedBanner ? "blocked" : executionOk ? "allowed" : ""}`}>
           {showExecutionFailedBanner ? (
@@ -190,7 +230,14 @@ export default function ExecutionPipelineCard({
             </>
           ) : executionAttempted ? (
             <>
-              <span className="tile-label">Last Execution ({pipeline.symbol})</span>
+              <span className="tile-label">
+                Previous Execution Attempt ({pipeline.symbol})
+                {pipeline.is_historical_attempt && (
+                  <span className="badge" style={{ marginLeft: 8, fontSize: 10 }}>
+                    <Clock size={10} style={{ verticalAlign: "-1px" }} /> Historical
+                  </span>
+                )}
+              </span>
               <b className={`tile-value ${executionOk ? "green" : "red"}`}>
                 {executionOk ? "Order Accepted" : `Failed — ${pipeline.final_reason || "unknown reason"}`}
               </b>
@@ -202,7 +249,9 @@ export default function ExecutionPipelineCard({
             </>
           )}
           {pipeline.last_attempt_at && (
-            <p className="regime-desc">Last attempt: {fmtLocalDateTime(pipeline.last_attempt_at)}</p>
+            <p className="regime-desc">
+              {executionAttempted ? "Recorded at" : "Last attempt"}: {fmtLocalDateTime(pipeline.last_attempt_at)}
+            </p>
           )}
         </div>
       )}

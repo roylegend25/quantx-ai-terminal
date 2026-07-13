@@ -64,6 +64,13 @@ class _Section:
     def age_seconds(self) -> float | None:
         return round(time.time() - self.fetched_at, 1) if self.fetched_at else None
 
+    def invalidate(self) -> None:
+        """Forces the next fresh_for() check to fail regardless of TTL,
+        without discarding the last-known-good value (still readable via
+        `.value` if a caller wants stale-but-cheap data) - see
+        BinanceSnapshotService.invalidate_after_protection_mutation."""
+        self.fetched_at = 0.0
+
     def meta(self) -> dict:
         return {
             "stale": self.stale,
@@ -199,6 +206,18 @@ class BinanceSnapshotService:
 
     def any_stale(self) -> bool:
         return any(s.stale for s in (self._account, self._balances, self._orders, self._income, self._trades))
+
+    def invalidate_after_protection_mutation(self) -> None:
+        """Phase 30: called immediately after any confirmed protection
+        change (place/edit/repair/cancel a TP or SL) so the very next
+        risk-gate/portfolio/watchdog read sees fresh positions/orders
+        instead of waiting out BINANCE_SNAPSHOT_TTL_SECONDS /
+        BINANCE_ORDERS_TTL_SECONDS. This does NOT make an extra Binance
+        call itself - it only marks the account and open-orders sections
+        expired, so the next caller (whoever that is) does one single-
+        flight-coalesced fresh fetch, exactly like a normal cache miss."""
+        self._account.invalidate()
+        self._orders.invalidate()
 
     def reset(self) -> None:
         """Test-only hook: forget every cached section."""

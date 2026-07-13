@@ -20,6 +20,7 @@ export type BinanceDecisionStatus = {
   risk_gate_allowed?: boolean;
   risk_gate_reason?: string | null;
   blocked_reasons?: string[];
+  protection_check?: { passed: boolean | null; detail: string; checked_positions?: { symbol: string; status: string }[] };
   active_model?: string | null;
   active_strategy?: string | null;
   intended_notional?: number | null;
@@ -120,6 +121,28 @@ export default function BinanceDecisionStatusCard({ data, loading, errored, onRe
         <div className="align-right">
           <span className="tile-label">Active Mode</span>
           <b className="tile-value">{data?.active_mode || "Not available"}</b>
+        </div>
+        <div>
+          <span className="tile-label">Existing Position Protection</span>
+          <b
+            className={`tile-value ${
+              data?.protection_check?.passed === true ? "green" : data?.protection_check?.passed === false ? "red" : ""
+            }`}
+          >
+            {data?.protection_check
+              ? data.protection_check.passed === true
+                ? "Passed"
+                : data.protection_check.passed === false
+                  ? `Failed — ${data.protection_check.detail}`
+                  : "Unknown"
+              : "Not available"}
+          </b>
+        </div>
+        <div className="align-right">
+          <span className="tile-label">Unprotected Positions</span>
+          <b className={`tile-value ${(data?.protection_check?.checked_positions?.length ?? 0) > 0 ? "red" : ""}`}>
+            {data?.protection_check?.checked_positions?.length ?? 0}
+          </b>
         </div>
         <div>
           <span className="tile-label">Model Direction</span>

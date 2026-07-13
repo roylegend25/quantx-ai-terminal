@@ -47,8 +47,27 @@ def make_client():
     return TestClient(app)
 
 
-def go_fully_ready(monkeypatch):
-    use_mock_read_client(monkeypatch)
+class FullyProtectedMockClient(MockReadClient):
+    """MockReadClient's ETHUSDT position has a resting SL but no TP
+    (MISSING_TP - used elsewhere to test that exact status). Phase 30 added
+    a real existing_position_protected check to decision-status, so a
+    "genuinely nothing blocking" scenario needs a position that is actually
+    fully protected, not just any mock position."""
+
+    async def get_open_orders(self, symbol=None):
+        from app.exchanges.binance_models import BinanceOrder
+
+        orders = await super().get_open_orders(symbol)
+        orders.append(BinanceOrder(
+            order_id=43, client_order_id="qxtp-1", symbol="ETHUSDT", side="BUY", position_side="BOTH",
+            type="TAKE_PROFIT_MARKET", status="NEW", price=0.0, stop_price=2900.0, quantity=0.05,
+            executed_qty=0.0, avg_price=0.0, reduce_only=True, close_position=False,
+        ))
+        return orders
+
+
+def go_fully_ready(monkeypatch, client=None):
+    use_mock_read_client(monkeypatch, client=client)
     monkeypatch.setattr(settings, "binance_live_enabled", True)
     monkeypatch.setattr(settings, "binance_max_leverage", 3)
     monkeypatch.setattr(settings, "binance_max_notional_per_trade", 10)
@@ -195,7 +214,7 @@ def test_decision_status_blocked_when_active_mode_is_paper(monkeypatch):
 
 def test_decision_status_allowed_when_fully_ready(monkeypatch):
     from app.risk import settings_repository as risk_settings_repo
-    go_fully_ready(monkeypatch)
+    go_fully_ready(monkeypatch, client=FullyProtectedMockClient())
     # MockReadClient reports 1 open position - raise the cap so it isn't
     # itself a blocker for this "everything ready" case.
     real_get_settings = risk_settings_repo.get_settings

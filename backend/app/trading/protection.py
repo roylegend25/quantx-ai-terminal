@@ -29,13 +29,30 @@ def _algo_ttl() -> float:
 
 
 async def _get_active_algo_cached(algo, algo_id: int | None):
+    """Phase 30: a failed lookup (rate limit, network blip, cooldown) is
+    NOT the same fact as "Binance confirms this order is gone" - only
+    BinanceAlgoProvider.get() returning None (a genuine -2013 "does not
+    exist") means that. Root cause of a real production flap this fixes:
+    a transient 429 on this exact call used to be swallowed by
+    resolve_protection's caller as "order not active", instantly turning a
+    position that was PROTECTED moments earlier into MISSING_TP_SL with no
+    actual change on Binance. Serving the last successfully confirmed
+    answer instead - stale, but never a false negative - is what section 6
+    ("never downgrade to missing merely because a refresh failed") means
+    applied at the individual algo-order level, not just the account
+    snapshot level."""
     if not algo_id:
         return None
     cached = _algo_lookup_cache.get(algo_id)
     now = time.time()
     if cached and now - cached[0] < _algo_ttl():
         return cached[1]
-    order = await algo.get_active(algo_id)
+    try:
+        order = await algo.get_active(algo_id)
+    except Exception:
+        if cached:
+            return cached[1]  # last confirmed answer - stale, not a false "gone"
+        return None  # never successfully resolved this id - genuinely unknown
     _algo_lookup_cache[algo_id] = (now, order)
     return order
 
@@ -142,11 +159,50 @@ async def resolve_protection(
 
         algo = BinanceAlgoProvider(client)
         for algo_id in filter(None, [tp_algo_id, sl_algo_id]):
-            try:
-                order = await _get_active_algo_cached(algo, algo_id)
-            except Exception:
-                order = None
+            order = await _get_active_algo_cached(algo, algo_id)  # never raises - see its docstring
             if order:
                 algo_orders.append(order)
 
     return derive_protection(symbol, open_orders + algo_orders, local_sl=local_sl, local_tp=local_tp)
+
+
+async def check_all_positions_protected(
+    client, *, get_tracked_algo_ids=lambda symbol: (None, None),
+) -> tuple[bool, list[dict]]:
+    """Ground-truth answer to "is every real open position protected right
+    now" - the ONE shared implementation behind both the real risk gate's
+    existing_position_protected check (app.trading.real_risk_gate) and any
+    preview/diagnostic view of the same rule (Bot Decision Status,
+    Execution Pipeline's current-protection-check). These must never
+    compute this independently, or they can silently disagree - which is
+    exactly the Phase 30 bug this function fixes: the risk gate used to
+    call derive_protection() directly (classic orders only), so an
+    Algo-protected position looked unprotected there even though every
+    other consumer of protection status already used resolve_protection()
+    and correctly reported PROTECTED.
+
+    `get_tracked_algo_ids(symbol)` supplies each position's tracked Algo
+    TP/SL ids - this module never touches the database itself, callers
+    inject that lookup (see app.trading.execution_router._tracked_algo_id
+    for the canonical implementation).
+
+    Reads positions/open orders through the shared snapshot cache (Phase
+    29/30) rather than calling the client directly - this function is now
+    called by every poll of the Bot Decision Status / Execution Pipeline
+    previews in addition to the real risk gate, so an uncached direct call
+    here would reintroduce exactly the duplicate-Binance-traffic problem
+    those phases fixed (confirmed live: this was the actual proximate
+    cause of a real 429 during verification of this very fix)."""
+    from app.exchanges.binance_snapshot_service import snapshot_service
+
+    _, live_positions, _ = await snapshot_service.get_account_bundle(client)
+    live_orders = await snapshot_service.get_open_orders(client)
+    unprotected: list[dict] = []
+    for pos in live_positions:
+        tp_algo_id, sl_algo_id = get_tracked_algo_ids(pos.symbol)
+        result = await resolve_protection(
+            client, pos.symbol, open_orders=live_orders, tp_algo_id=tp_algo_id, sl_algo_id=sl_algo_id,
+        )
+        if is_unprotected(result.status):
+            unprotected.append({"symbol": pos.symbol, "status": result.status})
+    return not unprotected, unprotected

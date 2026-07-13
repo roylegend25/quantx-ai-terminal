@@ -13,6 +13,8 @@ import time
 from dataclasses import dataclass, field
 
 from app.core.config import settings
+from app.db.models import ExchangePositionRow
+from app.db.session import SessionLocal
 from app.risk import settings_repository
 from app.trading import modes, protection
 
@@ -44,6 +46,18 @@ def _is_duplicate(signature: str) -> bool:
 def reset_duplicate_guard() -> None:
     """Test hook + kill-switch recovery: forget recent signatures."""
     _recent_signatures.clear()
+
+
+def _tracked_algo_ids(mode: str, symbol: str) -> tuple[int | None, int | None]:
+    """Same lookup app.trading.execution_router._tracked_algo_id does - not
+    imported directly to avoid a circular import (execution_router already
+    imports this module)."""
+    db = SessionLocal()
+    try:
+        row = db.query(ExchangePositionRow).filter_by(mode=mode, symbol=symbol).first()
+        return (row.tp_algo_id, row.sl_algo_id) if row else (None, None)
+    finally:
+        db.close()
 
 
 async def evaluate_real_order(
@@ -168,19 +182,32 @@ async def evaluate_real_order(
     passed("duplicate")
 
     # ---- existing unprotected positions block new entries (Phase 27) ----
+    #
+    # Root cause fixed here (Phase 30): this check used to call
+    # protection.derive_protection() directly, which only scans classic
+    # reduce-only STOP_MARKET/TAKE_PROFIT_MARKET orders from
+    # get_open_orders() - Binance never returns Algo Order API orders from
+    # that endpoint (see app.exchanges.binance_algo_provider), so any
+    # position actually protected via the Algo provider (Phase 26) looked
+    # unprotected here even though app.api.portfolio, the protection
+    # watchdog and execution_router's own post-fill verification all
+    # already used the Algo-aware protection.resolve_protection() and
+    # correctly reported PROTECTED. This was the ONE call site never
+    # updated when the Algo provider was introduced - every other consumer
+    # of protection status already merges tracked Algo ids in.
     if settings.binance_block_new_trades_if_unprotected:
         try:
-            live_positions = await client.get_positions()
-            live_orders = await client.get_open_orders()
+            all_protected, unprotected = await protection.check_all_positions_protected(
+                client, get_tracked_algo_ids=lambda s: _tracked_algo_ids(mode, s),
+            )
         except Exception as e:
             return blocked("existing_position_protected", f"Could not verify existing position protection: {type(e).__name__}")
-        for pos in live_positions:
-            result = protection.derive_protection(pos.symbol, live_orders)
-            if protection.is_unprotected(result.status):
-                return blocked(
-                    "existing_position_protected",
-                    f"Existing live position is unprotected ({pos.symbol} {result.status})",
-                )
+        if not all_protected:
+            worst = unprotected[0]
+            return blocked(
+                "existing_position_protected",
+                f"Existing live position is unprotected ({worst['symbol']} {worst['status']})",
+            )
     passed("existing_position_protected")
 
     # ---- exchange-touching checks last ----

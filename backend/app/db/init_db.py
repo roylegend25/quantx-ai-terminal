@@ -154,6 +154,24 @@ def _migrate_protection_provider_columns():
                     conn.execute(text(f"ALTER TABLE binance_bot_trades ADD COLUMN {name} {sql_type}"))
 
 
+def _migrate_protection_revision_columns():
+    """Confirmed-protection revision/status columns (Phase 30), added after
+    exchange_positions already existed on disk - see ExchangePositionRow."""
+    inspector = inspect(engine)
+    if "exchange_positions" not in inspector.get_table_names():
+        return
+    existing = {col["name"] for col in inspector.get_columns("exchange_positions")}
+    new_columns = {
+        "protection_status": "VARCHAR",
+        "protection_revision": "INTEGER DEFAULT 0",
+        "protection_verified_at": "DATETIME",
+    }
+    with engine.begin() as conn:
+        for name, sql_type in new_columns.items():
+            if name not in existing:
+                conn.execute(text(f"ALTER TABLE exchange_positions ADD COLUMN {name} {sql_type}"))
+
+
 def _migrate_risk_settings_columns():
     """Live Margin Calculator's advisory safety-reserve columns, added
     after risk_settings already existed on disk."""
@@ -175,6 +193,7 @@ def init_db():
     _migrate_ml_lab_columns()
     _migrate_binance_bot_trade_columns()
     _migrate_protection_provider_columns()
+    _migrate_protection_revision_columns()
     _migrate_risk_settings_columns()
 
     db: Session = SessionLocal()

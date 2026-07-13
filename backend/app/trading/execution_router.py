@@ -394,7 +394,8 @@ class BinanceExecutionProvider:
 
             await self.sync_positions()
             if not closed_due_to_protection_failure:
-                _store_protection_metadata(self.mode, symbol, provider_used, tp_order_id, sl_order_id, tp_algo_id, sl_algo_id)
+                _store_protection_metadata(self.mode, symbol, provider_used, tp_order_id, sl_order_id, tp_algo_id, sl_algo_id,
+                                           protection_status=protection_status)
 
             if protection_status != protection.PROTECTED:
                 reason = f"Entry filled but protection failed ({protection_status}): {protection_failed_reason}"
@@ -615,8 +616,27 @@ class BinanceExecutionProvider:
 
             modes.audit("tp_sl_updated", symbol=symbol,
                         detail={"kind": kind, "price": price, "order_id": new_order_id, "provider": provider_used})
-            _store_protective_order_id(self.mode, symbol, kind, new_order_id, provider=provider_used or "classic")
-            return self._result(True, f"update_{kind}", order_id=new_order_id, price=price, protection_provider=provider_used)
+
+            # Phase 30: verify the COMBINED status (both legs) fresh against
+            # Binance right after replacing this one leg - the same
+            # ground-truth check every other protection mutation runs -
+            # before persisting, so a stale/wrong status can never be
+            # written just because this leg's placement alone looked fine.
+            try:
+                replaced_algo_id = new_order_id if provider_used == "algo" else None
+                tp_algo_id_for_check = replaced_algo_id if leg == "tp" else _tracked_algo_id(self.mode, symbol, "tp")
+                sl_algo_id_for_check = replaced_algo_id if leg == "sl" else _tracked_algo_id(self.mode, symbol, "sl")
+                verified = await protection.resolve_protection(
+                    self.client, symbol, tp_algo_id=tp_algo_id_for_check, sl_algo_id=sl_algo_id_for_check,
+                )
+                verified_status = verified.status
+            except Exception:
+                verified_status = None
+
+            _store_protective_order_id(self.mode, symbol, kind, new_order_id, provider=provider_used or "classic",
+                                       protection_status=verified_status)
+            return self._result(True, f"update_{kind}", order_id=new_order_id, price=price, protection_provider=provider_used,
+                                protection_status=verified_status)
         except Exception as e:
             return self._result(False, f"update_{kind}", reason=_safe_error(e))
 
@@ -757,10 +777,34 @@ def _tracked_algo_id(mode: str, symbol: str, leg: str) -> int | None:
         db.close()
 
 
-def _store_protective_order_id(mode: str, symbol: str, kind: str, order_id: int | None, provider: str = "classic") -> None:
+def _bump_protection_revision(row: ExchangePositionRow, status: str | None) -> None:
+    """Phase 30: called on EVERY confirmed protection write (fresh entry,
+    edit, watchdog repair) - never on a mere read. Increments
+    protection_revision so a stale cached read (or an in-flight resolver
+    call started before this write landed) can be recognized as older than
+    the just-confirmed state instead of silently winning a race. Also
+    invalidates the shared Binance snapshot cache and the algo lookup
+    cache immediately, so the very next risk-gate/portfolio/watchdog read
+    - not just the next one after a TTL expires - sees this result."""
+    if status is not None:
+        row.protection_status = status
+        row.protection_verified_at = datetime.now(timezone.utc)
+    row.protection_revision = (row.protection_revision or 0) + 1
+
+    from app.exchanges.binance_snapshot_service import snapshot_service
+    from app.trading import protection
+    snapshot_service.invalidate_after_protection_mutation()
+    protection.reset_algo_lookup_cache()
+
+
+def _store_protective_order_id(mode: str, symbol: str, kind: str, order_id: int | None, provider: str = "classic",
+                               protection_status: str | None = None) -> None:
     """Single-leg update (used by _replace_protective_order): sets one
     classic or algo id, clearing the other surface's id for that leg so a
-    stale id from a prior provider can never be read back as live."""
+    stale id from a prior provider can never be read back as live.
+    `protection_status` (Phase 30) is the freshly resolve_protection()-
+    verified combined status covering BOTH legs, computed by the caller
+    right after this leg was replaced - never guessed from this leg alone."""
     db = SessionLocal()
     try:
         row = (
@@ -778,17 +822,23 @@ def _store_protective_order_id(mode: str, symbol: str, kind: str, order_id: int 
                 row.tp_algo_id = order_id if (order_id and is_algo) else None
             row.protection_provider = provider
             row.updated_at = datetime.now(timezone.utc)
+            _bump_protection_revision(row, protection_status)
             db.commit()
     finally:
         db.close()
 
 
 def _store_protection_metadata(mode: str, symbol: str, provider: str, tp_order_id: int | None,
-                               sl_order_id: int | None, tp_algo_id: int | None, sl_algo_id: int | None) -> None:
-    """Full upsert after a fresh entry's protection placement - creates the
-    row if sync_positions hasn't run yet, rather than silently no-op'ing
-    (unlike _store_protective_order_id, which only ever edits an existing
-    replace-flow row)."""
+                               sl_order_id: int | None, tp_algo_id: int | None, sl_algo_id: int | None,
+                               protection_status: str | None = None) -> None:
+    """Full upsert after a fresh entry's protection placement (or a
+    watchdog repair, or the manual /protect endpoint) - creates the row if
+    sync_positions hasn't run yet, rather than silently no-op'ing (unlike
+    _store_protective_order_id, which only ever edits an existing
+    replace-flow row). `protection_status` (Phase 30) is the caller's
+    already-verified resolve_protection() result - this is the ONE place
+    every protection-mutation code path funnels through, so bumping
+    protection_revision and invalidating caches here covers all of them."""
     db = SessionLocal()
     try:
         row = (
@@ -804,6 +854,7 @@ def _store_protection_metadata(mode: str, symbol: str, provider: str, tp_order_i
         row.sl_algo_id = sl_algo_id
         row.tp_algo_id = tp_algo_id
         row.updated_at = datetime.now(timezone.utc)
+        _bump_protection_revision(row, protection_status)
         db.commit()
     finally:
         db.close()

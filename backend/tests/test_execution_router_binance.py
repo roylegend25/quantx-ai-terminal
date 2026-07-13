@@ -45,6 +45,13 @@ class MockBinanceClient:
     async def ping(self):
         return True
 
+    async def get_account_info(self):
+        from app.exchanges.binance_models import BinanceAccountSummary
+        return BinanceAccountSummary(
+            total_wallet_balance=1000.0, available_balance=1000.0, total_margin_balance=1000.0,
+            total_unrealized_pnl=0.0, total_initial_margin=0.0, total_maintenance_margin=0.0,
+        )
+
     async def get_daily_realized_pnl(self):
         return 0.0
 

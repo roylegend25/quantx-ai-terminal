@@ -783,6 +783,17 @@ class ExchangePositionRow(Base):
     tp_algo_id = Column(BigInteger, nullable=True)
     sl_algo_id = Column(BigInteger, nullable=True)
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    # Phase 30: the last CONFIRMED protection verdict for this position,
+    # persisted so it survives a restart/reload instead of only existing as
+    # a return value of the last resolve_protection() call. protection_
+    # revision increments on every confirmed mutation (place/edit/repair) -
+    # see app.trading.execution_router._store_protection_metadata /
+    # _store_protective_order_id - so a cache or in-flight read started
+    # before a mutation can never overwrite a newer confirmed result with a
+    # stale one (compare revisions, higher always wins).
+    protection_status = Column(String, nullable=True)
+    protection_revision = Column(Integer, nullable=True, default=0)
+    protection_verified_at = Column(DateTime, nullable=True)
 
 
 class BinanceBotTrade(Base):

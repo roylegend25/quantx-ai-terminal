@@ -585,6 +585,40 @@ async def binance_decision_status(symbol: str | None = None, db: Session = Depen
         except Exception:
             account_connected = False
 
+    # Phase 30, sections 7-8: the SAME shared check the real risk gate
+    # enforces (protection.check_all_positions_protected), computed fresh
+    # right now - never derived from a historical BinanceExecutionAttempt
+    # row. This is what makes "Current Protection Check" in the UI
+    # trustworthy as CURRENT, distinct from whatever an old execution
+    # attempt happened to record at the time it ran.
+    protection_check = {"passed": True, "detail": "No live positions to protect", "checked_positions": []}
+    if account_connected and modes.binance_configured() and settings.binance_block_new_trades_if_unprotected:
+        try:
+            from app.api.portfolio import get_read_client
+            from app.trading.execution_router import _tracked_algo_id
+
+            client = get_read_client()
+            all_protected, unprotected = await protection.check_all_positions_protected(
+                client, get_tracked_algo_ids=lambda s: (
+                    _tracked_algo_id(mode, s, "tp"), _tracked_algo_id(mode, s, "sl"),
+                ),
+            )
+            if all_protected:
+                protection_check = {"passed": True, "detail": "All live positions protected", "checked_positions": []}
+            else:
+                worst = unprotected[0]
+                protection_check = {
+                    "passed": False,
+                    "detail": f"{worst['symbol']} is unprotected ({worst['status']})",
+                    "checked_positions": unprotected,
+                }
+        except Exception:
+            # A transient read failure here must never be shown as a
+            # confident "unprotected" verdict - it's genuinely unknown.
+            # The REAL gate (real_risk_gate.evaluate_real_order) still
+            # fails closed on the same error; this is a preview only.
+            protection_check = {"passed": None, "detail": "Could not verify protection status", "checked_positions": []}
+
     reasons = _binance_readiness_reasons(safe, account_connected)
     if symbol not in settings.binance_allowed_symbols:
         reasons.append(f"{symbol} is not in the allowed symbol list")
@@ -599,6 +633,8 @@ async def binance_decision_status(symbol: str | None = None, db: Session = Depen
             reasons.append("Max open positions reached")
         if (summary.get("available_balance") or 0) <= 0:
             reasons.append("Balance insufficient")
+    if protection_check["passed"] is False:
+        reasons.append(f"Existing live position is unprotected ({protection_check['detail']})")
 
     risk_gate_allowed = not reasons
     final_direction = "BLOCKED" if reasons else pred["direction"]
@@ -627,6 +663,11 @@ async def binance_decision_status(symbol: str | None = None, db: Session = Depen
         "risk_gate_allowed": risk_gate_allowed,
         "risk_gate_reason": reasons[0] if reasons else "All live-trading risk checks passed",
         "blocked_reasons": reasons,
+        # Phase 30: the CURRENT protection verdict, computed fresh via the
+        # same shared resolver the real risk gate uses - never a historical
+        # BinanceExecutionAttempt row. See sections 7-8: an old failed
+        # attempt's reason must never be mistaken for today's blocker.
+        "protection_check": protection_check,
         "active_model": active_model.get("model_type") or active_model.get("name"),
         "active_strategy": decision_engine.get("strategy_used"),
         "intended_notional": settings.binance_max_notional_per_trade,
@@ -748,6 +789,13 @@ async def binance_execution_pipeline(symbol: str | None = None, db: Session = De
         "final_reason": final_reason,
         "stages": stages,
         "last_attempt_at": last_attempt_at,
+        # Phase 30, sections 7-8: computed fresh (see binance_decision_status
+        # above) - never derived from `attempt`, which is historical and may
+        # be arbitrarily old. The frontend must show this separately from
+        # final_reason/stages so an old protection failure never reads as
+        # today's active blocker.
+        "current_protection_check": decision.get("protection_check"),
+        "is_historical_attempt": execution_attempted,
         "order_id": attempt.order_id if attempt else None,
         "requested_notional": attempt.requested_notional if attempt else None,
         "requested_quantity": attempt.requested_quantity if attempt else None,
@@ -968,8 +1016,15 @@ async def binance_protect_position(symbol: str, body: ProtectPositionRequest, db
 
     await execution_router.sync_positions()
     from app.trading.execution_router import _store_protection_metadata
-    _store_protection_metadata(mode_name, symbol, result.provider_used, tp_order_id, sl_order_id, tp_algo_id, sl_algo_id)
+    verified_at = datetime.now(timezone.utc).isoformat()
+    _store_protection_metadata(mode_name, symbol, result.provider_used, tp_order_id, sl_order_id, tp_algo_id, sl_algo_id,
+                               protection_status=verified.status)
 
+    # Phase 30, section 5: the mutation response carries the freshly
+    # verified protection state directly so the frontend can update
+    # immediately instead of waiting for the next poll - _store_
+    # protection_metadata above already invalidated the shared snapshot/
+    # algo caches, so the one background refresh that follows will agree.
     return {
         "symbol": symbol,
         "side": pos.side,
@@ -979,8 +1034,90 @@ async def binance_protect_position(symbol: str, body: ProtectPositionRequest, db
         "errors": errors,
         "protection_provider": result.provider_used,
         "provider_result": result.to_dict(),
+        "position": {
+            "symbol": symbol, "side": pos.side, "entry_price": pos.entry_price,
+            "mark_price": pos.mark_price, "quantity": pos.quantity,
+        },
+        "protection": {
+            "status": verified.status,
+            "provider": result.provider_used,
+            "take_profit": verified.tp_price,
+            "stop_loss": verified.sl_price,
+            "verified": verified.status == protection.PROTECTED,
+            "verified_at": verified_at,
+        },
+        "snapshot_invalidated": True,
         **verified.to_dict(),
     }
+
+
+# ==================================================== protection diagnostics
+#
+# Phase 30: one safe, read-only view of exactly what every consumer of
+# protection status (Risk Gate, watchdog, portfolio positions, Binance Real
+# page) actually sees right now - built from the SAME shared resolver
+# (protection.resolve_protection) and the SAME shared Binance snapshot cache
+# every one of those already reads through, so this can never disagree with
+# them. Added to investigate/confirm a real live position's protection
+# status is being reported consistently everywhere.
+
+@router.get("/binance/protection-status")
+async def binance_protection_status(db: Session = Depends(get_db)):
+    """For every real open position: the resolved protection verdict (Phase
+    26 Algo-aware, Phase 30 revision-tracked), where that verdict came from,
+    and how stale the underlying Binance read is. Never exposes keys,
+    secrets or raw signed requests - every field here is already safe by
+    construction from the modules it's assembled from."""
+    from app.api.portfolio import get_account_snapshot, get_read_client
+    from app.db.models import ExchangePositionRow
+    from app.exchanges.binance_snapshot_service import snapshot_service
+
+    if not modes.binance_configured():
+        return {"positions": []}
+
+    client = get_read_client()
+    try:
+        _, positions, _ = await get_account_snapshot(client)
+        open_orders = await snapshot_service.get_open_orders(client)
+    except Exception as e:
+        return {"positions": [], "error": _safe_error(e)}
+
+    meta = snapshot_service.section_meta()
+    stale = bool(meta["account"]["stale"] or meta["orders"]["stale"])
+    age = max(filter(None, [meta["account"]["age_seconds"], meta["orders"]["age_seconds"]]), default=None)
+
+    mode = modes.effective_mode(db)
+    rows = {
+        row.symbol: row
+        for row in db.query(ExchangePositionRow).filter(ExchangePositionRow.mode == mode).all()
+    }
+
+    result = []
+    for pos in positions:
+        row = rows.get(pos.symbol)
+        verified = await protection.resolve_protection(
+            client, pos.symbol, open_orders=open_orders,
+            tp_algo_id=row.tp_algo_id if row else None, sl_algo_id=row.sl_algo_id if row else None,
+        )
+        source = (
+            "tracked_algo_and_verified_lookup" if (row and (row.tp_algo_id or row.sl_algo_id))
+            else "classic_open_orders_scan"
+        )
+        result.append({
+            "symbol": pos.symbol,
+            "status": verified.status,
+            "provider": (row.protection_provider if row else None) or "classic",
+            "has_tp": verified.tp_price is not None,
+            "has_sl": verified.sl_price is not None,
+            "tp": verified.tp_price,
+            "sl": verified.sl_price,
+            "source": source,
+            "snapshot_age_seconds": age,
+            "stale": stale,
+            "protection_revision": row.protection_revision if row else None,
+            "verified_at": row.protection_verified_at.isoformat() if row and row.protection_verified_at else None,
+        })
+    return {"positions": result}
 
 
 # ================================================== Live Margin Calculator

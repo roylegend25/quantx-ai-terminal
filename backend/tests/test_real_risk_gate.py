@@ -29,6 +29,14 @@ class FakeClient:
             raise ConnectionError("down")
         return True
 
+    async def get_account_info(self):
+        from app.exchanges.binance_models import BinanceAccountSummary
+        return BinanceAccountSummary(
+            total_wallet_balance=self.available_usdt, available_balance=self.available_usdt,
+            total_margin_balance=self.available_usdt, total_unrealized_pnl=0.0,
+            total_initial_margin=0.0, total_maintenance_margin=0.0,
+        )
+
     async def get_daily_realized_pnl(self):
         return self.daily_pnl
 
