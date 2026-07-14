@@ -53,9 +53,61 @@ def test_snapshot_shape_and_no_secrets(monkeypatch):
     assert FAKE_SECRET not in r.text
     body = r.json()
     for key in ("updated_at", "stale", "rate_limited", "retry_after_seconds", "account",
-                "balances", "positions", "orders", "income", "protection", "readiness", "errors"):
+                "balances", "positions", "orders", "income", "protection", "readiness", "errors",
+                "positions_available"):
         assert key in body
     assert body["positions"][0]["symbol"] == "ETHUSDT"
+    assert body["positions_available"] is True
+
+
+# ------------------------------- Debug 3.pdf: Dashboard real-position shape
+
+def test_snapshot_positions_are_self_describing(monkeypatch):
+    """Every position in the shared snapshot must carry its own source/
+    stale/updated_at - the Dashboard's Open Positions card reads these
+    directly off each position instead of re-deriving them, and must never
+    mistake a Binance real position for a paper one."""
+    use_mock_read_client(monkeypatch)
+    client = make_client()
+
+    body = client.get("/api/binance/snapshot").json()
+    pos = body["positions"][0]
+    assert pos["source"] == "binance_real"
+    assert pos["stale"] is False
+    assert pos["updated_at"] == body["updated_at"]
+    # the full rich position shape (protection, TP/SL, liquidation, ...) is
+    # still present, unchanged by adding the new fields
+    assert pos["protection_status"] in ("PROTECTED", "MISSING_TP", "MISSING_SL", "MISSING_TP_SL")
+    assert "liquidation_price" in pos
+    assert "margin_used" in pos
+
+
+def test_snapshot_positions_marked_stale_during_rate_limit(monkeypatch):
+    calls = {"n": 0}
+
+    class FlakyClient(MockReadClient):
+        async def get_account_info(self):
+            calls["n"] += 1
+            if calls["n"] > 1:
+                raise BinanceRateLimitError("Too many requests", status=429)
+            return await super().get_account_info()
+
+    use_mock_read_client(monkeypatch, client=FlakyClient())
+    client = make_client()
+
+    client.get("/api/binance/snapshot")  # warm the cache
+    refreshed = client.post("/api/binance/snapshot/refresh").json()
+
+    assert refreshed["positions"][0]["stale"] is True
+    assert refreshed["positions"][0]["source"] == "binance_real"
+
+
+def test_snapshot_positions_available_false_when_not_configured():
+    client = make_client()  # no keys configured (autouse fixture doesn't set any)
+
+    body = client.get("/api/binance/snapshot").json()
+    assert body["positions_available"] is False
+    assert body["positions"] == []
 
 
 def test_snapshot_reflects_unprotected_positions(monkeypatch):

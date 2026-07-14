@@ -1,6 +1,7 @@
 import { authFetch } from "./auth";
+import { API_BASE_URL } from "./baseUrl";
 
-const API = "";
+const API = API_BASE_URL;
 
 async function getJson<T = any>(url: string): Promise<T> {
   const res = await authFetch(`${API}${url}`);

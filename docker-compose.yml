@@ -5,7 +5,7 @@ services:
     container_name: quantx-backend
     restart: unless-stopped
     ports:
-      - "9000:8000"
+      - "127.0.0.1:9000:8000"
     env_file:
       - .env
     volumes:

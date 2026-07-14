@@ -5,6 +5,21 @@ from pydantic import Field, field_validator
 class Settings(BaseSettings):
     app_name: str = "QuantX AI Terminal"
     app_env: str = "production"
+    public_app_url: str = "https://www.quantxterminal.com"
+    cors_allowed_origins: Annotated[list[str], NoDecode] = Field(
+        default=[
+            "https://www.quantxterminal.com",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ]
+    )
+
+    @field_validator("cors_allowed_origins", mode="before")
+    @classmethod
+    def _split_cors_origins(cls, v):
+        if isinstance(v, str):
+            return [origin.strip().rstrip("/") for origin in v.split(",") if origin.strip()]
+        return v
 
     trading_mode: str = "paper"
     # Symbols the scheduler evaluates every cycle. Also settable as

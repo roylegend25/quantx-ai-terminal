@@ -73,15 +73,33 @@ async def _build_snapshot(db: Session, force_refresh: bool) -> dict:
 
     rate_status = limiter.status()
     stale = bool(summary.get("stale") or positions.get("stale") or orders.get("stale") or rate_status["rate_limited"])
+    generated_at = datetime.now(timezone.utc).isoformat()
+
+    # Debug 3.pdf section 12: each position is self-describing (source/
+    # stale/updated_at) so a consumer - the new Dashboard Open Positions
+    # card in particular - never has to guess whose data this is or how
+    # fresh it is from the array alone. Never a new Binance call: reuses
+    # the exact stale/timestamp facts already computed above for the
+    # whole snapshot.
+    real_positions = [
+        {**p, "source": "binance_real", "stale": stale, "updated_at": generated_at}
+        for p in positions.get("positions", [])
+    ]
 
     return {
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": generated_at,
         "stale": stale,
         "rate_limited": rate_status["rate_limited"],
         "retry_after_seconds": rate_status["retry_after_seconds"],
         "account": summary if summary.get("available") else None,
+        # True once Binance has ever confirmed the real open-positions list
+        # (even if stale/cached) - False only when it's genuinely never
+        # been read (not configured, or every read has failed). Lets the
+        # UI say "no real positions confirmed by Binance" only when that's
+        # actually true, instead of whenever the list is merely empty.
+        "positions_available": positions.get("available", False),
         "balances": balances.get("balances", []),
-        "positions": positions.get("positions", []),
+        "positions": real_positions,
         "orders": orders.get("orders", []),
         "income": income.get("income", []),
         "protection": {

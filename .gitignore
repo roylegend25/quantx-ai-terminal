@@ -7,3 +7,6 @@ __pycache__/
 backend/data/env-backups/
 backend/data/models/
 backend/data/ml_lab/
+
+# Local rollback snapshots may contain secrets
+backups/

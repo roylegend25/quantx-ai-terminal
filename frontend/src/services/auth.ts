@@ -1,4 +1,5 @@
-const API = "";
+import { API_BASE_URL as API } from "./baseUrl";
+
 const TOKEN_KEY = "quantx_token";
 
 export function getToken(): string | null {

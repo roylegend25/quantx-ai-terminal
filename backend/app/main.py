@@ -44,6 +44,7 @@ from app.core.env_manager import apply_to_settings as apply_env_file_to_settings
 from app.data_sources.scheduler import start_data_scheduler
 from app.trading.binance_sync import start_binance_sync
 from app.trading.protection_watchdog import start_protection_watchdog
+from app.core.config import settings
 
 app = FastAPI(title="QuantX AI Terminal API", version="2.0.0")
 
@@ -69,7 +70,7 @@ async def startup_event():
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
