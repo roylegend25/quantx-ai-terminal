@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { login, setDesignSystem } from "./fixtures/auth";
 
-const viewports=[[390,844],[430,932],[768,1024],[834,1194],[1024,1366],[1440,900],[1920,1080]] as const;
+const viewports=[[375,667],[390,844],[430,932],[768,1024],[834,1194],[1024,1366],[1194,834],[1280,800],[1440,900],[1920,1080]] as const;
 for(const [width,height] of viewports){
   test(`informational forecast is visible at ${width}x${height}`,async({page},testInfo)=>{
     test.use;
