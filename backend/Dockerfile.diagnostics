@@ -1,4 +1,4 @@
-FROM quantx-backend:active-drive-v2-bb4e24f
+FROM quantx-backend:active-drive-v2-7a210e3
 ARG APP_GIT_SHA=bb4e24f
 ARG APP_IMAGE_TAG=active-drive-v2-bb4e24f
 LABEL org.opencontainers.image.revision=$APP_GIT_SHA \
