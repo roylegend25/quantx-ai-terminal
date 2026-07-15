@@ -4,8 +4,8 @@ from datetime import timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 import httpx
-from app.data_sources.downloader import load_candles as load_cached_candles
-from app.data_sources.validator import MIN_USABLE_QUALITY
+from app.data_sources.downloader import load_candles as load_cached_candles, store_candles
+from app.data_sources.validator import MIN_USABLE_QUALITY, validate_candles
 from app.db.models import DataQualityReport, PredictionFeature
 from app.db.session import SessionLocal
 from app.core.deps import get_current_user
@@ -501,10 +501,11 @@ async def _fetch_candles_with_fallback(symbol: str, interval: str, limit: int) -
     staleness check and the data-quality gate decide whether they are still
     tradable, so a provider outage can never fabricate a fresh signal."""
     try:
+        fetch_limit = min(1500, max(limit, 1000))
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.get(
                 f"{BINANCE_FAPI}/fapi/v1/klines",
-                params={"symbol": symbol, "interval": interval, "limit": limit},
+                params={"symbol": symbol, "interval": interval, "limit": fetch_limit},
             )
             r.raise_for_status()
         candles = [
@@ -518,7 +519,17 @@ async def _fetch_candles_with_fallback(symbol: str, interval: str, limit: int) -
             }
             for k in r.json()
         ]
-        return candles, {"source": "binance_live", "provider_ok": True, "provider_error": None}
+        # Persist the same real, validated live candles used for inference so
+        # the fixed-horizon resolver can observe outcomes later. This is
+        # append-only by (symbol, timeframe, timestamp, provider).
+        clean, report = validate_candles(candles, SUPPORTED_INTERVALS_MS[interval])
+        if clean and report.get("usable"):
+            candle_db = SessionLocal()
+            try:
+                store_candles(candle_db, symbol, interval, "binance_futures", clean, report["quality_score"])
+            finally:
+                candle_db.close()
+        return candles[-limit:], {"source": "binance_live", "provider_ok": True, "provider_error": None}
     except (httpx.HTTPError, ValueError) as exc:
         cached = load_cached_candles(symbol, interval, limit=limit)
         return (

@@ -51,6 +51,7 @@ async function patchJson<T = any>(url: string, body: Record<string, unknown>): P
 
 export const api = {
   dashboard: () => getJson("/api/dashboard"),
+  sourceHealth: (symbol: string, timeframe: string) => getJson(`/api/analysis/source-health?symbol=${symbol}&timeframe=${timeframe}`),
   prediction: (symbol: string, interval: string, signal?: AbortSignal) =>
     getJson(`/api/prediction/${symbol}?timeframe=${interval}`, { signal }),
   predictionHistory: (symbol: string, timeframe?: string, limit = 500) => {
