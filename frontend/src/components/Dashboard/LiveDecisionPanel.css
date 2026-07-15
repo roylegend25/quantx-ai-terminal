@@ -1,0 +1,6 @@
+.source-family-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:0 0 14px}
+.source-family-strip>span{display:grid;grid-template-columns:1fr 1fr;gap:4px 8px;padding:10px;border:1px solid var(--border);border-radius:11px;background:var(--panel-2)}
+.source-family-strip b{text-transform:capitalize}
+.source-family-strip i{font-style:normal;font-size:11px}
+.source-family-strip small{grid-column:1/-1;color:var(--muted)}
+@media(max-width:767px){.source-family-strip{grid-template-columns:1fr}}

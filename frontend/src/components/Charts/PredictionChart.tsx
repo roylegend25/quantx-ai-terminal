@@ -187,6 +187,9 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
   });
   const [liquidity, setLiquidity] = useState<LiquidityCluster[]>([]);
   const [livePrice, setLivePrice] = useState<number | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<"LIVE"|"RECONNECTING"|"CACHED"|"STALE"|"OFFLINE">("CACHED");
+  const [lastMarketUpdate, setLastMarketUpdate] = useState<number | null>(null);
+  const [flowCandles, setFlowCandles] = useState<Candle[]>([]);
   const [detailsOpen, setDetailsOpen] = useState(false);
 
   const indicatorsRef = useRef<HTMLDivElement | null>(null);
@@ -241,6 +244,34 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
     void cacheVersion;
     return candleCacheRef.current.get(cacheKey) ?? [];
   }, [cacheKey, cacheVersion]);
+
+  // Historical candles arrive on the shared 10s load cycle.  Between those
+  // loads, apply the shared market socket price to the current OHLC bar in
+  // place (or append the next interval bar).  This path is deliberately
+  // independent of the V2 decision, so NO_TRADE never freezes market flow.
+  useEffect(() => {
+    setFlowCandles(displayCandles.map((c) => ({ ...c })));
+  }, [displayCandles, cacheKey]);
+  useEffect(() => {
+    if (!Number.isFinite(livePrice) || !livePrice || !tfConfig.ms) return;
+    setFlowCandles((current) => {
+      if (!current.length) return current;
+      const next = current.slice();
+      const last = next[next.length - 1];
+      const bucket = Math.floor(Date.now() / tfConfig.ms) * tfConfig.ms;
+      if (bucket < last.time) return current;
+      if (bucket === last.time) {
+        next[next.length - 1] = {
+          ...last, high: Math.max(last.high, livePrice), low: Math.min(last.low, livePrice),
+          close: livePrice,
+        };
+      } else {
+        next.push({ time: bucket, open: last.close, high: livePrice, low: livePrice, close: livePrice, volume: 0 });
+        if (next.length > 240) next.shift();
+      }
+      return next;
+    });
+  }, [livePrice, tfConfig.ms]);
 
   // ---- prediction history (stored, real predictions only)
   useEffect(() => {
@@ -299,30 +330,38 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
     const connect = () => {
       if (closed) return;
       try {
+        setConnectionStatus(attempts ? "RECONNECTING" : "CACHED");
         const proto = window.location.protocol === "https:" ? "wss" : "ws";
         ws = new WebSocket(`${proto}://${window.location.host}/ws/market/${symbol}`);
         ws.onmessage = (ev) => {
           try {
             const data = JSON.parse(ev.data);
             const p = Number(data?.ticker?.lastPrice);
-            if (Number.isFinite(p) && p > 0) setLivePrice(p);
+            if (Number.isFinite(p) && p > 0) {
+              setLivePrice(p);
+              setLastMarketUpdate(Date.now());
+              setConnectionStatus("LIVE");
+            }
           } catch {
             /* malformed frame - skip */
           }
         };
         ws.onopen = () => {
           attempts = 0;
+          setConnectionStatus("LIVE");
         };
         ws.onclose = () => {
           if (closed) return;
           attempts += 1;
-          retryTimer = window.setTimeout(connect, Math.min(30_000, 2000 * attempts));
+          setConnectionStatus("RECONNECTING");
+          const backoff = Math.min(30_000, 1000 * (2 ** Math.min(attempts, 5)));
+          retryTimer = window.setTimeout(connect, backoff + Math.floor(Math.random() * 500));
         };
         ws.onerror = () => {
           ws?.close();
         };
       } catch {
-        /* WebSocket unavailable in this context */
+        setConnectionStatus("OFFLINE");
       }
     };
     connect();
@@ -337,7 +376,19 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
   // renders against the new symbol's candles.
   useEffect(() => {
     setLivePrice(null);
+    setLastMarketUpdate(null);
+    setConnectionStatus("CACHED");
   }, [symbol]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      if (!lastMarketUpdate) return;
+      const age = Date.now() - lastMarketUpdate;
+      if (age > 30_000) setConnectionStatus("STALE");
+      else if (age > 5_000 && connectionStatus === "LIVE") setConnectionStatus("CACHED");
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [lastMarketUpdate, connectionStatus]);
 
   const lastPrice = livePrice ?? Number(ticker?.lastPrice || 0);
   const change = Number(ticker?.priceChangePercent || 0);
@@ -356,7 +407,8 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
   const direction = prediction?.direction;
   const isNoTrade = !prediction || direction === "NO_TRADE" || !direction;
   const forecast = prediction?.forecast;
-  const lastCandleTime=displayCandles.at(-1)?.time??0;
+  const chartCandles=flowCandles.length?flowCandles:displayCandles;
+  const lastCandleTime=chartCandles.at(-1)?.time??0;
   const validatedForecast=useMemo(()=>validateForecastChartData(prediction,symbol,tfConfig.ms,lastCandleTime),[prediction,symbol,tfConfig.ms,lastCandleTime]);
   const forecastAvailable = validatedForecast.valid;
   const chartForecast={...forecast,available:forecastAvailable,reason:validatedForecast.reason??forecast?.reason};
@@ -686,6 +738,9 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
         </div>
 
         <div className="pc-price-row">
+          <span className={`market-connection ${connectionStatus.toLowerCase()}`} title={lastMarketUpdate?`Last market update ${Math.max(0,Math.round((Date.now()-lastMarketUpdate)/1000))}s ago`:"Waiting for live market stream"}>
+            <i /> {connectionStatus}
+          </span>
           <b>${lastPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}</b>
           <span className={change >= 0 ? "green" : "red"}>
             {change >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
@@ -749,7 +804,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
         )}
         <ProChartCanvas
           symbol={symbol}
-          candles={displayCandles}
+          candles={chartCandles}
           timeframeMs={tfConfig.ms}
           prediction={prediction}
           history={historyData.points}

@@ -26,6 +26,7 @@ import { useMarginCalculator } from "../hooks/useMarginCalculator";
 import { useTradingStatus } from "../components/Trading/TradingShared";
 import type { AppData } from "../hooks/useAppData";
 import type { NavKey } from "../lib/nav";
+import LiveDecisionPanel from "../components/Dashboard/LiveDecisionPanel";
 
 type Props = AppData & { navigate: (key: NavKey) => void };
 
@@ -80,6 +81,8 @@ export default function DashboardPage(props: Props) {
           <RiskStatusCard portfolio={props.portfolio} positions={props.positions} history={props.history} />
         </div>
       </div>
+
+      <LiveDecisionPanel symbol={symbol} timeframe={props.interval} prediction={prediction} />
 
       <TradingModeRow showToast={props.showToast} />
 

@@ -1,4 +1,5 @@
 from app.api.analysis import prediction_resolution_summary, source_health
+from app.api.dashboard import live_decision
 from app.db.session import SessionLocal
 from app.decision_engine.ledger import persist
 from app.decision_engine.v2 import ActiveDriveV2Engine
@@ -66,4 +67,19 @@ def test_resolver_skips_legacy_gaps_without_starving_later_records():
   assert resolve_due(db,limit=1,scan_limit=10)==1
   assert db.query(PredictionResolution).filter(PredictionResolution.prediction_id=="resolver-gap-1").count()==1
   assert db.query(PredictionResolution).filter(PredictionResolution.prediction_id=="resolver-gap-0").count()==0
+ finally:db.close()
+
+def test_live_decision_is_scoped_bounded_and_has_normalized_requirements():
+ db=SessionLocal()
+ try:
+  result=ActiveDriveV2Engine().evaluate({"db":db,"symbol":"LIVEUSDT","timeframe":"15m","legacy":legacy(),"regime":"TRENDING","data_status":"live","risk_reward_ratio":2})
+  decision_id=persist(db,"live-user",result,100,legacy()["features"])
+  body=live_decision("LIVEUSDT","15m","live-user",db)
+  assert body["decision_id"]==decision_id
+  assert body["engine"]["id"]=="active_drive_v2"
+  assert len(body["decision_history"])<=120
+  assert body["signal"]=="NO_TRADE"
+  assert body["execution_eligible"] is False
+  assert all({"id","status","formula","scope","explanation"}<=set(item) for item in body["requirements"])
+  assert any(item["id"]=="point_margin" for item in body["requirements"])
  finally:db.close()

@@ -51,6 +51,8 @@ async function patchJson<T = any>(url: string, body: Record<string, unknown>): P
 
 export const api = {
   dashboard: () => getJson("/api/dashboard"),
+  liveDecision: (symbol: string, timeframe: string) =>
+    getJson(`/api/dashboard/live-decision?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`),
   sourceHealth: (symbol: string, timeframe: string, decisionId: string) => getJson(`/api/analysis/source-health?symbol=${symbol}&timeframe=${timeframe}&decision_id=${decisionId}`),
   predictionResolutionSummary: (params = "") => getJson(`/api/analysis/prediction-resolution-summary${params ? `?${params}` : ""}`),
   prediction: (symbol: string, interval: string, signal?: AbortSignal) =>
