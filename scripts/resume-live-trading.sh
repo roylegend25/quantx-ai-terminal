@@ -16,12 +16,14 @@ docker exec quantx-backend python -c '
 import httpx
 from sqlalchemy import inspect
 from app.core.config import settings
+from app.core.env_manager import apply_to_settings
 from app.core.security import create_internal_service_token
 from app.db.session import SessionLocal
 from app.decision_engine.repository import get_setting
 from app.trading import modes
 db=SessionLocal()
 try:
+    apply_to_settings()
     assert get_setting(db, settings.admin_username).decision_engine == "active_drive_v2"
     required={"active_drive_decisions","prediction_ledger","signal_candidates","user_bot_settings"}
     assert required.issubset(set(inspect(db.bind).get_table_names()))
