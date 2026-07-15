@@ -21,7 +21,7 @@ class TradingEngine:
         self.symbols = settings.symbols
         self._token = create_internal_service_token()
 
-    async def run_cycle(self):
+    async def run_cycle(self, execution_lease_owner: str | None = None):
         headers = {"Authorization": f"Bearer {self._token}"}
         async with httpx.AsyncClient(timeout=20, headers=headers) as client:
             for symbol in self.symbols:
@@ -134,6 +134,8 @@ class TradingEngine:
                 equity=portfolio.get("equity"),
                 timeframe=prediction_response.get("timeframe"),
                 decision_engine=prediction.get("decision_engine"),
+                automated_execution=True,
+                execution_lease_owner=execution_lease_owner,
             )
 
             log_event(

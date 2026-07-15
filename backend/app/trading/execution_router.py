@@ -32,6 +32,8 @@ from app.db.models import ExchangePositionRow
 from app.db.session import SessionLocal
 from app.decision_engine.router import decision_engine_router
 from app.decision_engine.repository import owner
+from app.deployment import maintenance
+from app.deployment.lease import execution_lease
 from app.exchanges.binance_futures_client import BinanceFuturesClient, LiveTradingLocked
 from app.execution.execution_engine import engine as paper_engine
 from app.execution.order_router import OrderType
@@ -954,6 +956,9 @@ class ExecutionRouter:
         return self._paper
 
     def _blocked(self, action: str) -> RouterResult | None:
+        if action == "open_position" and maintenance.enabled():
+            return RouterResult(ok=False, mode=modes.effective_mode(), action=action,
+                                reason="DEPLOYMENT_MAINTENANCE")
         if modes.kill_switch_active():
             return RouterResult(ok=False, mode=modes.effective_mode(), action=action,
                                 reason="Kill switch active - all trading halted")
@@ -966,6 +971,10 @@ class ExecutionRouter:
         blocked = self._blocked("open_position")
         if blocked:
             return blocked
+        if kwargs.get("automated_execution"):
+            if kwargs.get("execution_lease_owner") != execution_lease.owner or not await execution_lease.owns():
+                return RouterResult(ok=False, mode=modes.effective_mode(), action="open_position",
+                                    reason="EXECUTION_LEASE_NOT_HELD")
         decision = kwargs.get("decision_engine")
         if decision:
             db = SessionLocal()

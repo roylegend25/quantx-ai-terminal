@@ -17,6 +17,9 @@ from app.monitoring import metrics
 from app.monitoring.logging import get_logger
 from app.strategy.manager import STRATEGIES
 from app.trading import scheduler as scheduler_module
+from app.deployment import maintenance
+from app.deployment.lease import execution_lease
+from app.core.config import settings
 
 logger = get_logger("quantx.health")
 router = APIRouter(tags=["health"])
@@ -161,7 +164,15 @@ async def status(db: Session = Depends(get_db), _user: str = Depends(get_current
         "backend": {"status": "up", "time": now.isoformat()},
         "database": {"ok": db_ok, "error": db_err},
         "redis": {"ok": redis_ok, "error": redis_err},
-        "scheduler": {"running": scheduler_running},
+        "scheduler": {"running": scheduler_running, "execution_lease": execution_lease.public_status()},
+        "deployment": {
+            **maintenance.status(),
+            "application_version": "2.0.0",
+            "git_commit": settings.app_git_sha,
+            "image_tag": settings.app_image_tag,
+            "container_id": os.getenv("HOSTNAME"),
+            "startup_time": datetime.fromtimestamp(_PROCESS_START, tz=timezone.utc).isoformat(),
+        },
         "last_prediction_time": _isoformat(last_prediction_time),
         "last_paper_trade_time": _isoformat(last_paper_trade_time),
         "last_model_training_time": _isoformat(last_model_training_time),

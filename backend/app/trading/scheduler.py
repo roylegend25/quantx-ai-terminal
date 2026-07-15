@@ -5,6 +5,8 @@ from app.core.config import settings
 from app.engine.trading_engine import TradingEngine
 from app.monitoring.logging import get_logger, log_event
 from app.monitoring.metrics import SCHEDULER_CYCLE_LATENCY
+from app.deployment import maintenance
+from app.deployment.lease import execution_lease
 
 RUNNING = False
 engine = TradingEngine()
@@ -16,7 +18,15 @@ async def trading_loop():
     while RUNNING:
         start = time.perf_counter()
         try:
-            await engine.run_cycle()
+            if maintenance.enabled():
+                await execution_lease.release()
+                log_event(logger, message="scheduler_deployment_maintenance", category="scheduler")
+            else:
+                owns_lease = await (execution_lease.renew() if execution_lease.held else execution_lease.acquire())
+                if not owns_lease:
+                    log_event(logger, message="scheduler_execution_lease_unavailable", category="scheduler")
+                else:
+                    await engine.run_cycle(execution_lease_owner=execution_lease.owner)
         except Exception as e:
             log_event(logger, message="scheduler_cycle_error", level=logging.ERROR, category="scheduler", error=repr(e))
         finally:

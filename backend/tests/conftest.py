@@ -5,6 +5,8 @@ _tmp_db_fd, _tmp_db_path = tempfile.mkstemp(suffix=".db")
 os.close(_tmp_db_fd)
 os.environ["PAPER_DATABASE_URL"] = f"sqlite:///{_tmp_db_path}"
 os.environ.setdefault("SECRET_KEY", "test-secret-key")
+os.environ["DEPLOYMENT_MAINTENANCE_MODE"] = "false"
+os.environ["DEPLOYMENT_MAINTENANCE_FILE"] = f"{_tmp_db_path}.maintenance"
 
 import pytest  # noqa: E402
 

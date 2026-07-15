@@ -1,7 +1,6 @@
 services:
   backend:
-    build:
-      context: ./backend
+    image: quantx-backend:active-drive-v2
     container_name: quantx-backend
     restart: unless-stopped
     ports:
@@ -19,6 +18,8 @@ services:
       # .env backups must outlive the container (only the .env file itself
       # is mounted) - the data volume is host-persistent and gitignored.
       ENV_BACKUP_DIR: /app/data/env-backups
+      APP_GIT_SHA: ${APP_GIT_SHA:-unknown}
+      APP_IMAGE_TAG: ${BACKEND_IMAGE:-quantx-ai-terminal-backend:latest}
     depends_on:
       - postgres
       - redis

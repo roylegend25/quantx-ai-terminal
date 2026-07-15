@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     active_drive_min_resolved_samples: int = 20
     active_drive_family_cap: float = 12.0
 
+    deployment_maintenance_mode: bool = False
+    deployment_maintenance_file: str = "/app/data/deployment-maintenance"
+    scheduler_startup_grace_seconds: int = 15
+    execution_lease_key: str = "quantx:production:execution-lease"
+    execution_lease_ttl_seconds: int = 30
+    app_git_sha: str = "unknown"
+    app_image_tag: str = "unknown"
+
     @field_validator("symbols", mode="before")
     @classmethod
     def _split_symbols(cls, v):

@@ -46,11 +46,13 @@ from app.decision_engine.scheduler import start_scheduler as start_decision_reso
 from app.trading.binance_sync import start_binance_sync
 from app.trading.protection_watchdog import start_protection_watchdog
 from app.core.config import settings
+from app.deployment import maintenance
+from app.deployment.lease import execution_lease
 
 app = FastAPI(title="QuantX AI Terminal API", version="2.0.0")
 
 async def delayed_background_start():
-    await asyncio.sleep(5)
+    await asyncio.sleep(max(5, settings.scheduler_startup_grace_seconds))
     start_scheduler()
     start_position_manager()
     start_mlops_scheduler()
@@ -66,6 +68,8 @@ async def startup_event():
     # this a plain restart would resurrect stale values over an edit made
     # through /api/admin/server-config.
     apply_env_file_to_settings()
+    if settings.deployment_maintenance_mode:
+        maintenance.enable("application-startup")
     init_db()
     instrument_db_engine(db_engine)
     asyncio.create_task(delayed_background_start())
@@ -122,6 +126,8 @@ async def health():
         "service": "quantx-backend",
         "version": "2.0.0",
         "mode": "paper",
+        "deployment_maintenance": maintenance.enabled(),
+        "execution_lease_held": execution_lease.held,
         "time": datetime.now(timezone.utc).isoformat(),
     }
 
