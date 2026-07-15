@@ -2,6 +2,7 @@ from app.api.analysis import prediction_resolution_summary, source_health
 from app.db.session import SessionLocal
 from app.decision_engine.ledger import persist
 from app.decision_engine.v2 import ActiveDriveV2Engine
+from app.decision_engine.resolver import resolve_due
 
 
 def legacy():
@@ -48,3 +49,21 @@ def test_resolution_breakdowns_reconcile_global_total():
  assert summary["resolved"]==sum(x["resolved"] for x in summary["by_timeframe"])
  assert summary["total_predictions"]==sum(x["total_predictions"] for x in summary["by_timeframe"])
  assert {"1m","3m","5m","15m","30m","1h","4h","1d","unknown/legacy"} <= {x["key"] for x in summary["by_timeframe"]}
+
+def test_resolver_skips_legacy_gaps_without_starving_later_records():
+ from datetime import datetime,timedelta,timezone
+ from app.db.models import MarketCandle,PredictionLedger,PredictionResolution
+ db=SessionLocal()
+ try:
+  now=datetime.now(timezone.utc)
+  for index in range(2):
+   generated=now-timedelta(minutes=20-index)
+   db.add(PredictionLedger(prediction_id=f"resolver-gap-{index}",candidate_id=f"candidate-gap-{index}",decision_id="decision-gap",user_id="admin",engine="active_drive_v2",engine_version="2.2.0",source_type="strategy",source_name="gap_test",source_version="1",symbol=("NOCANDLE" if index==0 else "GAPUSDT"),timeframe="5m",direction="LONG",confidence=0.5,target_horizon_seconds=300,feature_snapshot_hash=f"hash-{index}",generated_at=generated,resolution_deadline=generated+timedelta(minutes=5),reference_price=100.0))
+  db.flush()
+  later=db.query(PredictionLedger).filter(PredictionLedger.prediction_id=="resolver-gap-1").one()
+  db.add(MarketCandle(symbol="GAPUSDT",timeframe="5m",timestamp=int(later.resolution_deadline.timestamp()*1000),open=100,high=102,low=99,close=101,volume=1))
+  db.commit()
+  assert resolve_due(db,limit=1,scan_limit=10)==1
+  assert db.query(PredictionResolution).filter(PredictionResolution.prediction_id=="resolver-gap-1").count()==1
+  assert db.query(PredictionResolution).filter(PredictionResolution.prediction_id=="resolver-gap-0").count()==0
+ finally:db.close()

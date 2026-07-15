@@ -2,13 +2,18 @@
 from datetime import datetime, timezone
 from app.db.models import PredictionLedger, PredictionResolution, MarketCandle
 
-def resolve_due(db, limit: int = 200) -> int:
+def resolve_due(db, limit: int = 200, scan_limit: int | None = None) -> int:
     now = datetime.now(timezone.utc)
+    # Legacy gaps must not permanently starve later resolvable predictions.
+    # Inspect a bounded superset, while limiting successful writes per cycle.
+    scan_limit = scan_limit or max(5000, limit * 25)
     rows = db.query(PredictionLedger).outerjoin(PredictionResolution, PredictionResolution.prediction_id == PredictionLedger.prediction_id).filter(
         PredictionResolution.id.is_(None), PredictionLedger.resolution_deadline <= now, PredictionLedger.reference_price.isnot(None)
-    ).order_by(PredictionLedger.resolution_deadline).limit(limit).all()
+    ).order_by(PredictionLedger.resolution_deadline).limit(scan_limit).all()
     resolved = 0
     for row in rows:
+        if resolved >= limit:
+            break
         candle = db.query(MarketCandle).filter(MarketCandle.symbol == row.symbol, MarketCandle.timeframe == row.timeframe,
             MarketCandle.timestamp >= int(row.resolution_deadline.timestamp() * 1000)).order_by(MarketCandle.timestamp).first()
         if not candle or not candle.close or not row.reference_price: continue
