@@ -1,137 +1,67 @@
-"""Server-side AI forecast / confidence-band point generation.
+"""Chart-ready forecasts derived from measured market inputs.
 
-Pure functions: given the last closed candle, the prediction's levels and
-the measured volatility, produce the exact point series the chart draws -
-so every client renders the same cone, the horizon is timeframe-aware,
-and the generation rules are unit-testable instead of living in canvas
-code.
-
-Honesty rules:
-  - NO_TRADE (or a missing direction) produces NO points, plus the reason.
-  - Band width comes from measured volatility - ATR first, then realized
-    volatility, then a last-resort fixed percentage - and the response
-    says which basis was used, so "bands look narrow" is explainable.
-  - Points are anchored to the last candle's close/time: the forecast
-    starts where the actual price series ends, never from a synthetic
-    price.
+Forecast availability is independent from execution eligibility. A V2
+NO_TRADE may expose a labelled, non-actionable projection when fresh data
+and independent source composition exist. This module never executes.
 """
-
 from __future__ import annotations
-
 import math
 
-# Bars ahead per timeframe. Chosen so the projected wall-clock horizon
-# lands inside the product spec's window for each timeframe:
-#   1m->45m, 5m->3h, 15m->8h, 30m->18h, 1h->36h, 4h->5d, 1d->3wk, 1w->8wk
-HORIZON_BARS = {
-    "1m": 45,
-    "5m": 36,
-    "15m": 32,
-    "30m": 36,
-    "1h": 36,
-    "4h": 30,
-    "1d": 21,
-    "1w": 8,
-}
-DEFAULT_BARS = 40
+HORIZON_BARS={"1m":24,"3m":16,"5m":12,"15m":8,"30m":6,"1h":6,"4h":4,"1d":4}
+FALLBACK_BAND_PCT=.006
 
-# Last-resort band half-width when neither ATR nor realized volatility is
-# available (a cold-started symbol with <14 candles of history).
-FALLBACK_BAND_PCT = 0.006
+def _ease_out(t): return 1-(1-t)**2
+def horizon_bars(interval): return HORIZON_BARS.get(interval,0)
+def _positive(v): return isinstance(v,(int,float)) and math.isfinite(v) and v>0
 
+def _spread(price,atr,rv):
+    if _positive(atr): return float(atr),"atr"
+    if _positive(rv): return price*min(float(rv),.25),"realized_volatility"
+    return price*FALLBACK_BAND_PCT,"fallback_pct"
 
-def _ease_out(t: float) -> float:
-    return 1 - (1 - t) ** 2
+def _unavailable(interval,interval_ms,reason):
+    bars=horizon_bars(interval)
+    return {"available":False,"trade_actionable":False,"forecast_type":"unavailable","direction":"NEUTRAL",
+      "median_path":[],"upper_band":[],"lower_band":[],"forecast_points":[],"upper_band_points":[],"lower_band_points":[],
+      "bars":bars,"horizon_ms":bars*interval_ms,"horizon_seconds":bars*interval_ms//1000,"band_basis":None,
+      "confidence_level":None,"target_price":None,"invalidation_price":None,"reason":reason}
 
-
-def horizon_bars(interval: str) -> int:
-    return HORIZON_BARS.get(interval, DEFAULT_BARS)
-
-
-def _band_spread(price: float, atr: float | None, realized_volatility: float | None) -> tuple[float, str]:
-    """Half-width of the confidence band at full horizon, and which
-    measurement produced it."""
-    if atr is not None and math.isfinite(atr) and atr > 0:
-        return atr, "atr"
-    if realized_volatility is not None and math.isfinite(realized_volatility) and realized_volatility > 0:
-        # realized_volatility is a daily-ish fraction (rolling stdev of
-        # 1-bar returns, annualization factor baked in upstream); scale to
-        # price units. Clamp so a volatility spike can't produce an absurd
-        # cone that dwarfs the price axis.
-        return price * min(realized_volatility, 0.25), "realized_volatility"
-    return price * FALLBACK_BAND_PCT, "fallback_pct"
-
-
-def build_forecast(
-    *,
-    interval: str,
-    interval_ms: int,
-    last_candle_time: int,
-    price: float,
-    direction: str | None,
-    confidence: float | None,
-    target: float | None,
-    stop: float | None,
-    atr: float | None = None,
-    realized_volatility: float | None = None,
-) -> dict:
-    """Returns {forecast_points, upper_band_points, lower_band_points,
-    bars, horizon_ms, band_basis, reason}. Point shape: {time, price},
-    strictly increasing times starting one interval after the last candle.
-
-    For LONG and SHORT alike: forecast eases from the current price toward
-    the target; the upper band stays above the forecast and the lower band
-    below it for the full horizon."""
-    bars = horizon_bars(interval)
-    meta = {
-        "bars": bars,
-        "horizon_ms": bars * interval_ms,
-        "band_basis": None,
-        "reason": None,
-    }
-
-    directional = direction in ("LONG", "SHORT")
-    if not directional:
-        return {
-            **meta,
-            "forecast_points": [],
-            "upper_band_points": [],
-            "lower_band_points": [],
-            "reason": "NO_TRADE - no qualifying signal, so no forecast is fabricated",
-        }
-    if not (isinstance(price, (int, float)) and math.isfinite(price) and price > 0):
-        return {
-            **meta,
-            "forecast_points": [],
-            "upper_band_points": [],
-            "lower_band_points": [],
-            "reason": f"No valid current price ({price!r}) to anchor a forecast",
-        }
-
-    conf = max(0.0, min(100.0, confidence if confidence is not None else 50.0))
-    end = target if (target is not None and math.isfinite(target) and target > 0) else price
-    stop_level = stop if (stop is not None and math.isfinite(stop) and stop > 0) else price
-
-    spread, band_basis = _band_spread(price, atr, realized_volatility)
-    meta["band_basis"] = band_basis
-
-    # Higher confidence -> tighter cone. 1.5x spread at 0% confidence,
-    # 0.5x at 100%.
-    width = spread * 2 * (1.5 - conf / 100)
-    hi_end = max(end, stop_level, price) + width
-    lo_end = min(end, stop_level, price) - width
-
-    forecast, upper, lower = [], [], []
-    for i in range(1, bars + 1):
-        e = _ease_out(i / bars)
-        t = last_candle_time + i * interval_ms
-        forecast.append({"time": t, "price": round(price + (end - price) * e, 8)})
-        upper.append({"time": t, "price": round(price + (hi_end - price) * e, 8)})
-        lower.append({"time": t, "price": round(max(0.0, price + (lo_end - price) * e), 8)})
-
-    return {
-        **meta,
-        "forecast_points": forecast,
-        "upper_band_points": upper,
-        "lower_band_points": lower,
-    }
+def build_forecast(*,interval,interval_ms,last_candle_time,price,direction,confidence,target,stop,
+                   atr=None,realized_volatility=None,informational_direction=None,
+                   informational_strength=None,data_fresh=True,candle_count=0):
+    """Return finite, ordered millisecond points beginning after the last bar."""
+    bars=horizon_bars(interval)
+    if not bars or interval_ms<=0: return _unavailable(interval,interval_ms,"Unsupported or invalid forecast timeframe")
+    if candle_count<30: return _unavailable(interval,interval_ms,"Insufficient candle history for an informational forecast")
+    if not data_fresh: return _unavailable(interval,interval_ms,"Market data is stale")
+    if not _positive(price) or not _positive(last_candle_time): return _unavailable(interval,interval_ms,"No finite reference candle and price")
+    actionable=direction in ("LONG","SHORT")
+    if actionable:
+        forecast_direction="BULLISH" if direction=="LONG" else "BEARISH"
+        end=float(target) if _positive(target) else float(price)
+        conf=max(0.,min(1.,float(confidence or 0)/100.)); kind="actionable"
+        reason="Actionable forecast derived from the authoritative V2 decision"
+    else:
+        forecast_direction=informational_direction if informational_direction in ("BULLISH","BEARISH","NEUTRAL") else None
+        if forecast_direction is None or informational_strength is None or not math.isfinite(informational_strength):
+            return _unavailable(interval,interval_ms,"No finite independent source composition for an informational forecast")
+        strength=max(0.,min(1.,abs(float(informational_strength))))
+        measured,_=_spread(float(price),atr,realized_volatility)
+        sign=1. if forecast_direction=="BULLISH" else -1. if forecast_direction=="BEARISH" else 0.
+        end=float(price)+sign*measured*strength; conf=None; kind="informational"
+        reason="Forecast available, but it is informational and not a trade signal"
+    measured,basis=_spread(float(price),atr,realized_volatility)
+    width=measured*max(.5,1.5-(conf if conf is not None else .5))
+    median=[]; upper=[]; lower=[]
+    for i in range(1,bars+1):
+        e=_ease_out(i/bars); timestamp=int(last_candle_time+i*interval_ms)
+        midpoint=float(price)+(end-float(price))*e; band=width*math.sqrt(i/bars)
+        median.append({"time":timestamp,"price":round(midpoint,8)})
+        upper.append({"time":timestamp,"price":round(midpoint+band,8)})
+        lower.append({"time":timestamp,"price":round(max(1e-12,midpoint-band),8)})
+    return {"available":True,"trade_actionable":actionable,"forecast_type":kind,"direction":forecast_direction,
+      "median_path":median,"upper_band":upper,"lower_band":lower,"forecast_points":median,
+      "upper_band_points":upper,"lower_band_points":lower,"bars":bars,"horizon_ms":bars*interval_ms,
+      "horizon_seconds":bars*interval_ms//1000,"band_basis":basis,"confidence_level":conf,
+      "target_price":float(target) if actionable and _positive(target) else None,
+      "invalidation_price":float(stop) if actionable and _positive(stop) else None,"reason":reason}

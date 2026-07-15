@@ -184,10 +184,6 @@ type Calc = {
 
 type Cone = { predicted: number[]; upper: number[]; lower: number[] };
 
-function easeOut(t: number): number {
-  return 1 - Math.pow(1 - t, 2);
-}
-
 /** Backend point series -> plain price array, accepting only finite,
  *  positive prices on strictly-increasing timestamps. One bad point
  *  invalidates the series (never plot a partially-garbled cone). */
@@ -206,7 +202,7 @@ function sanitizeSeries(points: any): number[] | null {
   return out;
 }
 
-function buildCone(candlesArr: Candle[], prediction: any, bars: number): Cone {
+function buildCone(candlesArr: Candle[], prediction: any): Cone {
   const predicted: number[] = [];
   const upper: number[] = [];
   const lower: number[] = [];
@@ -214,40 +210,15 @@ function buildCone(candlesArr: Candle[], prediction: any, bars: number): Cone {
   const lastClose = last?.close ?? 0;
   if (!lastClose) return { predicted, upper, lower };
 
-  const direction = prediction?.direction;
-  const noTrade = !prediction || !direction || direction === "NO_TRADE";
-  // NO_TRADE means the model has no qualifying signal - a flat forecast
-  // line and a symmetric confidence band would both be fabricated (there is
-  // no target/stop to project), so draw nothing rather than imply a
-  // prediction exists. Candles themselves are drawn independently of this
-  // cone and are unaffected.
-  if (noTrade) return { predicted, upper, lower };
-
-  // Preferred source: the exact server-computed points (validated). All
-  // three series must be individually valid and equally long - a partial
-  // set falls back to local generation rather than mixing sources.
-  const sf = sanitizeSeries(prediction?.forecast_points);
-  const su = sanitizeSeries(prediction?.upper_band_points);
-  const sl = sanitizeSeries(prediction?.lower_band_points);
+  const forecast = prediction?.forecast;
+  if (!forecast?.available) return { predicted, upper, lower };
+  // Exact server-computed series only. Invalid or incomplete data is never
+  // replaced by a locally invented target/cone.
+  const sf = sanitizeSeries(forecast.median_path ?? forecast.forecast_points ?? prediction?.forecast_points);
+  const su = sanitizeSeries(forecast.upper_band ?? forecast.upper_bound ?? prediction?.upper_band_points);
+  const sl = sanitizeSeries(forecast.lower_band ?? forecast.lower_bound ?? prediction?.lower_band_points);
   if (sf && su && sl && sf.length === su.length && su.length === sl.length) {
     return { predicted: sf, upper: su, lower: sl };
-  }
-
-  const target = typeof prediction.target === "number" ? prediction.target : lastClose;
-  const stop = typeof prediction.stop === "number" ? prediction.stop : lastClose;
-  const confidence = Math.max(0, Math.min(100, prediction?.confidence ?? 50));
-  const atrVal = prediction?.features?.atr;
-  const spread = typeof atrVal === "number" && atrVal > 0 ? atrVal : lastClose * 0.006;
-
-  const hi = Math.max(target, stop, lastClose) + spread * 2 * (1.5 - confidence / 100);
-  const lo = Math.min(target, stop, lastClose) - spread * 2 * (1.5 - confidence / 100);
-  const end = target;
-
-  for (let i = 1; i <= bars; i++) {
-    const e = easeOut(i / bars);
-    predicted.push(lastClose + (end - lastClose) * e);
-    upper.push(lastClose + (hi - lastClose) * e);
-    lower.push(lastClose + (lo - lastClose) * e);
   }
   return { predicted, upper, lower };
 }
@@ -402,7 +373,7 @@ function ProChartCanvas(props: Props) {
   }, [candles, indicatorKey]);
 
   const coneTarget = useMemo(
-    () => buildCone(candles, props.prediction, props.forecastBars),
+    () => buildCone(candles, props.prediction),
     [candles, props.prediction, props.forecastBars]
   );
 
@@ -616,7 +587,7 @@ function ProChartCanvas(props: Props) {
           if (p.showForecast) scan(anim.cone.predicted[i]);
         }
       }
-      if (p.showAiOverlay && p.prediction && p.prediction.direction && p.prediction.direction !== "NO_TRADE") {
+      if (p.showAiOverlay && p.prediction?.forecast?.trade_actionable) {
         scan(p.prediction.target);
         scan(p.prediction.stop);
       }
@@ -1261,7 +1232,7 @@ function ProChartCanvas(props: Props) {
       }
 
       // ---- AI overlay: entry / target / stop + info card
-      if (p.showAiOverlay && p.prediction && p.prediction.direction && p.prediction.direction !== "NO_TRADE") {
+      if (p.showAiOverlay && p.prediction?.forecast?.trade_actionable) {
         const pr = p.prediction;
         const entry = typeof pr.price === "number" ? pr.price : liveClose;
         const coneEndX = Math.min(plotR, xAt(cs.length - 1 + p.forecastBars));
@@ -1351,11 +1322,6 @@ function ProChartCanvas(props: Props) {
       for (const id of oscIds) {
         drawOscPane(g, id, c, cs, firstVisible, lastVisibleData, xAt, plotL, plotR, plotW, paneTop, oscH, T);
         paneTop += oscH;
-      }
-
-      // ---- AI info card (top-left inside plot)
-      if (p.showAiOverlay && p.prediction) {
-        drawAiCard(g, p.prediction, plotL + 8, 18, T);
       }
 
       // ---- crosshair + tooltips
@@ -1882,6 +1848,9 @@ function drawAiCard(g: CanvasRenderingContext2D, prediction: any, x: number, y: 
   });
   g.font = `10px ${FONT}`;
 }
+// Retained only for exported-chart backwards compatibility; the live chart
+// no longer calls it because readable decision details live outside candles.
+void drawAiCard;
 
 function drawHistoryTooltip(
   g: CanvasRenderingContext2D,

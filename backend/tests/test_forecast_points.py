@@ -13,8 +13,8 @@ from app.api.prediction import router as prediction_router
 from app.quant.forecast import HORIZON_BARS, build_forecast, horizon_bars
 
 INTERVAL_MS = {
-    "1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
-    "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000, "1w": 604_800_000,
+    "1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
+    "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000,
 }
 
 BASE = dict(
@@ -25,6 +25,7 @@ BASE = dict(
     stop=98.0,
     atr=1.5,
     realized_volatility=0.02,
+    candle_count=220,
 )
 
 
@@ -38,7 +39,7 @@ def _assert_series_valid(points, last_time, interval_ms):
         assert math.isfinite(p["price"]) and p["price"] > 0
 
 
-@pytest.mark.parametrize("interval", ["1m", "30m", "1h", "4h", "1d", "1w"])
+@pytest.mark.parametrize("interval", ["1m", "3m", "30m", "1h", "4h", "1d"])
 @pytest.mark.parametrize("direction", ["LONG", "SHORT"])
 def test_directional_forecast_produces_full_horizon(interval, direction):
     target = 104.0 if direction == "LONG" else 96.0
@@ -52,7 +53,8 @@ def test_directional_forecast_produces_full_horizon(interval, direction):
     assert fc["bars"] == bars
     assert fc["horizon_ms"] == bars * INTERVAL_MS[interval]
     assert fc["band_basis"] == "atr"
-    assert fc["reason"] is None
+    assert fc["available"] is True
+    assert fc["trade_actionable"] is True
 
     for key in ("forecast_points", "upper_band_points", "lower_band_points"):
         assert len(fc[key]) == bars
@@ -65,15 +67,18 @@ def test_directional_forecast_produces_full_horizon(interval, direction):
         assert u["price"] >= f["price"] >= l["price"]
 
 
-def test_no_trade_produces_no_points_and_a_reason():
-    fc = build_forecast(interval="1h", interval_ms=INTERVAL_MS["1h"], direction="NO_TRADE", **BASE)
-    assert fc["forecast_points"] == []
-    assert fc["upper_band_points"] == []
-    assert fc["lower_band_points"] == []
-    assert "NO_TRADE" in fc["reason"]
+def test_no_trade_can_produce_non_actionable_informational_points():
+    fc = build_forecast(interval="1h", interval_ms=INTERVAL_MS["1h"], direction="NO_TRADE",
+                        informational_direction="BEARISH", informational_strength=.4, **BASE)
+    assert fc["available"] is True
+    assert fc["trade_actionable"] is False
+    assert fc["forecast_type"] == "informational"
+    assert fc["target_price"] is None and fc["invalidation_price"] is None
+    _assert_series_valid(fc["median_path"], BASE["last_candle_time"], INTERVAL_MS["1h"])
 
-    fc = build_forecast(interval="1h", interval_ms=INTERVAL_MS["1h"], direction=None, **BASE)
-    assert fc["forecast_points"] == [] and fc["reason"]
+def test_no_trade_without_source_composition_is_unavailable():
+    fc = build_forecast(interval="1h", interval_ms=INTERVAL_MS["1h"], direction="NO_TRADE", **BASE)
+    assert fc["available"] is False and fc["median_path"] == [] and fc["reason"]
 
 
 def test_band_basis_fallback_chain():
@@ -113,11 +118,11 @@ def test_invalid_price_is_refused_not_fabricated():
         **{**BASE, "price": float("nan")},
     )
     assert fc["forecast_points"] == []
-    assert "current price" in fc["reason"]
+    assert "reference" in fc["reason"]
 
 
 def test_every_supported_interval_has_a_horizon():
-    for interval in ("1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w"):
+    for interval in ("1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"):
         assert horizon_bars(interval) > 0
 
 
@@ -130,7 +135,7 @@ def _make_client():
 
 
 @pytest.mark.parametrize("symbol", ["BTCUSDT", "ETHUSDT"])
-@pytest.mark.parametrize("timeframe", ["1m", "30m", "1h", "4h", "1d", "1w"])
+@pytest.mark.parametrize("timeframe", ["1m", "3m", "30m", "1h", "4h", "1d"])
 def test_prediction_route_exposes_consistent_forecast_fields(monkeypatch, symbol, timeframe):
     from tests.test_prediction_multi_symbol import (
         _FakeAsyncClient,
@@ -158,8 +163,7 @@ def test_prediction_route_exposes_consistent_forecast_fields(monkeypatch, symbol
         assert key in body, f"missing top-level '{key}'"
     assert body["prediction_horizon"]["bars"] == HORIZON_BARS[timeframe]
 
-    directional = body["direction"] in ("LONG", "SHORT")
-    if directional:
+    if body["forecast"]["available"]:
         assert len(body["forecast_points"]) == HORIZON_BARS[timeframe]
         assert len(body["upper_band_points"]) == len(body["lower_band_points"]) == len(body["forecast_points"])
         times = [p["time"] for p in body["forecast_points"]]
@@ -167,6 +171,10 @@ def test_prediction_route_exposes_consistent_forecast_fields(monkeypatch, symbol
         for series in ("forecast_points", "upper_band_points", "lower_band_points"):
             for p in body[series]:
                 assert math.isfinite(p["price"]) and p["price"] > 0
+        if body["direction"] == "NO_TRADE":
+            assert body["forecast"]["trade_actionable"] is False
+            assert body["forecast"]["target_price"] is None
+            assert body["forecast"]["invalidation_price"] is None
     else:
         assert body["forecast_points"] == []
         assert body["prediction_horizon"]["reason"]

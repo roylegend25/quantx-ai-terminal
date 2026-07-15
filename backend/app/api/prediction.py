@@ -1,3 +1,4 @@
+import math
 import time
 from datetime import timezone
 
@@ -760,10 +761,34 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
         error=None,
     )
 
-    # Server-side forecast + confidence-band points, anchored to the last
-    # closed candle. The chart draws exactly these; a NO_TRADE prediction
-    # gets empty arrays plus the reason - nothing fabricated. Also mirrored
-    # into `prediction` so consumers reading either level see them.
+    # Forecast composition is separate from execution. For NO_TRADE, only
+    # finite, non-shadow V2 source contributions may create an informational
+    # path; the result remains explicitly non-actionable and has no TP/SL.
+    candidates = pred.get("decision_engine", {}).get("candidates") or []
+    directional_sources = [
+        c for c in candidates
+        if c.get("direction") in ("LONG", "SHORT")
+        and c.get("status") != "shadow"
+        and isinstance(c.get("final_points"), (int, float))
+        and math.isfinite(c["final_points"])
+        and c["final_points"] != 0
+    ]
+    source_total = sum(abs(c["final_points"]) for c in directional_sources)
+    source_net = sum(c["final_points"] for c in directional_sources)
+    informational_direction = (
+        "BULLISH" if source_net > 0 else "BEARISH" if source_net < 0 else "NEUTRAL"
+    ) if source_total else None
+    informational_strength = abs(source_net) / source_total if source_total else None
+    forecast_sources = [
+        {
+            "type": c.get("source_type"),
+            "name": c.get("name"),
+            "direction": "BULLISH" if c["final_points"] > 0 else "BEARISH",
+            "weight": round(abs(c["final_points"]) / source_total, 4),
+        }
+        for c in sorted(directional_sources, key=lambda row: abs(row["final_points"]), reverse=True)[:8]
+    ] if source_total else []
+    data_fresh = not bool(features.get("stale")) and data_quality.get("reliable") is not False
     forecast = build_forecast(
         interval=interval,
         interval_ms=SUPPORTED_INTERVALS_MS[interval],
@@ -775,25 +800,51 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
         stop=pred["stop"],
         atr=features.get("atr"),
         realized_volatility=features.get("realized_volatility"),
+        informational_direction=informational_direction,
+        informational_strength=informational_strength,
+        data_fresh=data_fresh,
+        candle_count=len(candles),
     )
     pred["forecast_points"] = forecast["forecast_points"]
     pred["upper_band_points"] = forecast["upper_band_points"]
     pred["lower_band_points"] = forecast["lower_band_points"]
     pred["forecast"] = {
-        "available": bool(forecast["forecast_points"]),
-        "reason": forecast["reason"] or ("insufficient_evidence" if pred["direction"] == "NO_TRADE" else None),
+        "available": forecast["available"],
+        "trade_actionable": forecast["trade_actionable"],
+        "forecast_type": forecast["forecast_type"],
+        "direction": forecast["direction"],
+        "reason": forecast["reason"],
         "symbol": symbol,
         "timeframe": interval,
         "decision_id": pred.get("decision_id"),
-        "reference_candle_time": candles[-1]["time"] if candles else None,
+        "generated_at": pred["decision_engine"].get("generated_at"),
+        "reference_time": candles[-1]["time"] if candles else None,
+        "reference_price": pred.get("price"),
+        "horizon_bars": forecast["bars"],
+        "horizon_seconds": forecast["horizon_seconds"],
+        "band_basis": forecast["band_basis"],
+        "median_path": forecast["median_path"],
+        "upper_band": forecast["upper_band"],
+        "lower_band": forecast["lower_band"],
+        "confidence_level": forecast["confidence_level"],
+        "target_price": forecast["target_price"],
+        "invalidation_price": forecast["invalidation_price"],
+        "forecast_sources": forecast_sources,
+        # Compatibility aliases for existing canvas consumers.
         "bars": forecast["bars"],
         "horizon_ms": forecast["horizon_ms"],
-        "band_basis": forecast["band_basis"],
         "forecast_points": forecast["forecast_points"],
         "upper_bound": forecast["upper_band_points"],
         "lower_bound": forecast["lower_band_points"],
-        "target_price": pred.get("target") if pred["direction"] != "NO_TRADE" else None,
-        "invalidation_price": pred.get("stop") if pred["direction"] != "NO_TRADE" else None,
+    }
+    pred["forecast_diagnostics"] = {
+        "candidate_count": len(candidates),
+        "forecast_model_available": bool(directional_sources),
+        "points_generated": len(forecast["median_path"]),
+        "timeframe_match": True,
+        "timestamp_format": "unix_milliseconds",
+        "data_fresh": data_fresh,
+        "reason_if_unavailable": None if forecast["available"] else forecast["reason"],
     }
     pred["symbol"] = symbol
     pred["timeframe"] = interval
@@ -823,6 +874,8 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
         "forecast_points": forecast["forecast_points"],
         "upper_band_points": forecast["upper_band_points"],
         "lower_band_points": forecast["lower_band_points"],
+        "forecast": pred["forecast"],
+        "forecast_diagnostics": pred["forecast_diagnostics"],
         "prediction_horizon": {
             "bars": forecast["bars"],
             "interval": interval,

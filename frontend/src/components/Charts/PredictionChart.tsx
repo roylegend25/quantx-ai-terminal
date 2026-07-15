@@ -33,6 +33,7 @@ import ProChartCanvas, {
   type IndicatorId,
   type LiquidityCluster,
 } from "./ProChartCanvas";
+import { ChartDecisionChip, DecisionDetailsBottomSheet, DecisionDetailsPanel, ForecastLegend } from "./ChartDecisionDetails";
 
 type Props = {
   symbol: string;
@@ -185,6 +186,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
   });
   const [liquidity, setLiquidity] = useState<LiquidityCluster[]>([]);
   const [livePrice, setLivePrice] = useState<number | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const indicatorsRef = useRef<HTMLDivElement | null>(null);
   const exportFnRef = useRef<(() => void) | null>(null);
@@ -343,7 +345,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
   const chartHeight = fullscreen
     ? undefined
     : isMobile
-    ? 300
+    ? 400
     : isTabletPortrait
     ? 360
     : isTabletLandscape
@@ -352,6 +354,8 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
 
   const direction = prediction?.direction;
   const isNoTrade = !prediction || direction === "NO_TRADE" || !direction;
+  const forecast = prediction?.forecast;
+  const forecastAvailable = forecast?.available === true;
   const confidence = typeof prediction?.confidence === "number" ? Math.max(0, Math.min(100, prediction.confidence)) : null;
   const target = prediction?.target;
   const stop = prediction?.stop;
@@ -380,7 +384,9 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
 
   const directionSub = isNoTrade
     ? [
-        `No ${shortSymbol} ${interval} forecast: ${prediction?.risk?.reason || "no qualifying signal"}`,
+        forecastAvailable
+          ? `${shortSymbol} ${interval} informational forecast — not a trade signal`
+          : `Forecast unavailable: ${forecast?.reason || prediction?.risk?.reason || "no qualifying data"}`,
         typeof requiredConfidence === "number"
           ? `Point margin ${prediction?.decision_engine?.point_margin ?? 0} / required ${prediction?.decision_engine?.required_point_margin ?? "—"}`
           : null,
@@ -398,7 +404,9 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
 
   const confidenceLabel = isNoTrade ? "Evidence insufficient" : confidence == null ? "Confidence unavailable" :
     confidence >= 80 ? "High Confidence" : confidence >= 60 ? "Medium Confidence" : "Low Confidence";
-  const horizonText = formatHorizon(FORECAST_BARS * tfConfig.ms);
+  const horizonText = formatHorizon(
+    typeof forecast?.horizon_seconds === "number" ? forecast.horizon_seconds * 1000 : FORECAST_BARS * tfConfig.ms
+  );
 
   const targetPct = lastClose && typeof target === "number" ? ((target - lastClose) / lastClose) * 100 : NaN;
   const stopPct = lastClose && typeof stop === "number" ? ((stop - lastClose) / lastClose) * 100 : NaN;
@@ -412,11 +420,11 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
   // is only ever drawn for a directional, non-NO_TRADE prediction with at
   // least one real candle) so "why is there no forecast line" is answerable
   // without reading canvas internals.
-  const forecastPointCount = !isNoTrade && displayCandles.length ? FORECAST_BARS : 0;
+  const forecastPointCount = forecastAvailable && Array.isArray(forecast?.median_path) ? forecast.median_path.length : 0;
   const forecastHiddenReason = !displayCandles.length
     ? "no candle data loaded yet"
-    : isNoTrade
-    ? `direction is ${direction ?? "unknown"} (no qualifying signal)`
+    : !forecastAvailable
+    ? forecast?.reason ?? "forecast unavailable"
     : null;
 
   useEffect(() => {
@@ -652,12 +660,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
           <span className="pc-legend-item" title="Live market candles / price line">
             <i className="pc-swatch solid purple" /> Actual Price
           </span>
-          <span
-            className={`pc-legend-item${isNoTrade ? " pc-legend-off" : ""}`}
-            title={isNoTrade ? `No forecast while ${shortSymbol} ${interval} is NO_TRADE - nothing is fabricated` : "AI forecast line over the prediction horizon"}
-          >
-            <i className="pc-swatch solid cyan" /> AI Forecast{isNoTrade ? " (no signal)" : ""}
-          </span>
+          <ForecastLegend forecast={forecast} bands={prefs.bands} />
           <span
             className={`pc-legend-item${!prefs.history || !historyData.points.length ? " pc-legend-off" : ""}`}
             title={
@@ -670,18 +673,6 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
           >
             <i className="pc-swatch dash orange" /> Past AI Predictions
             {!prefs.history ? " (off)" : !historyData.points.length ? " (none yet)" : ""}
-          </span>
-          <span
-            className={`pc-legend-item${isNoTrade || !prefs.bands ? " pc-legend-off" : ""}`}
-            title={isNoTrade ? "No band without a directional signal" : !prefs.bands ? "Hidden - re-enable with the bands toolbar button below" : "Upper confidence band"}
-          >
-            <i className="pc-swatch dash green" /> Upper Band{isNoTrade ? " (no signal)" : !prefs.bands ? " (off)" : ""}
-          </span>
-          <span
-            className={`pc-legend-item${isNoTrade || !prefs.bands ? " pc-legend-off" : ""}`}
-            title={isNoTrade ? "No band without a directional signal" : !prefs.bands ? "Hidden - re-enable with the bands toolbar button below" : "Lower confidence band"}
-          >
-            <i className="pc-swatch dash red" /> Lower Band{isNoTrade ? " (no signal)" : !prefs.bands ? " (off)" : ""}
           </span>
           {typeof hitRate === "number" && (
             <span className="pc-legend-item pcx-hitrate" title={`Direction hit rate over the last ${summary?.resolved ?? 0} resolved predictions on this timeframe`}>
@@ -745,6 +736,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
         ))}
       </div>
 
+      <div className="pc-chart-layout">
       <div className="pc-chart-wrap" style={{ height: fullscreen ? "calc(100vh - 280px)" : chartHeight }}>
         {fullscreen && (
           <button className="icon-btn pc-fullscreen-close" onClick={() => setFullscreen(false)} title="Close">
@@ -777,7 +769,12 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
           onExportRef={handleExportRef}
           onEditPosition={onEditPosition}
         />
+        {prediction ? <ChartDecisionChip prediction={prediction} onOpen={() => setDetailsOpen(true)} /> : <div className="forecast-loading">Calculating {symbol} {interval} forecast…</div>}
       </div>
+      <div className="pc-desktop-decision">{prediction ? <DecisionDetailsPanel prediction={prediction} /> : <div className="forecast-loading-panel">Calculating Active Drive V2 decision…</div>}</div>
+      </div>
+      <div className="pc-tablet-decision">{prediction ? <DecisionDetailsPanel prediction={prediction} /> : <div className="forecast-loading-panel">Calculating Active Drive V2 decision…</div>}</div>
+      <DecisionDetailsBottomSheet prediction={prediction} open={detailsOpen} onClose={() => setDetailsOpen(false)} />
 
       <div className="pc-summary">
         <div className="pc-tile">
@@ -795,7 +792,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
             className="pc-mini-gauge"
             style={{ ["--pct" as any]: confidence, ["--tone" as any]: `var(--c-${directionTone})` }}
           >
-            <div className="pc-mini-gauge-inner">{fmtNum(confidence, 0)}%</div>
+            <div className="pc-mini-gauge-inner">{isNoTrade || confidence == null ? "—" : `${fmtNum(confidence, 0)}%`}</div>
           </div>
           <span className="pc-tile-sub">{confidenceLabel}</span>
         </div>
