@@ -1,6 +1,6 @@
 """Authenticated, read-only Active Drive source and resolver health."""
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Query
 from sqlalchemy import func
 from app.core.config import settings
@@ -8,6 +8,7 @@ from app.db.models import ActiveDriveDecision, MarketCandle, PredictionLedger, P
 from app.db.session import SessionLocal
 from app.decision_engine import scheduler as resolver_scheduler
 from app.decision_engine.v2 import SHADOW_MODELS
+from app.quant.forecast import TIMEFRAME_SECONDS
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 
@@ -41,7 +42,8 @@ def source_health(symbol: str = Query("BTCUSDT"), timeframe: str = Query("15m"))
         now=datetime.now(timezone.utc)
         base=db.query(PredictionLedger).filter(PredictionLedger.symbol==symbol,PredictionLedger.timeframe==timeframe)
         total=base.count(); resolved=base.join(PredictionResolution,PredictionResolution.prediction_id==PredictionLedger.prediction_id).count()
-        expired=base.outerjoin(PredictionResolution,PredictionResolution.prediction_id==PredictionLedger.prediction_id).filter(PredictionResolution.id.is_(None),PredictionLedger.resolution_deadline<now).count()
+        outcome_grace = timedelta(seconds=TIMEFRAME_SECONDS.get(timeframe, 300))
+        expired=base.outerjoin(PredictionResolution,PredictionResolution.prediction_id==PredictionLedger.prediction_id).filter(PredictionResolution.id.is_(None),PredictionLedger.resolution_deadline < now - outcome_grace).count()
         by_type={k:{"total":n,"resolved":done,"unresolved":n-done} for k,n,done in db.query(PredictionLedger.source_type,func.count(PredictionLedger.prediction_id),func.count(PredictionResolution.id)).outerjoin(PredictionResolution,PredictionResolution.prediction_id==PredictionLedger.prediction_id).filter(PredictionLedger.symbol==symbol,PredictionLedger.timeframe==timeframe).group_by(PredictionLedger.source_type).all()}
         candle_max=db.query(func.max(MarketCandle.timestamp)).filter(MarketCandle.symbol==symbol,MarketCandle.timeframe==timeframe).scalar()
         resolver=resolver_scheduler.status(); resolver.update({"healthy":bool(resolver.get("running") and not resolver.get("last_error") and expired==0),"expired_unresolved":expired,"market_candle_latest":candle_max,"degraded_reason":"Expired predictions lack stored outcome candles" if expired else None})
