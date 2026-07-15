@@ -1,6 +1,8 @@
 services:
   backend:
-    image: quantx-backend:active-drive-v2
+    # Immutable application image. Update only after isolated validation;
+    # never fall back to the legacy mutable V1 image during recreation.
+    image: ${BACKEND_IMAGE:-quantx-backend:active-drive-v2-b109280}
     container_name: quantx-backend
     restart: unless-stopped
     ports:
