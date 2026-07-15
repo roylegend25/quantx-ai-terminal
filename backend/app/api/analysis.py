@@ -23,7 +23,8 @@ def source_health(symbol: str = Query("BTCUSDT"), timeframe: str = Query("15m"))
         sources=[]
         for row in rows:
             shadow=row.source_type=="ml" and row.source_version=="shadow-1"
-            missing=bool(row.rejection_reason and "unavailable" in row.rejection_reason.lower())
+            evidence = row.evidence or {}
+            missing=bool(row.rejection_reason and "unavailable" in row.rejection_reason.lower() and evidence.get("current_value") is None)
             runtime="shadow_not_inferred" if shadow else "unavailable_data" if missing else "working"
             sources.append({"source_type":row.source_type,"source_name":row.source_name,"version":row.source_version,"family":row.source_family,
                 "configured_status":"shadow" if shadow else "enabled","runtime_status":runtime,"dependency_available":not missing,
