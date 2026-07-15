@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { CheckCircle2, Clock3, XCircle } from "lucide-react";
-import { fmtNum } from "../../lib/format";
+import { engineName, formatMarketRegime, pct01 } from "../../lib/activeDrive";
 
 type ExecutionOutcome = {
   attempted: boolean;
@@ -16,7 +16,7 @@ type ExecutionOutcome = {
 type Props = {
   /** prediction.decision_engine for the selected symbol/interval */
   decision: any;
-  regime?: string | null;
+  regime?: any;
   /** Ground truth from the most recent real Binance order attempt for this
    *  symbol (see useExecutionPipeline) - when the signal was approved but
    *  execution actually failed, this overrides the "trade allowed" verdict
@@ -47,15 +47,11 @@ function DecisionReasoningCard({ decision, regime, executionOutcome }: Props) {
   const stateTone = executionFailed ? "red" : state === "allowed" ? "green" : state === "blocked" ? "red" : "yellow";
   const StateIcon = executionFailed ? XCircle : state === "allowed" ? CheckCircle2 : state === "blocked" ? XCircle : Clock3;
 
-  const direction = decision?.final_direction ?? "—";
+  const direction = decision?.final_signal ?? decision?.final_direction ?? "—";
   const dirTone = direction === "LONG" ? "green" : direction === "SHORT" ? "red" : "yellow";
-  const reasons: string[] = decision?.top_reasons ?? [];
-  const blockers: string[] = decision?.trade_blockers ?? [];
-  const activeLabel = decision
-    ? decision.mode === "champion_ml" && decision.active_model
-      ? `${decision.active_model.model_type ?? decision.active_model.name} ${decision.active_model.version ?? ""} (Champion)`
-      : (decision.strategy_used ?? "ensemble").replace(/_/g, " ")
-    : "—";
+  const reasons: string[] = decision?.top_reasons ?? decision?.blocking_reasons ?? [];
+  const blockers: string[] = decision?.blocking_reasons ?? decision?.trade_blockers ?? [];
+  const activeLabel = engineName(decision);
 
   return (
     <div className="dec-reasoning">
@@ -74,10 +70,10 @@ function DecisionReasoningCard({ decision, regime, executionOutcome }: Props) {
           ) : (
             <>
               <b>
-                {direction === "NO_TRADE" ? "NO TRADE" : direction}
+                {direction === "NO_TRADE" ? "NO TRADE · Evidence insufficient" : direction}
                 {state === "allowed" ? " · trade allowed" : state === "blocked" ? " · blocked by risk" : " · waiting"}
               </b>
-              <p className="regime-desc">{decision?.risk_reason ?? "Waiting for the decision engine."}</p>
+              <p className="regime-desc">{blockers[0] ?? "Waiting for the decision engine."}</p>
             </>
           )}
         </div>
@@ -85,13 +81,13 @@ function DecisionReasoningCard({ decision, regime, executionOutcome }: Props) {
 
       <div className="dec-kv-row">
         <div>
-          <span className="tile-label">Confidence</span>
-          <b className={`tile-value ${dirTone}`}>{decision ? `${fmtNum(decision.final_confidence, 1)}%` : "—"}</b>
+          <span className="tile-label">{direction === "NO_TRADE" ? "Directional confidence" : "Directional confidence"}</span>
+          <b className={`tile-value ${dirTone}`}>{direction === "NO_TRADE" ? "Not established" : pct01(decision?.directional_confidence, 1)}</b>
         </div>
         <div>
           <span className="tile-label">Required</span>
           <b className="tile-value">
-            {typeof decision?.required_confidence === "number" ? `${fmtNum(decision.required_confidence, 1)}%` : "—"}
+            {typeof decision?.required_confidence === "number" ? pct01(decision.required_confidence, 1) : "Not available"}
           </b>
         </div>
         <div>
@@ -100,7 +96,7 @@ function DecisionReasoningCard({ decision, regime, executionOutcome }: Props) {
         </div>
         <div>
           <span className="tile-label">Market Regime</span>
-          <b className="tile-value dec-small">{(decision?.market_regime ?? regime ?? "—").toString().replace(/_/g, " ")}</b>
+          <b className="tile-value dec-small">{formatMarketRegime(decision?.market_regime ?? regime)}</b>
         </div>
       </div>
 

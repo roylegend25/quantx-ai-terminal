@@ -7,7 +7,7 @@ from app.strategy.ensemble import evaluate as ensemble_evaluate
 
 BINANCE_FAPI = "https://fapi.binance.com"
 
-TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "4h"]
+TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"]
 
 
 async def fetch_candles(client: httpx.AsyncClient, symbol: str, interval: str, limit: int = 220):

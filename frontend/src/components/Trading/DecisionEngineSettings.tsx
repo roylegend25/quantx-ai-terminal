@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { BrainCircuit, CheckCircle2, History, ShieldCheck, X } from "lucide-react";
 import { api } from "../../services/api";
+import { formatMarketRegime, pct01 } from "../../lib/activeDrive";
 
 type EngineId = "active_drive_v1" | "active_drive_v2";
 type Props = { showToast: (message: string, type?: any) => void };
@@ -44,7 +45,7 @@ export default function DecisionEngineSettings({ showToast }: Props) {
         <Metric label="Current engine" value={state.active_engine === "active_drive_v2" ? "Active Drive V2" : "Legacy V1"}/>
         <Metric label="Last signal" value={last?.final_signal || "No decision yet"}/>
         <Metric label="Engine health" value={last?.health || "healthy"}/>
-        <Metric label="Data status" value={last?.data_status || "—"}/>
+        <Metric label="Data status" value={last?.data_status?.stale ? "Cached / stale" : last?.data_status?.source || last?.data_status || "—"}/>
         <Metric label="Candidate sources" value={last?.candidate_count ?? 0}/>
         <Metric label="Resolved history" value={state.resolved_history_count ?? 0}/>
         <Metric label="Evidence tier" value={(last?.evidence_tier || "insufficient_evidence").replaceAll("_", " ")}/>
@@ -53,6 +54,8 @@ export default function DecisionEngineSettings({ showToast }: Props) {
         <Metric label="SHORT points" value={last?.short_points ?? "—"}/>
         <Metric label="Point margin" value={last?.point_margin ?? "—"}/>
         <Metric label="Required margin" value={last?.required_point_margin ?? "—"}/>
+        <Metric label="Required confidence" value={pct01(last?.required_confidence)}/>
+        <Metric label="Market regime" value={formatMarketRegime(last?.market_regime)}/>
       </div>
       {last?.blocking_reasons?.length > 0 && <div className="engine-blockers"><ShieldCheck size={17}/><div><b>Current NO_TRADE safeguards</b>{last.blocking_reasons.map((r: string) => <p key={r}>{r}</p>)}</div></div>}
       <div className="engine-history-note"><History size={16}/> Historical accuracy and expected edge remain unavailable until fixed-horizon predictions resolve.</div>

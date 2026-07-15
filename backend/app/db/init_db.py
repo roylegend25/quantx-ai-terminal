@@ -189,6 +189,21 @@ def _migrate_risk_settings_columns():
         if "safety_buffer_pct" not in existing:
             conn.execute(text("ALTER TABLE risk_settings ADD COLUMN safety_buffer_pct FLOAT DEFAULT 0.10"))
 
+def _migrate_active_drive_ledger_columns():
+    """Additive V2 outcome fields. Existing predictions remain immutable
+    and retain NULL where the original cycle did not record the value."""
+    inspector=inspect(engine); tables=inspector.get_table_names()
+    additions={
+        "prediction_ledger":{"target_reference_price":"FLOAT","stop_reference_price":"FLOAT","data_revision":"VARCHAR"},
+        "prediction_resolutions":{"target_hit":"BOOLEAN","stop_hit":"BOOLEAN","maximum_favorable_excursion":"FLOAT","maximum_adverse_excursion":"FLOAT"},
+    }
+    with engine.begin() as conn:
+        for table,columns in additions.items():
+            if table not in tables: continue
+            existing={col["name"] for col in inspector.get_columns(table)}
+            for name,sql_type in columns.items():
+                if name not in existing: conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}"))
+
 
 def init_db():
     Base.metadata.create_all(bind=engine)
@@ -199,6 +214,7 @@ def init_db():
     _migrate_protection_provider_columns()
     _migrate_protection_revision_columns()
     _migrate_risk_settings_columns()
+    _migrate_active_drive_ledger_columns()
 
     db: Session = SessionLocal()
     try:

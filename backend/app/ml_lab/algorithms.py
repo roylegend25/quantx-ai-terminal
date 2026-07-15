@@ -48,6 +48,14 @@ def _keras_availability() -> tuple[bool, str | None]:
 
 
 ALGORITHMS: dict[str, dict] = {
+    "logistic_regression": {"label":"Logistic Regression","family":"linear","supports_shap":False,"production_eligible":False,"default_hyperparameters":{"c":1.0}},
+    "elastic_net_logistic": {"label":"Elastic-Net Logistic Regression","family":"linear","supports_shap":False,"production_eligible":False,"default_hyperparameters":{"c":1.0,"l1_ratio":0.5}},
+    "extra_trees": {"label":"Extra Trees","family":"bagging","supports_shap":False,"production_eligible":False,"default_hyperparameters":{"n_estimators":300,"max_depth":8,"min_samples_leaf":5}},
+    "hist_gradient_boosting": {"label":"HistGradientBoosting","family":"gradient_boosting","supports_shap":False,"production_eligible":False,"default_hyperparameters":{"max_iter":200,"learning_rate":0.05,"max_leaf_nodes":31}},
+    "linear_svm_calibrated": {"label":"Calibrated Linear SVM","family":"linear","supports_shap":False,"production_eligible":False,"default_hyperparameters":{"c":1.0}},
+    "sgd_classifier": {"label":"SGD Classifier","family":"linear","supports_shap":False,"production_eligible":False,"default_hyperparameters":{"alpha":0.0001}},
+    "knn_benchmark": {"label":"KNN (Shadow Benchmark)","family":"benchmark","supports_shap":False,"production_eligible":False,"default_hyperparameters":{"n_neighbors":11}},
+    "gaussian_nb_benchmark": {"label":"Gaussian NB (Shadow Benchmark)","family":"benchmark","supports_shap":False,"production_eligible":False,"default_hyperparameters":{}},
     "xgboost": {
         "label": "XGBoost",
         "family": "gradient_boosting",
@@ -121,7 +129,9 @@ ALGORITHMS: dict[str, dict] = {
 def availability(algorithm: str) -> tuple[bool, str | None]:
     if algorithm not in ALGORITHMS:
         return False, f"Unknown algorithm '{algorithm}'"
-    if algorithm in ("xgboost", "random_forest", "ensemble_ml"):
+    if algorithm in ("xgboost", "random_forest", "ensemble_ml", "logistic_regression", "elastic_net_logistic",
+                     "extra_trees", "hist_gradient_boosting", "linear_svm_calibrated", "sgd_classifier",
+                     "knn_benchmark", "gaussian_nb_benchmark"):
         return True, None
     if algorithm == "lightgbm":
         return (True, None) if _lib_installed("lightgbm") else (False, "lightgbm is not installed")
@@ -154,6 +164,8 @@ def catalog() -> list[dict]:
                 "supports_shap": meta["supports_shap"],
                 "default_hyperparameters": meta["default_hyperparameters"],
                 "description": meta.get("description"),
+                "production_eligible": meta.get("production_eligible", True),
+                "status": "experimental" if not meta.get("production_eligible", True) else "available",
             }
         )
     return out
@@ -163,6 +175,39 @@ def build_estimator(algorithm: str, hyperparameters: dict):
     """Instantiates the sklearn-API estimator for tabular algorithms.
     Sequence (Keras) models are built in keras_models.py instead."""
     hp = hyperparameters or {}
+
+    if algorithm in ("logistic_regression", "elastic_net_logistic"):
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import StandardScaler
+        params={"C":float(hp.get("c",1.0)),"max_iter":1000,"random_state":42}
+        if algorithm=="elastic_net_logistic": params.update(penalty="elasticnet",solver="saga",l1_ratio=float(hp.get("l1_ratio",.5)))
+        return make_pipeline(StandardScaler(),LogisticRegression(**params))
+    if algorithm == "extra_trees":
+        from sklearn.ensemble import ExtraTreesClassifier
+        return ExtraTreesClassifier(n_estimators=int(hp.get("n_estimators",300)),max_depth=int(hp.get("max_depth",8)),min_samples_leaf=int(hp.get("min_samples_leaf",5)),n_jobs=2,random_state=42)
+    if algorithm == "hist_gradient_boosting":
+        from sklearn.ensemble import HistGradientBoostingClassifier
+        return HistGradientBoostingClassifier(max_iter=int(hp.get("max_iter",200)),learning_rate=float(hp.get("learning_rate",.05)),max_leaf_nodes=int(hp.get("max_leaf_nodes",31)),random_state=42)
+    if algorithm == "linear_svm_calibrated":
+        from sklearn.calibration import CalibratedClassifierCV
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.svm import LinearSVC
+        return make_pipeline(StandardScaler(),CalibratedClassifierCV(LinearSVC(C=float(hp.get("c",1.0)),random_state=42),cv=3))
+    if algorithm == "sgd_classifier":
+        from sklearn.linear_model import SGDClassifier
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import StandardScaler
+        return make_pipeline(StandardScaler(),SGDClassifier(loss="log_loss",alpha=float(hp.get("alpha",.0001)),random_state=42))
+    if algorithm == "knn_benchmark":
+        from sklearn.neighbors import KNeighborsClassifier
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import StandardScaler
+        return make_pipeline(StandardScaler(),KNeighborsClassifier(n_neighbors=int(hp.get("n_neighbors",11))))
+    if algorithm == "gaussian_nb_benchmark":
+        from sklearn.naive_bayes import GaussianNB
+        return GaussianNB()
 
     if algorithm in ("xgboost", "xgboost_gpu"):
         from xgboost import XGBClassifier

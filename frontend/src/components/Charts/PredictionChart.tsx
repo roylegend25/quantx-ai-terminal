@@ -51,6 +51,7 @@ type Props = {
 
 const TIMEFRAME_CONFIG: Record<string, { label: string; ms: number }> = {
   "1m": { label: "1m", ms: 60_000 },
+  "3m": { label: "3m", ms: 3 * 60_000 },
   "5m": { label: "5m", ms: 5 * 60_000 },
   "15m": { label: "15m", ms: 15 * 60_000 },
   "30m": { label: "30m", ms: 30 * 60_000 },
@@ -59,7 +60,7 @@ const TIMEFRAME_CONFIG: Record<string, { label: string; ms: number }> = {
   "1d": { label: "1D", ms: 86_400_000 },
   "1w": { label: "1W", ms: 7 * 86_400_000 },
 };
-const TIMEFRAME_ORDER = ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w"];
+const TIMEFRAME_ORDER = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"];
 
 const FORECAST_BARS = 40;
 
@@ -351,7 +352,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
 
   const direction = prediction?.direction;
   const isNoTrade = !prediction || direction === "NO_TRADE" || !direction;
-  const confidence = Math.max(0, Math.min(100, prediction?.confidence ?? 0));
+  const confidence = typeof prediction?.confidence === "number" ? Math.max(0, Math.min(100, prediction.confidence)) : null;
   const target = prediction?.target;
   const stop = prediction?.stop;
   const lastClose = displayCandles.length ? displayCandles[displayCandles.length - 1].close : lastPrice;
@@ -381,7 +382,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
     ? [
         `No ${shortSymbol} ${interval} forecast: ${prediction?.risk?.reason || "no qualifying signal"}`,
         typeof requiredConfidence === "number"
-          ? `${confidence.toFixed(0)}% confidence (needs ${requiredConfidence.toFixed(0)}%)`
+          ? `Point margin ${prediction?.decision_engine?.point_margin ?? 0} / required ${prediction?.decision_engine?.required_point_margin ?? "—"}`
           : null,
         direction === "NO_TRADE" && blockedStrategies.length
           ? `blocked by ${blockedStrategies.join(", ")}`
@@ -389,13 +390,13 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
       ]
         .filter(Boolean)
         .join(" · ")
-    : confidence >= 80
+    : (confidence ?? 0) >= 80
     ? `Strong ${direction === "LONG" ? "Buy" : "Sell"} Signal`
-    : confidence >= 60
+    : (confidence ?? 0) >= 60
     ? `${direction === "LONG" ? "Buy" : "Sell"} Signal`
     : "Weak Signal";
 
-  const confidenceLabel =
+  const confidenceLabel = isNoTrade ? "Evidence insufficient" : confidence == null ? "Confidence unavailable" :
     confidence >= 80 ? "High Confidence" : confidence >= 60 ? "Medium Confidence" : "Low Confidence";
   const horizonText = formatHorizon(FORECAST_BARS * tfConfig.ms);
 

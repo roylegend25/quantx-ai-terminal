@@ -3,8 +3,8 @@ import { API_BASE_URL } from "./baseUrl";
 
 const API = API_BASE_URL;
 
-async function getJson<T = any>(url: string): Promise<T> {
-  const res = await authFetch(`${API}${url}`);
+async function getJson<T = any>(url: string, options: RequestInit = {}): Promise<T> {
+  const res = await authFetch(`${API}${url}`, options);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(data?.detail || data?.message || `Request failed (${res.status})`);
@@ -51,8 +51,8 @@ async function patchJson<T = any>(url: string, body: Record<string, unknown>): P
 
 export const api = {
   dashboard: () => getJson("/api/dashboard"),
-  prediction: (symbol: string, interval: string) =>
-    getJson(`/api/prediction/${symbol}?interval=${interval}`),
+  prediction: (symbol: string, interval: string, signal?: AbortSignal) =>
+    getJson(`/api/prediction/${symbol}?timeframe=${interval}`, { signal }),
   predictionHistory: (symbol: string, timeframe?: string, limit = 500) => {
     const params = new URLSearchParams({ symbol, limit: String(limit) });
     if (timeframe) params.set("timeframe", timeframe);

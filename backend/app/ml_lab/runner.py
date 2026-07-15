@@ -397,7 +397,7 @@ def run_training_job(job_id: str) -> dict:
             drift_snapshot = {}
 
         promoted = False
-        if rules["auto_promote_enabled"] and rules["met"]:
+        if rules["auto_promote_enabled"] and rules["met"] and ALGORITHMS[algorithm].get("production_eligible", True):
             registry.promote_to_champion(model_id, db=db)
             promoted = True
 

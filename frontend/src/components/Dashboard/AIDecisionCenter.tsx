@@ -1,4 +1,5 @@
 import { memo } from "react";
+import { formatMarketRegime, pct01 } from "../../lib/activeDrive";
 
 type Signal = "bullish" | "bearish" | "neutral";
 type Tone = "green" | "red" | "yellow";
@@ -32,7 +33,7 @@ type Prediction = {
   confidence?: number;
   probability_up?: number;
   probability_down?: number;
-  regime?: string;
+  regime?: any;
   feature_regime?: string;
   stop?: number;
   target?: number;
@@ -40,6 +41,7 @@ type Prediction = {
   strategies?: Record<string, StrategyResult>;
   risk?: Risk;
   data_quality?: DataQuality;
+  decision_engine?: any;
 };
 
 type Props = {
@@ -82,6 +84,8 @@ function AIDecisionCenter({ symbol, prediction, lastUpdated }: Props) {
   const neutral = strategies.length - bullish - bearish;
 
   const macdHist = prediction?.features?.macd_hist;
+  const v2 = prediction?.decision_engine;
+  const noTrade = prediction?.direction === "NO_TRADE";
 
   // data_quality comes from the Phase 20 data engine: reliable=false means
   // the risk gate is blocking on data grounds; source cached_db means the
@@ -106,7 +110,9 @@ function AIDecisionCenter({ symbol, prediction, lastUpdated }: Props) {
           </h3>
           <p className="regime-desc">
             {prediction
-              ? `${fmtNum(prediction.confidence, 0)}% confidence · ${fmtNum(prediction.probability_up, 0)}% up / ${fmtNum(prediction.probability_down, 0)}% down`
+              ? noTrade
+                ? `Evidence insufficient · point margin ${v2?.point_margin ?? 0} / ${v2?.required_point_margin ?? "—"}`
+                : `${pct01(v2?.directional_confidence)} directional confidence · ${fmtNum(prediction.probability_up, 0)}% up / ${fmtNum(prediction.probability_down, 0)}% down`
               : "Waiting for the AI pipeline to produce a decision."}
           </p>
         </div>
@@ -128,7 +134,7 @@ function AIDecisionCenter({ symbol, prediction, lastUpdated }: Props) {
 
         <div className="analytics-tile">
           <span className="tile-label">Market Regime</span>
-          <b className="tile-value">{prediction?.regime ?? "—"}</b>
+          <b className="tile-value">{formatMarketRegime(v2?.market_regime ?? prediction?.regime)}</b>
         </div>
 
         <div className="analytics-tile">

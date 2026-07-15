@@ -172,9 +172,13 @@ def test_trading_simulation_no_trades_is_honest():
 
 def test_algorithm_catalog_is_honest():
     entries = {a["id"]: a for a in catalog()}
-    assert len(entries) == 11
+    assert len(entries) == 19
     assert entries["xgboost"]["available"] is True
     assert entries["random_forest"]["available"] is True
+    for model in ("logistic_regression", "elastic_net_logistic", "extra_trees", "hist_gradient_boosting", "linear_svm_calibrated", "sgd_classifier", "knn_benchmark", "gaussian_nb_benchmark"):
+        assert entries[model]["available"] is True
+        assert entries[model]["production_eligible"] is False
+        assert entries[model]["status"] == "experimental"
     # this host has no CUDA device and no torch ecosystem
     assert entries["xgboost_gpu"]["available"] is False and entries["xgboost_gpu"]["unavailable_reason"]
     assert entries["tft"]["available"] is False and "pytorch" in entries["tft"]["unavailable_reason"].lower()
@@ -437,7 +441,7 @@ def test_api_surface(monkeypatch, clean_lab_tables):
     client = make_client()
 
     algos = client.get("/api/ml/algorithms").json()
-    assert len(algos["algorithms"]) == 11
+    assert len(algos["algorithms"]) == 19
 
     overview = client.get("/api/ml/overview").json()
     assert "champion" in overview and "datasets" in overview

@@ -49,5 +49,13 @@ def performance(db: Session, source_name: str, source_version: str, symbol: str,
     wins = sum(1 for row in rows if row.correct is True)
     accuracy = wins / n if n else None
     posterior = (wins + 10.0) / (n + 20.0)
+    recent = rows[:20]
+    recent_wins = sum(1 for row in recent if row.correct is True)
+    recent_posterior = (recent_wins + 10.0) / (len(recent) + 20.0)
+    realized = [float(row.actual_return) for row in rows if row.actual_return is not None]
+    realized_edge = sum(realized) / len(realized) if realized else None
     tier = "trusted" if n >= 100 else "eligible" if n >= 50 else "early_evidence" if n >= 20 else "insufficient_evidence"
-    return {"resolved": n, "accuracy": accuracy, "shrunk_accuracy": posterior, "tier": tier}
+    return {"resolved": n, "accuracy": accuracy,
+            "recent_accuracy": recent_wins / len(recent) if recent else None,
+            "shrunk_accuracy": posterior, "recent_shrunk_accuracy": recent_posterior,
+            "realized_edge": realized_edge, "tier": tier}

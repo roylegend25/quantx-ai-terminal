@@ -91,6 +91,7 @@ export function useAppData(authed: boolean | null) {
   // symbol/interval (or the 10s poll fires) again before an in-flight load()
   // resolves, the older response must not clobber state with stale data.
   const loadRequestId = useRef(0);
+  const predictionAbort = useRef<AbortController | null>(null);
 
   const showToast = useCallback((message: string, tone: "success" | "error" = "success") => {
     setToast(message);
@@ -102,6 +103,9 @@ export function useAppData(authed: boolean | null) {
   const load = useCallback(async () => {
     const requestId = ++loadRequestId.current;
     const isStale = () => loadRequestId.current !== requestId;
+    predictionAbort.current?.abort();
+    const controller = new AbortController();
+    predictionAbort.current = controller;
 
     setLoading(true);
     try {
@@ -118,8 +122,13 @@ export function useAppData(authed: boolean | null) {
         (dash) => { if (!isStale() && dash) setDashboard(dash); },
         () => {}
       );
-      const predP = api.prediction(symbol, interval).then(
-        (predRes) => { if (!isStale() && predRes) setPrediction(predRes.prediction); },
+      const predP = api.prediction(symbol, interval, controller.signal).then(
+        (predRes) => {
+          if (isStale() || !predRes) return;
+          const next = predRes.prediction;
+          if (predRes.symbol !== symbol || predRes.timeframe !== interval || next?.symbol !== symbol || next?.timeframe !== interval) return;
+          setPrediction(next);
+        },
         () => {}
       );
       const candleP = api.candles(symbol, interval, 220).then(
@@ -476,6 +485,7 @@ export function useAppData(authed: boolean | null) {
   // newly-selected symbol/timeframe's label.
   useEffect(() => {
     setPrediction(null);
+    predictionAbort.current?.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, interval]);
 
@@ -483,7 +493,7 @@ export function useAppData(authed: boolean | null) {
     if (!authed) return;
     load();
     const id = window.setInterval(load, POLL_MS);
-    return () => window.clearInterval(id);
+    return () => { window.clearInterval(id); predictionAbort.current?.abort(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, interval, authed]);
 

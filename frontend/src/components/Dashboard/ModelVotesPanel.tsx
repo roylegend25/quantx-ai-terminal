@@ -1,92 +1,19 @@
 import { memo } from "react";
+import type { SignalCandidate } from "../../lib/activeDrive";
+import { pct01 } from "../../lib/activeDrive";
 
-type Vote = {
-  name: string;
-  direction: string | null;
-  confidence: number | null;
-  weight: number;
-  available: boolean;
-  drives_decision?: boolean;
-  contribution?: number;
-  reason?: string | null;
-};
-
-type Props = {
-  /** prediction.decision_engine.model_votes */
-  votes: Vote[] | null | undefined;
-  finalDirection?: string | null;
-};
-
-function dirTone(direction?: string | null): string {
-  if (direction === "LONG") return "green";
-  if (direction === "SHORT") return "red";
-  return "yellow";
+type Props={candidates?:SignalCandidate[]|null;finalDirection?:string|null};
+const labels:Record<string,string>={ml:"ML Models",ml_model:"ML Models",strategy:"Strategies",quant:"Quant Signals",quant_model:"Quant Signals"};
+function tone(d?:string){return d==="LONG"?"green":d==="SHORT"?"red":"yellow";}
+function ModelVotesPanel({candidates,finalDirection}:Props){
+  if(!candidates) return <p className="analytics-empty">Calculating Active Drive V2 decision…</p>;
+  if(!candidates.length) return <p className="analytics-empty">No candidates generated for this symbol/timeframe.</p>;
+  const groups=["ml","strategy","quant"].map(key=>({key,items:candidates.filter(c=>(c.source_type==="ml_model"?"ml":c.source_type==="quant_model"?"quant":c.source_type)===key)}));
+  return <div className="votes-panel candidate-groups">{groups.map(g=><section key={g.key} className="candidate-group"><h4>{labels[g.key]}</h4>{g.items.length?g.items.map(c=><div className={`vote-row ${c.status==="shadow"?"vote-unavailable":""}`} key={`${c.source_type}-${c.name}-${c.version}`}>
+    <div className="vote-head"><span className="vote-name">{c.name.replaceAll("_"," ")} <small>{c.version}</small></span><span className={`chip ${tone(c.direction)}`}>{c.direction}</span></div>
+    <div className="vote-bar-row"><span className="vote-meta">{c.final_points>=0?"+":""}{c.final_points.toFixed(2)} pts · {pct01(c.calibrated_confidence)} · {c.resolved_samples} resolved · {c.evidence_tier.replaceAll("_"," ")}</span></div>
+    <p className="vote-reason">{c.reason}</p>
+  </div>):<p className="analytics-empty">No {labels[g.key].toLowerCase()} generated.</p>}</section>)}
+  {finalDirection&&<p className="regime-desc votes-final">Final decision: <b className={tone(finalDirection)}>{finalDirection}</b></p>}</div>;
 }
-
-function prettyName(name: string): string {
-  return name === "Champion ML" ? name : name.replace(/_/g, " ");
-}
-
-function ModelVotesPanel({ votes, finalDirection }: Props) {
-  if (!votes || votes.length === 0) {
-    return <p className="analytics-empty">Waiting for the decision engine to report model votes.</p>;
-  }
-
-  // contribution is the signed push toward LONG in probability points; the
-  // bar scales against the largest absolute push so rows stay comparable.
-  const maxAbs = Math.max(1, ...votes.map((v) => Math.abs(v.contribution ?? 0)));
-
-  return (
-    <div className="votes-panel">
-      {votes.map((v) => {
-        const contribution = v.contribution ?? 0;
-        const barPct = Math.min(100, (Math.abs(contribution) / maxAbs) * 100);
-        return (
-          <div className={`vote-row${v.available ? "" : " vote-unavailable"}`} key={v.name}>
-            <div className="vote-head">
-              <span className="vote-name">
-                {prettyName(v.name)}
-                {/* only the Champion gets the driver chip - in ensemble mode
-                    every strategy contributes, so per-row chips are noise */}
-                {v.name === "Champion ML" && v.drives_decision && v.available && (
-                  <span className="chip cyan vote-driver">drives decision</span>
-                )}
-              </span>
-              {v.available ? (
-                <span className={`chip ${dirTone(v.direction)}`}>
-                  {v.direction ?? "—"}
-                  {typeof v.confidence === "number" ? ` · ${v.confidence.toFixed(0)}%` : ""}
-                </span>
-              ) : (
-                <span className="chip">unavailable</span>
-              )}
-            </div>
-            {v.available ? (
-              <div className="vote-bar-row">
-                <div className="vote-bar">
-                  <div
-                    className={`vote-bar-fill ${contribution >= 0 ? "fill-pos" : "fill-neg"}`}
-                    style={{ width: `${barPct}%` }}
-                  />
-                </div>
-                <span className="vote-meta">
-                  w {(v.weight * 100).toFixed(0)}% · {contribution >= 0 ? "+" : ""}
-                  {contribution.toFixed(1)} pts
-                </span>
-              </div>
-            ) : (
-              <p className="vote-reason">{v.reason ?? "Not available this cycle"}</p>
-            )}
-          </div>
-        );
-      })}
-      {finalDirection && (
-        <p className="regime-desc votes-final">
-          Final decision: <b className={dirTone(finalDirection)}>{finalDirection}</b>
-        </p>
-      )}
-    </div>
-  );
-}
-
 export default memo(ModelVotesPanel);

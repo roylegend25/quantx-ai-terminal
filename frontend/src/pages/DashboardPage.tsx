@@ -100,7 +100,7 @@ export default function DashboardPage(props: Props) {
         </Card>
 
         <Card title="Model & Strategy Votes">
-          <ModelVotesPanel votes={decisionEngine?.model_votes} finalDirection={decisionEngine?.final_direction} />
+          <ModelVotesPanel candidates={decisionEngine?.candidates} finalDirection={decisionEngine?.final_signal} />
         </Card>
       </div>
 

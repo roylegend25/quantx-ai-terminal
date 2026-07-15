@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.core.config import settings
 from app.decision_engine.repository import get_setting
 from app.decision_engine.types import DecisionEngineType
 from app.decision_engine.v1 import ActiveDriveV1Adapter
@@ -15,10 +16,11 @@ class DecisionEngineRouter:
         try:
             return engine.evaluate({**context, "db": db})
         except Exception as exc:
-            return {"engine": engine.name.value, "engine_version": engine.version, "symbol": context["symbol"], "timeframe": context["timeframe"],
-                    "final_signal": "NO_TRADE", "confidence": 0.0, "probability_up": 0.5, "probability_down": 0.5,
+            return {"engine": engine.name.value, "engine_info":{"id":engine.name.value,"name":"Active Drive V2" if engine.name==DecisionEngineType.ACTIVE_DRIVE_V2 else "Active Drive V1","version":engine.version,"authoritative":True}, "engine_version": engine.version, "symbol": context["symbol"], "timeframe": context["timeframe"],
+                    "signal":"NO_TRADE", "final_signal": "NO_TRADE", "confidence": None, "directional_confidence":None, "decision_confidence":None, "abstention_confidence":1.0, "probability_up": 0.5, "probability_down": 0.5,
                     "expected_edge": None, "long_points": 0.0, "short_points": 0.0, "point_margin": 0.0,
-                    "required_point_margin": None, "eligible_for_execution": False,
+                    "required_confidence":settings.active_drive_min_confidence,"minimum_total_evidence":settings.active_drive_min_total_evidence,
+                    "required_point_margin": settings.active_drive_min_point_margin, "eligible_for_execution": False,
                     "blocking_reasons": [f"Active Drive V2 failed closed: {type(exc).__name__}"], "supporting_sources": [],
                     "conflicting_sources": [], "candidates": [], "market_regime": {}, "data_status": "stale",
                     "evidence_tier": "insufficient_evidence", "candidate_count": 0, "health": "error"}

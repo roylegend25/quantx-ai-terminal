@@ -91,7 +91,11 @@ def _assert_valid_prediction_response(body: dict, symbol: str, timeframe: str = 
     pred = body["prediction"]
 
     assert pred["direction"] in ("LONG", "SHORT", "NO_TRADE")
-    assert 0.0 <= pred["confidence"] <= 100.0
+    if pred["direction"] == "NO_TRADE":
+        assert pred["confidence"] is None
+        assert pred["decision_engine"]["directional_confidence"] is None
+    else:
+        assert 0.0 <= pred["confidence"] <= 100.0
     assert 0 <= pred["probability_up"] <= 100
     assert 0 <= pred["probability_down"] <= 100
     assert isinstance(pred["target"], (int, float))
@@ -164,12 +168,14 @@ def test_prediction_route_accepts_timeframe_query_param_as_interval_alias(monkey
     assert body["timeframe"] == "1h"
 
 
-def test_prediction_route_rejects_unsupported_timeframe(monkeypatch):
+def test_prediction_route_supports_3m_timeframe(monkeypatch):
     monkeypatch.setattr(prediction_module.httpx, "AsyncClient", _FakeAsyncClient)
     client = make_client()
     resp = client.get("/api/prediction/BTCUSDT", params={"timeframe": "3m"})
-    assert resp.status_code == 400
-    assert "3m" in resp.json()["detail"]
+    monkeypatch.setattr(prediction_module.market_intelligence, "get_context", _fake_get_context)
+    monkeypatch.setattr(prediction_module, "evaluate_all_timeframes", _fake_evaluate_all_timeframes)
+    assert resp.status_code == 200
+    assert resp.json()["timeframe"] == "3m"
 
 
 def test_prediction_history_route_returns_a_list_for_both_symbols():

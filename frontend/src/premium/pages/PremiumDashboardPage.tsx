@@ -102,7 +102,7 @@ export default function PremiumDashboardPage(props: Props) {
 
             <div className="qp-metric-grid" style={{ marginTop: 16 }}>
               <MetricCard label="Direction" value={isNoTrade ? "NO TRADE" : direction} tone={directionTone} />
-              <MetricCard label="Confidence" value={fmtPct(prediction?.confidence ?? 0, 0)} />
+              <MetricCard label={isNoTrade ? "Evidence" : "Directional Confidence"} value={isNoTrade ? "Insufficient" : fmtPct(prediction?.confidence, 0)} />
               <MetricCard label="Price Target" value={fmtUsd(prediction?.target)} tone="positive" />
               <MetricCard label="Stop Loss" value={fmtUsd(prediction?.stop)} tone="negative" />
               <MetricCard label="Horizon" value={props.interval?.toUpperCase() || "-"} />
@@ -136,7 +136,7 @@ export default function PremiumDashboardPage(props: Props) {
           </Card>
 
           <Card title="Model & Strategy Votes">
-            <ModelVotesPanel votes={decisionEngine?.model_votes} finalDirection={decisionEngine?.final_direction} />
+            <ModelVotesPanel candidates={decisionEngine?.candidates} finalDirection={decisionEngine?.final_signal} />
           </Card>
         </div>
 

@@ -254,6 +254,7 @@ function buildCone(candlesArr: Candle[], prediction: any, bars: number): Cone {
 
 const TF_LABELS: Record<number, string> = {
   60_000: "1m",
+  180_000: "3m",
   300_000: "5m",
   900_000: "15m",
   1_800_000: "30m",

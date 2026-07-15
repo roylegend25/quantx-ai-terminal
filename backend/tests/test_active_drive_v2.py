@@ -46,10 +46,29 @@ def test_v2_small_sample_is_capped_and_fails_closed_without_edge():
             "regime": "TRENDING", "data_status": "live", "risk_reward_ratio": 2.0})
         assert result["final_signal"] == "NO_TRADE"
         assert result["eligible_for_execution"] is False
+        assert result["directional_confidence"] is None
+        assert result["decision_confidence"] is None
+        assert 0 <= result["abstention_confidence"] <= 1
+        assert result["required_confidence"] > 0
+        assert result["engine_info"]["name"] == "Active Drive V2"
+        assert {c["source_type"] for c in result["candidates"]} >= {"ml", "strategy", "quant"}
         assert all(abs(c["candidate_points"]) <= 4 for c in result["candidates"])
         assert all(c["historical_accuracy"] is None for c in result["candidates"])
         assert "Expected edge is not yet supported by resolved out-of-sample history" in result["blocking_reasons"]
     finally: db.close()
+
+
+def test_v2_candidates_are_normalized_and_family_capped():
+    db = SessionLocal()
+    try:
+        result = ActiveDriveV2Engine().evaluate({"db":db,"symbol":"BTCUSDT","timeframe":"15m","legacy":legacy(),"regime":"TRENDING","data_status":"live","risk_reward_ratio":2.0})
+        required={"source_type","family","name","version","status","direction","calibrated_confidence","base_points","reliability_weight","final_points","resolved_samples","evidence_tier","reason"}
+        assert result["candidates"]
+        assert all(required <= set(candidate) for candidate in result["candidates"])
+        assert all(abs(points) <= ActiveDriveV2Engine().version.count(".") * 0 + 12 for points in result["family_totals"].values())
+        assert all(c["final_points"] == 0 for c in result["candidates"] if c["status"] == "shadow")
+    finally:
+        db.close()
 
 
 def test_append_only_ledger_does_not_count_unresolved():

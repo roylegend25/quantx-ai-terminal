@@ -64,6 +64,7 @@ MIN_CANDLES_FOR_PREDICTION = 50
 # real (if uninteresting) prediction.
 SUPPORTED_INTERVALS_MS = {
     "1m": 60_000,
+    "3m": 3 * 60_000,
     "5m": 5 * 60_000,
     "15m": 15 * 60_000,
     "30m": 30 * 60_000,
@@ -588,15 +589,18 @@ def _no_data_response(symbol: str, interval: str, data_quality: dict, active_eng
     engine_version = active_engine.version if active_engine else "2.0.0"
     decision_engine = {
         "engine": engine_name, "engine_version": engine_version, "mode": engine_name,
+        "engine_info":{"id":engine_name,"name":"Active Drive V2" if engine_name=="active_drive_v2" else "Active Drive V1","version":engine_version,"authoritative":True},
         "final_signal": "NO_TRADE", "eligible_for_execution": False, "blocking_reasons": [reason],
+        "directional_confidence":None,"decision_confidence":None,"abstention_confidence":1.0,
         "long_points": 0.0, "short_points": 0.0, "point_margin": 0.0, "evidence_tier": "insufficient_evidence",
         "mode_legacy": "fallback",
         "active_model": None,
         "fallback_reason": reason,
         "strategy_used": None,
         "final_direction": "NO_TRADE",
-        "final_confidence": 0.0,
-        "required_confidence": None,
+        "final_confidence": None,
+        "required_confidence": settings.active_drive_min_confidence,
+        "minimum_total_evidence": settings.active_drive_min_total_evidence,
         "risk_allowed": False,
         "risk_reason": reason,
         "trade_allowed": False,
@@ -612,7 +616,7 @@ def _no_data_response(symbol: str, interval: str, data_quality: dict, active_eng
         "timeframe": interval,
         "reason": reason,
         "direction": "NO_TRADE",
-        "confidence": 0.0,
+        "confidence": None,
         "decision_engine": decision_engine,
         "probability_up": None,
         "probability_down": None,
@@ -625,7 +629,9 @@ def _no_data_response(symbol: str, interval: str, data_quality: dict, active_eng
         "prediction_horizon": {"bars": 0, "interval": interval, "horizon_ms": 0, "band_basis": None, "reason": reason},
         "prediction": {
             "direction": "NO_TRADE",
-            "confidence": 0.0,
+            "confidence": None,
+            "symbol":symbol,
+            "timeframe":interval,
             "decision_engine": decision_engine,
             "data_quality": data_quality,
             "risk": {"allowed": False, "reason": reason},
@@ -698,18 +704,26 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
             engine_result["legacy_decision_engine"] = legacy_decision
             engine_result["mode"] = engine_result["engine"]
             engine_result["final_direction"] = engine_result["final_signal"]
-            engine_result["final_confidence"] = round(engine_result["confidence"] * 100, 1)
+            # Compatibility mirrors remain percentages, but null stays null.
+            # NO_TRADE abstention confidence is never presented as a trade
+            # directional confidence.
+            engine_result["final_confidence"] = (
+                round(engine_result["directional_confidence"] * 100, 1)
+                if engine_result.get("directional_confidence") is not None else None
+            )
+            engine_result["required_confidence_pct"] = round(engine_result["required_confidence"] * 100, 1)
             engine_result["trade_allowed"] = engine_result["eligible_for_execution"]
             engine_result["trade_blockers"] = engine_result["blocking_reasons"]
             engine_result["top_reasons"] = engine_result["blocking_reasons"][:5]
             pred["direction"] = engine_result["final_signal"]
-            pred["confidence"] = round(engine_result["confidence"] * 100, 1)
+            pred["confidence"] = engine_result["final_confidence"]
             pred["probability_up"] = round(engine_result["probability_up"] * 100, 1)
             pred["probability_down"] = round(engine_result["probability_down"] * 100, 1)
             pred["decision_engine"] = engine_result
             if not engine_result["eligible_for_execution"]:
                 pred["risk"] = {**pred["risk"], "allowed": False, "reason": engine_result["blocking_reasons"][0] if engine_result["blocking_reasons"] else "V2 decision is not execution eligible"}
             pred["decision_id"] = persist_engine_decision(decision_db, owner(current_user), engine_result, pred.get("price"), features)
+            engine_result["decision_id"] = pred["decision_id"]
         finally:
             decision_db.close()
         pred["computed_at"] = int(time.time() * 1000)
@@ -756,7 +770,7 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
         last_candle_time=candles[-1]["time"] if candles else 0,
         price=pred["price"],
         direction=pred["direction"],
-        confidence=pred["confidence"],
+        confidence=pred["confidence"] or 0,
         target=pred["target"],
         stop=pred["stop"],
         atr=features.get("atr"),
@@ -766,11 +780,26 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
     pred["upper_band_points"] = forecast["upper_band_points"]
     pred["lower_band_points"] = forecast["lower_band_points"]
     pred["forecast"] = {
+        "available": bool(forecast["forecast_points"]),
+        "reason": forecast["reason"] or ("insufficient_evidence" if pred["direction"] == "NO_TRADE" else None),
+        "symbol": symbol,
+        "timeframe": interval,
+        "decision_id": pred.get("decision_id"),
+        "reference_candle_time": candles[-1]["time"] if candles else None,
         "bars": forecast["bars"],
         "horizon_ms": forecast["horizon_ms"],
         "band_basis": forecast["band_basis"],
-        "reason": forecast["reason"],
+        "forecast_points": forecast["forecast_points"],
+        "upper_bound": forecast["upper_band_points"],
+        "lower_bound": forecast["lower_band_points"],
+        "target_price": pred.get("target") if pred["direction"] != "NO_TRADE" else None,
+        "invalidation_price": pred.get("stop") if pred["direction"] != "NO_TRADE" else None,
     }
+    pred["symbol"] = symbol
+    pred["timeframe"] = interval
+    pred["generated_at"] = pred["decision_engine"].get("generated_at")
+    pred["expires_at"] = pred["decision_engine"].get("expires_at")
+    pred["decision_engine"]["forecast"] = pred["forecast"]
 
     response = {
         "symbol": symbol,
