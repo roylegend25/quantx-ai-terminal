@@ -70,7 +70,7 @@ function DecisionReasoningCard({ decision, regime, executionOutcome }: Props) {
           ) : (
             <>
               <b>
-                {direction === "NO_TRADE" ? "NO TRADE · Evidence insufficient" : direction}
+                {direction === "NO_TRADE" ? `NO TRADE · ${blockers[0] ?? "No actionable decision"}` : direction}
                 {state === "allowed" ? " · trade allowed" : state === "blocked" ? " · blocked by risk" : " · waiting"}
               </b>
               <p className="regime-desc">{blockers[0] ?? "Waiting for the decision engine."}</p>

@@ -86,6 +86,10 @@ function AIDecisionCenter({ symbol, prediction, lastUpdated }: Props) {
   const macdHist = prediction?.features?.macd_hist;
   const v2 = prediction?.decision_engine;
   const noTrade = prediction?.direction === "NO_TRADE";
+  const confidenceDiagnostics = v2?.confidence_diagnostics ?? {};
+  const finalProbabilityAvailable = typeof prediction?.probability_up === "number";
+  const displayUp = finalProbabilityAvailable ? prediction?.probability_up : typeof confidenceDiagnostics.indicative_point_score_up === "number" ? confidenceDiagnostics.indicative_point_score_up * 100 : null;
+  const displayDown = finalProbabilityAvailable ? prediction?.probability_down : typeof confidenceDiagnostics.indicative_point_score_down === "number" ? confidenceDiagnostics.indicative_point_score_down * 100 : null;
 
   // data_quality comes from the Phase 20 data engine: reliable=false means
   // the risk gate is blocking on data grounds; source cached_db means the
@@ -111,7 +115,7 @@ function AIDecisionCenter({ symbol, prediction, lastUpdated }: Props) {
           <p className="regime-desc">
             {prediction
               ? noTrade
-                ? `Evidence insufficient · point margin ${v2?.point_margin ?? 0} / ${v2?.required_point_margin ?? "—"}`
+                ? (v2?.blocking_reasons?.[0] ?? "No actionable decision")
                 : `${pct01(v2?.directional_confidence)} directional confidence · ${fmtNum(prediction.probability_up, 0)}% up / ${fmtNum(prediction.probability_down, 0)}% down`
               : "Waiting for the AI pipeline to produce a decision."}
           </p>
@@ -123,13 +127,13 @@ function AIDecisionCenter({ symbol, prediction, lastUpdated }: Props) {
 
       <div className="analytics-grid">
         <div className="analytics-tile">
-          <span className="tile-label">Probability Up</span>
-          <b className="tile-value green">{fmtNum(prediction?.probability_up, 0)}%</b>
+          <span className="tile-label">{finalProbabilityAvailable ? "Calibrated Probability Up" : "Indicative Point Score Up"}</span>
+          <b className="tile-value green">{displayUp == null ? "—" : `${fmtNum(displayUp, 0)}%`}</b>
         </div>
 
         <div className="analytics-tile">
-          <span className="tile-label">Probability Down</span>
-          <b className="tile-value red">{fmtNum(prediction?.probability_down, 0)}%</b>
+          <span className="tile-label">{finalProbabilityAvailable ? "Calibrated Probability Down" : "Indicative Point Score Down"}</span>
+          <b className="tile-value red">{displayDown == null ? "—" : `${fmtNum(displayDown, 0)}%`}</b>
         </div>
 
         <div className="analytics-tile">
@@ -144,12 +148,12 @@ function AIDecisionCenter({ symbol, prediction, lastUpdated }: Props) {
 
         <div className="analytics-tile">
           <span className="tile-label">Stop</span>
-          <b className="tile-value red">{fmtUsd(prediction?.stop)}</b>
+          <b className="tile-value red">{noTrade ? "Not applicable" : fmtUsd(prediction?.stop)}</b>
         </div>
 
         <div className="analytics-tile">
           <span className="tile-label">Target</span>
-          <b className="tile-value green">{fmtUsd(prediction?.target)}</b>
+          <b className="tile-value green">{noTrade ? "Not applicable" : fmtUsd(prediction?.target)}</b>
         </div>
 
         <div className="analytics-tile">

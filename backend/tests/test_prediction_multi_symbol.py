@@ -94,12 +94,14 @@ def _assert_valid_prediction_response(body: dict, symbol: str, timeframe: str = 
     if pred["direction"] == "NO_TRADE":
         assert pred["confidence"] is None
         assert pred["decision_engine"]["directional_confidence"] is None
+        assert pred["target"] is None
+        assert pred["stop"] is None
     else:
         assert 0.0 <= pred["confidence"] <= 100.0
+        assert isinstance(pred["target"], (int, float))
+        assert isinstance(pred["stop"], (int, float))
     assert 0 <= pred["probability_up"] <= 100
     assert 0 <= pred["probability_down"] <= 100
-    assert isinstance(pred["target"], (int, float))
-    assert isinstance(pred["stop"], (int, float))
     assert isinstance(pred["price"], (int, float))
     assert pred["regime"]
 

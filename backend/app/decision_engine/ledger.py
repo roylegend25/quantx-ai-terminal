@@ -24,6 +24,7 @@ def persist(db, user_id: str, result: dict, reference_price: float | None, featu
             "market_regime", "evidence_tier", "resolved_sample_size", "historical_accuracy", "eligible",
             "rejection_reason", "evidence", "data_freshness",
         )}
+        record_fields["evidence"] = {**(candidate.get("evidence") or {}), "diagnostics": {k: candidate.get(k) for k in ("raw_confidence","calibrated_confidence","base_points","reliability_weight","sample_size_weight","symbol_weight","timeframe_weight","regime_weight","recent_performance_weight","calibration_weight","correlation_penalty","eligible_now","regime_compatible","required_data_available","rejection_code")}}
         db.add(SignalCandidateRecord(id=candidate_id, decision_id=decision_id, user_id=user_id, **record_fields))
         db.add(PredictionLedger(prediction_id=uuid.uuid4().hex, candidate_id=candidate_id, decision_id=decision_id, user_id=user_id,
             engine=result["engine"], engine_version=result["engine_version"], source_type=candidate["source_type"],

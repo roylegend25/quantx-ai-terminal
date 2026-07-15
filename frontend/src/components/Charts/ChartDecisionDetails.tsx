@@ -8,7 +8,7 @@ export function ChartDecisionChip({prediction,onOpen}:{prediction:any;onOpen:()=
   const signal=prediction?.direction??"NO_TRADE";
   const margin=prediction?.decision_engine?.point_margin;
   return <button className={`chart-decision-chip ${signal.toLowerCase()}`} onClick={onOpen} aria-label="View Active Drive V2 decision details">
-    <b>{signal}</b><span>V2 · {signal==="NO_TRADE"?"Evidence insufficient":typeof margin==="number"?`Margin ${margin.toFixed(2)}`:"Decision ready"}</span>
+    <b>{signal}</b><span>V2 · {signal==="NO_TRADE"?(prediction?.decision_engine?.blocking_reasons?.[0]??"No actionable decision"):typeof margin==="number"?`Margin ${margin.toFixed(2)}`:"Decision ready"}</span>
   </button>;
 }
 

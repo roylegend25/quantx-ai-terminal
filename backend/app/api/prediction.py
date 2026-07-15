@@ -729,9 +729,23 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
             engine_result["top_reasons"] = engine_result["blocking_reasons"][:5]
             pred["direction"] = engine_result["final_signal"]
             pred["confidence"] = engine_result["final_confidence"]
-            pred["probability_up"] = round(engine_result["probability_up"] * 100, 1)
-            pred["probability_down"] = round(engine_result["probability_down"] * 100, 1)
+            diag = engine_result.get("confidence_diagnostics", {})
+            # Legacy numeric mirrors remain available for API compatibility, but
+            # when calibration is unavailable they are explicitly the bounded
+            # point-share indicator, not final V2 probability or confidence.
+            up = engine_result.get("probability_up")
+            down = engine_result.get("probability_down")
+            if up is None:
+                up = diag.get("indicative_point_score_up", 0.5)
+                down = diag.get("indicative_point_score_down", 0.5)
+            pred["probability_up"] = round(float(up) * 100, 1)
+            pred["probability_down"] = round(float(down) * 100, 1)
+            pred["probability_semantics"] = "calibrated_v2_probability" if engine_result.get("probability_up") is not None else "indicative_point_share"
             pred["decision_engine"] = engine_result
+            if engine_result["final_signal"] == "NO_TRADE":
+                pred["target"] = None
+                pred["stop"] = None
+                pred["trailing_stop"] = None
             if not engine_result["eligible_for_execution"]:
                 pred["risk"] = {**pred["risk"], "allowed": False, "reason": engine_result["blocking_reasons"][0] if engine_result["blocking_reasons"] else "V2 decision is not execution eligible"}
             pred["decision_id"] = persist_engine_decision(decision_db, owner(current_user), engine_result, pred.get("price"), features)

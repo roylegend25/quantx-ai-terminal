@@ -1,22 +1,20 @@
-import { useEffect, useState } from "react";
+import { useEffect,useState } from "react";
 import { api } from "../../services/api";
-type Props={symbol:string;timeframe:string};
-const ratio=(a?:number,b?:number)=>`${a??0} / ${b??0}`;
-const pct=(v?:number|null)=>v==null?"Not established":`${(v*100).toFixed(1)}%`;
-export default function SourceHealthPanel({symbol,timeframe}:Props){
-  const [health,setHealth]=useState<any>(null); const [error,setError]=useState("");
-  useEffect(()=>{let live=true; setError(""); api.sourceHealth(symbol,timeframe).then(v=>{if(live)setHealth(v)}).catch(e=>{if(live)setError(e.message)}); return()=>{live=false}},[symbol,timeframe]);
-  if(error)return <p className="analytics-empty">Source health unavailable: {error}</p>;
-  if(!health)return <p className="analytics-empty">Loading source health…</p>;
-  const s=health.summary,r=health.resolver,l=health.ledger,d=health.decision_requirements; const sources=health.sources??[];
-  const count=(type:string,status:string)=>sources.filter((x:any)=>x.source_type===type&&x.runtime_status===status).length;
-  return <div className="source-health-panel" data-testid="source-health"><div className="engine-metric-grid">
-    <span><b>ML Models</b><br/>{ratio(s.ml_working,s.ml_total)} working · {count("ml","shadow_not_inferred")} shadow</span>
-    <span><b>Strategies</b><br/>{ratio(s.strategy_working,s.strategy_total)} working · {sources.filter((x:any)=>x.source_type==="strategy"&&x.production_eligible).length} eligible now</span>
-    <span><b>Quant</b><br/>{ratio(s.quant_working,s.quant_total)} working · {count("quant","unavailable_data")} unavailable</span>
-    <span><b>Prediction Resolver</b><br/><span className={`chip ${r.healthy?"green":"red"}`}>{r.healthy?"Healthy":"Degraded"}</span> · {l.resolved} resolved · {l.expired_unresolved} expired</span>
-  </div><div className="engine-metric-grid">
-    <span>Evidence <b>{d.total_evidence??"—"} / {d.minimum_total_evidence}</b></span><span>Point margin <b>{d.point_margin??"—"} / {d.required_point_margin}</b></span>
-    <span>Confidence <b>{pct(d.directional_confidence)} / {pct(d.required_confidence)}</b></span><span>History <b>{l.resolved} / {d.minimum_resolved_samples}</b></span>
-  </div>{!r.healthy&&<p className="regime-desc">Resolver degraded: {r.degraded_reason??r.last_error??"unknown reason"}</p>}</div>;
+type Props={symbol:string;timeframe:string;decision:any};
+const pct=(v:any)=>typeof v==="number"?`${(v*100).toFixed(1)}%`:"Not established";
+const val=(v:any)=>v==null?"—":typeof v==="number"?Number(v.toFixed(4)):String(v);
+function Gate({metric}:{metric:any}){if(!metric)return null;return <article className="analysis-source-card"><div className="vote-head"><b>{String(metric.name).replaceAll("_"," ")}</b><span className={`chip ${metric.passed?"green":"red"}`}>{metric.passed?"Passed":"Failed"}</span></div><div className="engine-metric-grid"><span>Current: {metric.value==null?"Not established":val(metric.value)}</span><span>Required: {val(metric.required)}</span><span>Formula: {metric.formula}</span><span>Scope: {metric.scope}</span></div><p className="regime-desc">{metric.failure?.reason??metric.description}</p></article>}
+export default function SourceHealthPanel({symbol,timeframe,decision}:Props){
+ const id=decision?.decision_id; const [health,setHealth]=useState<any>(null); const [history,setHistory]=useState<any>(null); const [error,setError]=useState("");
+ useEffect(()=>{let live=true;if(!id){setHealth(null);return()=>{live=false}} setError("");Promise.all([api.sourceHealth(symbol,timeframe,id),api.predictionResolutionSummary()]).then(([h,r])=>{if(!live)return;if(h?.decision_snapshot?.decision_id!==id)throw new Error("STALE_DECISION_SNAPSHOT");setHealth(h);setHistory(r)}).catch(e=>{if(live)setError(e.message)});return()=>{live=false}},[symbol,timeframe,id]);
+ if(error)return <p className="analytics-empty">Source health unavailable: {error}</p>; if(!id||!health)return <p className="analytics-empty">Loading diagnostics for decision {id??"pending"}…</p>;
+ const s=health.summary,r=health.resolver,l=health.ledger,req=health.decision_requirements,sources=health.sources??[]; const strategies=sources.filter((x:any)=>x.source_type==="strategy"),quants=sources.filter((x:any)=>x.source_type==="quant"),metrics=req.metrics??{};
+ return <div className="source-health-panel" data-testid="source-health" data-decision-id={id}>
+  <p className="regime-desc">Snapshot <b>{id}</b> · {health.decision_snapshot.engine_version} · {symbol} {timeframe} · {health.decision_snapshot.generated_at}</p>
+  <div className="engine-metric-grid"><span><b>ML Models</b><br/>{s.ml_working}/{s.ml_total} working · {s.ml_total-s.ml_working} shadow</span><span><b>Strategies</b><br/>{s.strategy_working}/{s.strategy_total} working · {s.strategy_eligible_now} eligible now</span><span><b>Quant</b><br/>{s.quant_working}/{s.quant_total} working · {s.quant_unavailable} unavailable</span><span><b>Resolver</b><br/><span className={`chip ${r.healthy?"green":"red"}`}>{r.healthy?"Healthy":"Degraded"}</span> · {l.resolved} relevant scope · {l.expired_unresolved} expired</span></div>
+  <h3>Decision Requirements</h3><div className="analysis-source-grid"><Gate metric={metrics.evidence}/><Gate metric={metrics.point_margin}/><Gate metric={metrics.confidence}/><Gate metric={metrics.history}/></div>
+  <details><summary>Strategy eligibility — {s.strategy_eligible_now} eligible, {strategies.length-s.strategy_eligible_now} not eligible</summary><div className="analysis-source-grid">{strategies.map((x:any)=><article className="analysis-source-card" key={x.source_name}><div className="vote-head"><b>{x.source_name.replaceAll("_"," ")}</b><span className={`chip ${x.eligible_now?"green":"yellow"}`}>{x.eligible_now?"Eligible":"Not eligible"}</span></div><p>{x.direction} · {val(x.final_points)} points · {x.family}</p><p className="regime-desc">{x.eligible_now?x.reason??"Directional trigger active":`${x.rejection_code??"NO_TRIGGER"}: ${x.rejection_reason??"No directional trigger"}`}</p></article>)}</div></details>
+  <details><summary>Quant availability — {s.quant_working} working, {s.quant_unavailable} unavailable</summary><div className="analysis-source-grid">{quants.map((x:any)=><article className="analysis-source-card" key={x.source_name}><div className="vote-head"><b>{x.source_name.replaceAll("_"," ")}</b><span className={`chip ${x.runtime_status==="working"?"green":"red"}`}>{x.runtime_status==="working"?"Working":"Unavailable"}</span></div><p>{x.direction} · score {val(x.normalized_score)} · {val(x.final_points)} points</p><p className="regime-desc">{x.runtime_status==="working"?`Inputs: ${(x.required_inputs??[]).join(", ")}`:`${x.unavailable_code}: ${x.unavailable_reason}`}</p></article>)}</div></details>
+  <details open><summary>Resolved prediction history</summary><p>Global resolved: <b>{history?.resolved??0}</b> · {symbol} {timeframe}: <b>{l.resolved}</b> · Relevant source gate: <b>{metrics.history?.value??0}/{metrics.history?.required??"—"}</b></p><div className="table-scroll"><table><thead><tr><th>Timeframe</th><th>Total</th><th>Resolved</th><th>Unresolved</th><th>Correct</th><th>Wrong</th><th>Neutral</th><th>Accuracy</th></tr></thead><tbody>{(history?.by_timeframe??[]).map((x:any)=><tr key={x.key}><td>{x.key}</td><td>{x.total_predictions}</td><td>{x.resolved}</td><td>{x.unresolved}</td><td>{x.correct}</td><td>{x.wrong}</td><td>{x.neutral}</td><td>{x.accuracy==null?"Insufficient sample":pct(x.accuracy)}</td></tr>)}</tbody></table></div></details>
+ </div>;
 }
