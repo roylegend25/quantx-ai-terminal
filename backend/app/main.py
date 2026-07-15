@@ -42,6 +42,7 @@ from app.api.admin_config import router as admin_config_router
 from app.api.binance_snapshot import router as binance_snapshot_router
 from app.core.env_manager import apply_to_settings as apply_env_file_to_settings
 from app.data_sources.scheduler import start_data_scheduler
+from app.decision_engine.scheduler import start_scheduler as start_decision_resolver
 from app.trading.binance_sync import start_binance_sync
 from app.trading.protection_watchdog import start_protection_watchdog
 from app.core.config import settings
@@ -54,6 +55,7 @@ async def delayed_background_start():
     start_position_manager()
     start_mlops_scheduler()
     start_data_scheduler()
+    start_decision_resolver()
     start_binance_sync()
     start_protection_watchdog()
 

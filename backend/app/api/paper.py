@@ -74,6 +74,7 @@ class StrategyContext(BaseModel):
     # absent for manual API opens, which are honestly recorded as "manual"
     timeframe: str | None = None
     decision_mode: str | None = None
+    decision_engine_version: str | None = None
     champion_model_id: str | None = None
     champion_model_type: str | None = None
     strategy_used: str | None = None
@@ -90,6 +91,7 @@ def _decision_fields(t: Trade) -> dict:
     return {
         "timeframe": t.timeframe,
         "decision_mode": t.decision_mode,
+        "decision_engine_version": t.decision_engine_version,
         "champion_model_id": t.champion_model_id,
         "champion_model_type": t.champion_model_type,
         "strategy_used": t.strategy_used,
@@ -365,6 +367,7 @@ async def open_trade(
         # direct API/UI call - so label it "manual" rather than leaving the
         # journal ambiguous about who opened it.
         decision_mode=(context.decision_mode if context and context.decision_mode else "manual"),
+        decision_engine_version=context.decision_engine_version if context else None,
         champion_model_id=context.champion_model_id if context else None,
         champion_model_type=context.champion_model_type if context else None,
         strategy_used=context.strategy_used if context else None,

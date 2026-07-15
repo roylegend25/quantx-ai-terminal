@@ -24,7 +24,8 @@ class Trade(Base):
     # nullable: rows from before this existed, and manual API opens without
     # a decision context, honestly stay NULL rather than getting backfilled.
     timeframe = Column(String, nullable=True)
-    decision_mode = Column(String, nullable=True)  # champion_ml | strategy_ensemble | fallback | manual
+    decision_mode = Column(String, nullable=True)  # active_drive_v1 | active_drive_v2 | manual
+    decision_engine_version = Column(String, nullable=True)
     champion_model_id = Column(String, nullable=True)
     champion_model_type = Column(String, nullable=True)
     strategy_used = Column(String, nullable=True)
@@ -76,6 +77,110 @@ class PredictionFeature(Base):
     outcome = Column(String, nullable=True)  # WIN / LOSS
     realized_return = Column(Float, nullable=True)
     latency_ms = Column(Float, nullable=True)
+
+class UserBotSetting(Base):
+    __tablename__ = "user_bot_settings"
+    user_id = Column(String, primary_key=True)
+    decision_engine = Column(String, nullable=False, default="active_drive_v2")
+    compare_engines_shadow = Column(Boolean, nullable=False, default=False)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+class DecisionEngineChange(Base):
+    __tablename__ = "decision_engine_changes"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    previous_engine = Column(String, nullable=False)
+    new_engine = Column(String, nullable=False)
+    changed_by = Column(String, nullable=False)
+    reason = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+class ActiveDriveDecision(Base):
+    __tablename__ = "active_drive_decisions"
+    __table_args__ = (Index("ix_active_drive_scope_time", "user_id", "symbol", "timeframe", "created_at"),)
+    decision_id = Column(String, primary_key=True)
+    user_id = Column(String, nullable=False, index=True)
+    engine = Column(String, nullable=False, index=True)
+    engine_version = Column(String, nullable=False)
+    symbol = Column(String, nullable=False, index=True)
+    timeframe = Column(String, nullable=False, index=True)
+    signal = Column(String, nullable=False)
+    long_points = Column(Float, nullable=False, default=0.0)
+    short_points = Column(Float, nullable=False, default=0.0)
+    confidence = Column(Float, nullable=False, default=0.0)
+    expected_edge = Column(Float, nullable=True)
+    eligible_for_execution = Column(Boolean, nullable=False, default=False)
+    blocking_reasons = Column(JSON, nullable=False, default=list)
+    decision_payload = Column(JSON, nullable=False, default=dict)
+    shadow = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+class SignalCandidateRecord(Base):
+    __tablename__ = "signal_candidates"
+    __table_args__ = (Index("ix_signal_candidate_scope", "source_name", "source_version", "symbol", "timeframe", "created_at"),)
+    id = Column(String, primary_key=True)
+    decision_id = Column(String, nullable=False, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    source_type = Column(String, nullable=False)
+    source_family = Column(String, nullable=False)
+    source_name = Column(String, nullable=False, index=True)
+    source_version = Column(String, nullable=False)
+    symbol = Column(String, nullable=False, index=True)
+    timeframe = Column(String, nullable=False, index=True)
+    direction = Column(String, nullable=False)
+    probability_up = Column(Float, nullable=True)
+    probability_down = Column(Float, nullable=True)
+    confidence = Column(Float, nullable=False, default=0.0)
+    candidate_points = Column(Float, nullable=False, default=0.0)
+    expected_edge = Column(Float, nullable=True)
+    risk_reward_ratio = Column(Float, nullable=True)
+    market_regime = Column(String, nullable=True, index=True)
+    evidence_tier = Column(String, nullable=False, default="insufficient_evidence")
+    resolved_sample_size = Column(Integer, nullable=False, default=0)
+    historical_accuracy = Column(Float, nullable=True)
+    eligible = Column(Boolean, nullable=False, default=False)
+    rejection_reason = Column(Text, nullable=True)
+    evidence = Column(JSON, nullable=False, default=dict)
+    data_freshness = Column(String, nullable=False, default="live")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+class PredictionLedger(Base):
+    __tablename__ = "prediction_ledger"
+    __table_args__ = (Index("ix_prediction_ledger_scope", "source_name", "source_version", "symbol", "timeframe", "generated_at"), UniqueConstraint("candidate_id", name="uq_prediction_ledger_candidate"))
+    prediction_id = Column(String, primary_key=True)
+    candidate_id = Column(String, nullable=False)
+    decision_id = Column(String, nullable=False, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    engine = Column(String, nullable=False)
+    engine_version = Column(String, nullable=False)
+    source_type = Column(String, nullable=False)
+    source_name = Column(String, nullable=False, index=True)
+    source_version = Column(String, nullable=False)
+    symbol = Column(String, nullable=False, index=True)
+    timeframe = Column(String, nullable=False, index=True)
+    market_regime = Column(String, nullable=True, index=True)
+    direction = Column(String, nullable=False)
+    probability_up = Column(Float, nullable=True)
+    probability_down = Column(Float, nullable=True)
+    confidence = Column(Float, nullable=False)
+    points = Column(Float, nullable=False, default=0.0)
+    expected_edge = Column(Float, nullable=True)
+    reference_price = Column(Float, nullable=True)
+    target_horizon_seconds = Column(Integer, nullable=False)
+    resolution_deadline = Column(DateTime, nullable=False, index=True)
+    feature_snapshot_hash = Column(String, nullable=False)
+    generated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+class PredictionResolution(Base):
+    __tablename__ = "prediction_resolutions"
+    id = Column(Integer, primary_key=True, index=True)
+    prediction_id = Column(String, nullable=False, unique=True, index=True)
+    actual_return = Column(Float, nullable=False)
+    resolved_direction = Column(String, nullable=False)
+    correct = Column(Boolean, nullable=True)
+    neutral_result = Column(Boolean, nullable=False, default=False)
+    resolution_reason = Column(String, nullable=False)
+    resolved_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
 class StrategyPerformance(Base):
     __tablename__ = "strategy_performance"
@@ -829,6 +934,8 @@ class BinanceBotTrade(Base):
     label = Column(String, default="BOT_TRADE")
     # decision provenance
     confidence = Column(Float, nullable=True)
+    decision_engine = Column(String, nullable=True, index=True)
+    decision_engine_version = Column(String, nullable=True)
     strategy = Column(String, nullable=True)
     model = Column(String, nullable=True)
     decision_reason = Column(Text, nullable=True)

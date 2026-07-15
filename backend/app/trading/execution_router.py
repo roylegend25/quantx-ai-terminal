@@ -30,6 +30,8 @@ from app.core.config import settings
 from app.core.security import create_internal_service_token
 from app.db.models import ExchangePositionRow
 from app.db.session import SessionLocal
+from app.decision_engine.router import decision_engine_router
+from app.decision_engine.repository import owner
 from app.exchanges.binance_futures_client import BinanceFuturesClient, LiveTradingLocked
 from app.execution.execution_engine import engine as paper_engine
 from app.execution.order_router import OrderType
@@ -488,6 +490,8 @@ class BinanceExecutionProvider:
                 take_profit=tp,
                 label="BOT_TRADE",
                 confidence=kwargs.get("confidence") or decision_engine.get("final_confidence"),
+                decision_engine=decision_engine.get("engine"),
+                decision_engine_version=decision_engine.get("engine_version"),
                 strategy=kwargs.get("strategy") or decision_engine.get("strategy_used"),
                 model=kwargs.get("model") or active_model.get("model_type"),
                 decision_reason="; ".join(reasons) if isinstance(reasons, list) else kwargs.get("reason"),
@@ -959,7 +963,24 @@ class ExecutionRouter:
         return None
 
     async def open_position(self, **kwargs) -> RouterResult:
-        return self._blocked("open_position") or await self.provider().open_position(**kwargs)
+        blocked = self._blocked("open_position")
+        if blocked:
+            return blocked
+        decision = kwargs.get("decision_engine")
+        if decision:
+            db = SessionLocal()
+            try:
+                decision_engine_router.assert_authoritative(db, owner(kwargs.get("user_id") or "internal-scheduler"), decision)
+                generated = decision.get("generated_at")
+                if generated:
+                    generated_at = datetime.fromisoformat(generated.replace("Z", "+00:00"))
+                    if (datetime.now(timezone.utc) - generated_at).total_seconds() > 120:
+                        return RouterResult(ok=False, mode=modes.effective_mode(), action="open_position", reason="DECISION_EXPIRED")
+            except ValueError as exc:
+                return RouterResult(ok=False, mode=modes.effective_mode(), action="open_position", reason=str(exc))
+            finally:
+                db.close()
+        return await self.provider().open_position(**kwargs)
 
     async def close_position(self, **kwargs) -> RouterResult:
         # Closing/canceling stays allowed while live is merely locked, but a

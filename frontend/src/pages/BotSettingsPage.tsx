@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Activity, PauseCircle, PlayCircle, RefreshCcw, Shield, StopCircle } from "lucide-react";
 import Card from "../components/Layout/Card";
 import PaperLiveTabs, { type PaperLiveTab } from "../components/Trading/PaperLiveTabs";
+import DecisionEngineSettings from "../components/Trading/DecisionEngineSettings";
 import RiskSettingsForm from "../components/Trading/RiskSettingsForm";
 import ServerTradingControlCard from "../components/Trading/ServerTradingControlCard";
 import UserLiveConfirmationCard from "../components/Trading/UserLiveConfirmationCard";
@@ -17,7 +18,7 @@ export default function BotSettingsPage(props: AppData) {
   const mode = (botStatus?.mode || dashboard?.mode || "paper").toUpperCase();
   const liveEnabled = botStatus?.live_trading_enabled ?? dashboard?.bot?.live_trading ?? false;
 
-  const [tab, setTab] = useState<PaperLiveTab>("paper");
+  const [tab, setTab] = useState<PaperLiveTab | "engine">("paper");
   const { status: liveStatus, reload: reloadLiveStatus } = useTradingStatus();
 
   const refreshBinanceStatus = async () => {
@@ -27,15 +28,19 @@ export default function BotSettingsPage(props: AppData) {
 
   return (
     <div className="page-grid">
-      <Card title="Bot Settings" full right={<PaperLiveTabs active={tab} onChange={setTab} />}>
+      <Card title="Bot Settings" full right={<div className="bot-settings-tabs"><PaperLiveTabs active={tab === "engine" ? "paper" : tab} onChange={setTab} /><button role="tab" aria-selected={tab === "engine"} className={tab === "engine" ? "mode-toggle-btn on paper" : "mode-toggle-btn"} onClick={() => setTab("engine")}>Decision Engine</button></div>}>
         <p className="regime-desc">
-          {tab === "paper"
+          {tab === "engine"
+            ? "Choose the single authoritative server-side decision engine. V2 is the default; V1 remains available for manual rollback."
+            : tab === "paper"
             ? "Global bot lifecycle controls (start/pause/stop, mode switch). Confidence threshold, max open positions and strategy settings live on the Risk Management page."
             : "Live bot settings for real Binance Futures trading: user-editable risk limits (shared with Paper), server-protected limits (admin-only), and API key status. Keys are never exposed here."}
         </p>
       </Card>
 
-      {tab === "paper" ? (
+      {tab === "engine" ? (
+        <Card title="Decision Engine" full><DecisionEngineSettings showToast={showToast} /></Card>
+      ) : tab === "paper" ? (
         <>
           <Card title="Bot Status">
             <div className="kv-grid">

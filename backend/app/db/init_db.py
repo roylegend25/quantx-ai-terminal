@@ -1,9 +1,10 @@
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 from app.db.session import engine, Base, SessionLocal
-from app.db.models import Portfolio
+from app.db.models import Portfolio, UserBotSetting
 from app.strategy.performance_repository import repository as performance_repository
 from app.risk import settings_repository as risk_settings_repository
+from app.core.config import settings
 
 def _migrate_trade_columns():
     """Add columns introduced after the trades table already existed on disk."""
@@ -19,6 +20,7 @@ def _migrate_trade_columns():
         # decision provenance - why the bot opened/closed this trade
         "timeframe": "VARCHAR",
         "decision_mode": "VARCHAR",
+        "decision_engine_version": "VARCHAR",
         "champion_model_id": "VARCHAR",
         "champion_model_type": "VARCHAR",
         "strategy_used": "VARCHAR",
@@ -108,6 +110,8 @@ def _migrate_binance_bot_trade_columns():
         return
     existing = {col["name"] for col in inspector.get_columns("binance_bot_trades")}
     new_columns = {
+        "decision_engine": "VARCHAR",
+        "decision_engine_version": "VARCHAR",
         "entry_order_id": "BIGINT",
         "protection_status": "VARCHAR",
         "protection_failed_reason": "TEXT",
@@ -214,5 +218,8 @@ def init_db():
 
         performance_repository.seed_defaults(db)
         risk_settings_repository.get_settings(db=db)
+        if db.get(UserBotSetting, settings.admin_username) is None:
+            db.add(UserBotSetting(user_id=settings.admin_username, decision_engine="active_drive_v2", compare_engines_shadow=False))
+            db.commit()
     finally:
         db.close()

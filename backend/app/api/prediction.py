@@ -1,12 +1,17 @@
 import time
 from datetime import timezone
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 import httpx
 from app.data_sources.downloader import load_candles as load_cached_candles
 from app.data_sources.validator import MIN_USABLE_QUALITY
 from app.db.models import DataQualityReport, PredictionFeature
 from app.db.session import SessionLocal
+from app.core.deps import get_current_user
+from app.core.config import settings
+from app.decision_engine.repository import get_setting, owner
+from app.decision_engine.router import decision_engine_router
+from app.decision_engine.ledger import persist as persist_engine_decision
 from app.quant.forecast import build_forecast
 from app.quant.indicators import compute_features
 from app.trading import risk_manager
@@ -23,6 +28,12 @@ from app.monitoring.tracing import span
 from app.risk import settings_repository
 
 router = APIRouter(prefix="/api/prediction", tags=["prediction"])
+
+async def _prediction_subject(authorization: str | None = Header(default=None)) -> str:
+    # main.py already enforces authentication in production. The fallback preserves
+    # direct-router unit tests and legacy internal embeddings that historically had
+    # no route-level auth dependency; it is unreachable through the production app.
+    return await get_current_user(authorization) if authorization else settings.admin_username
 
 logger = get_logger("quantx.prediction")
 
@@ -568,13 +579,18 @@ def _data_quality_block(symbol: str, interval: str, provenance: dict, candles: l
     return block
 
 
-def _no_data_response(symbol: str, interval: str, data_quality: dict) -> dict:
+def _no_data_response(symbol: str, interval: str, data_quality: dict, active_engine=None) -> dict:
     """Honest degraded response when there is no market data at all: an
     explicit NO_TRADE with empty forecast arrays and the blocking reason -
     nothing fabricated, no invented prices."""
     reason = data_quality["reason"]
+    engine_name = active_engine.name.value if active_engine else "active_drive_v2"
+    engine_version = active_engine.version if active_engine else "2.0.0"
     decision_engine = {
-        "mode": "fallback",
+        "engine": engine_name, "engine_version": engine_version, "mode": engine_name,
+        "final_signal": "NO_TRADE", "eligible_for_execution": False, "blocking_reasons": [reason],
+        "long_points": 0.0, "short_points": 0.0, "point_margin": 0.0, "evidence_tier": "insufficient_evidence",
+        "mode_legacy": "fallback",
         "active_model": None,
         "fallback_reason": reason,
         "strategy_used": None,
@@ -619,7 +635,7 @@ def _no_data_response(symbol: str, interval: str, data_quality: dict) -> dict:
 
 
 @router.get("/{symbol}")
-async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = None, limit: int = 220):
+async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = None, limit: int = 220, current_user: str = Depends(_prediction_subject)):
     symbol = symbol.upper()
     # `timeframe` is accepted as an alias of `interval` (and takes precedence
     # when both are given) so GET /api/prediction/{symbol}?timeframe=1h works
@@ -634,7 +650,12 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
         )
     start = time.perf_counter()
 
-    cache_key = (symbol, interval)
+    selection_db = SessionLocal()
+    try:
+        active_engine = decision_engine_router.get_active_engine(selection_db, current_user)
+    finally:
+        selection_db.close()
+    cache_key = (owner(current_user), active_engine.name.value, active_engine.version, symbol, interval)
     cached = _prediction_cache.get(cache_key)
     if cached and time.time() - cached["computed_at"] / 1000 < PREDICTION_CACHE_TTL_SECONDS:
         return cached["response"]
@@ -647,7 +668,7 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
             # Provider down and nothing cached: degraded-but-honest NO_TRADE
             # (spec: never fabricate data). Deliberately not cached so the
             # next request retries the provider immediately.
-            return _no_data_response(symbol, interval, data_quality)
+            return _no_data_response(symbol, interval, data_quality, active_engine)
 
         features = compute_features(candles)["symbol_features"]
 
@@ -662,6 +683,35 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
             consensus = None
 
         pred = make_prediction(features, market_context, consensus, data_quality=data_quality)
+        legacy_decision = pred["decision_engine"]
+        rr = None
+        if pred.get("target") is not None and pred.get("stop") is not None and pred.get("price") is not None:
+            risk_distance = abs(pred["price"] - pred["stop"])
+            rr = abs(pred["target"] - pred["price"]) / risk_distance if risk_distance else None
+        decision_db = SessionLocal()
+        try:
+            engine_result = decision_engine_router.evaluate(decision_db, current_user, {
+                "symbol": symbol, "timeframe": interval, "legacy": pred, "regime": pred.get("regime"),
+                "data_status": "stale" if features.get("stale") or data_quality.get("reliable") is False else ("cached" if data_quality.get("source") == "cached_db" else "live"),
+                "risk_reward_ratio": rr,
+            })
+            engine_result["legacy_decision_engine"] = legacy_decision
+            engine_result["mode"] = engine_result["engine"]
+            engine_result["final_direction"] = engine_result["final_signal"]
+            engine_result["final_confidence"] = round(engine_result["confidence"] * 100, 1)
+            engine_result["trade_allowed"] = engine_result["eligible_for_execution"]
+            engine_result["trade_blockers"] = engine_result["blocking_reasons"]
+            engine_result["top_reasons"] = engine_result["blocking_reasons"][:5]
+            pred["direction"] = engine_result["final_signal"]
+            pred["confidence"] = round(engine_result["confidence"] * 100, 1)
+            pred["probability_up"] = round(engine_result["probability_up"] * 100, 1)
+            pred["probability_down"] = round(engine_result["probability_down"] * 100, 1)
+            pred["decision_engine"] = engine_result
+            if not engine_result["eligible_for_execution"]:
+                pred["risk"] = {**pred["risk"], "allowed": False, "reason": engine_result["blocking_reasons"][0] if engine_result["blocking_reasons"] else "V2 decision is not execution eligible"}
+            pred["decision_id"] = persist_engine_decision(decision_db, owner(current_user), engine_result, pred.get("price"), features)
+        finally:
+            decision_db.close()
         pred["computed_at"] = int(time.time() * 1000)
 
         try:

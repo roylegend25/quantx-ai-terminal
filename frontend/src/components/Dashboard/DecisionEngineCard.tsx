@@ -12,13 +12,15 @@ type Props = {
 };
 
 const MODE_LABEL: Record<string, string> = {
+  active_drive_v2: "Active Drive V2",
+  active_drive_v1: "Active Drive V1 (Legacy)",
   champion_ml: "Champion ML",
   strategy_ensemble: "Strategy Ensemble",
   fallback: "Fallback (Strategy Ensemble)",
 };
 
 function modeTone(mode?: string | null): string {
-  if (mode === "champion_ml") return "green";
+  if (mode === "active_drive_v2" || mode === "champion_ml") return "green";
   if (mode === "fallback") return "yellow";
   return "cyan";
 }
@@ -42,7 +44,16 @@ function DecisionEngineCard({ status, decision, symbol, interval }: Props) {
           {mode === "champion_ml" ? <Crown size={14} /> : <Brain size={14} />}
           {MODE_LABEL[mode] ?? "Strategy Ensemble"}
         </span>
-        {hasChampion && (
+        {mode === "active_drive_v2" && (
+        <div className="analytics-grid dec-metrics">
+          <div className="analytics-tile"><span className="tile-label">LONG Points</span><b className="tile-value green">{decision?.long_points ?? 0}</b></div>
+          <div className="analytics-tile"><span className="tile-label">SHORT Points</span><b className="tile-value red">{decision?.short_points ?? 0}</b></div>
+          <div className="analytics-tile"><span className="tile-label">Point Margin</span><b className="tile-value">{decision?.point_margin ?? 0}</b></div>
+          <div className="analytics-tile"><span className="tile-label">Evidence</span><b className="tile-value dec-small">{(decision?.evidence_tier ?? "insufficient_evidence").replaceAll("_", " ")}</b></div>
+        </div>
+      )}
+
+      {hasChampion && mode !== "active_drive_v2" && (
           <span className={`chip ${healthTone(status?.health)}`}>health: {status?.health ?? "unknown"}</span>
         )}
         <span className="chip">
@@ -50,7 +61,7 @@ function DecisionEngineCard({ status, decision, symbol, interval }: Props) {
         </span>
       </div>
 
-      {!hasChampion && (
+      {!hasChampion && mode !== "active_drive_v2" && (
         <div className="dec-empty">
           <ShieldAlert size={16} className="yellow" />
           <div>

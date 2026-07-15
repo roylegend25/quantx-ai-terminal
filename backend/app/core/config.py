@@ -34,6 +34,19 @@ class Settings(BaseSettings):
     default_symbol: str = "BTCUSDT"
     default_interval: str = "5m"
 
+    # Active Drive V2 rollout: V2 authoritative by default, V1 retained for manual rollback.
+    active_drive_v2_enabled: bool = True
+    active_drive_v1_available: bool = True
+    default_decision_engine: str = "active_drive_v2"
+    active_drive_v1_shadow_mode: bool = False
+    active_drive_v2_shadow_only: bool = False
+    active_drive_automatic_v1_fallback: bool = False
+    active_drive_min_total_evidence: float = 8.0
+    active_drive_min_point_margin: float = 4.0
+    active_drive_min_confidence: float = 0.60
+    active_drive_min_resolved_samples: int = 20
+    active_drive_family_cap: float = 12.0
+
     @field_validator("symbols", mode="before")
     @classmethod
     def _split_symbols(cls, v):
