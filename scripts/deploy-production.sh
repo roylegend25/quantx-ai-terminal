@@ -72,6 +72,7 @@ sudo nginx -t
 RUNNING_IMAGE="$(docker inspect quantx-backend --format '{{.Image}}')"
 EXPECTED_IMAGE="$(docker image inspect "$STABLE_IMAGE" --format '{{.Id}}')"
 test "$RUNNING_IMAGE" = "$EXPECTED_IMAGE"
+docker exec quantx-backend python -c 'from app.core.config import settings; from app.db.session import SessionLocal; from app.decision_engine.repository import get_setting; db=SessionLocal(); assert get_setting(db, settings.admin_username).decision_engine == "active_drive_v2"; db.close()'
 
 printf '\nDeployment verified. Real execution remains disabled.\n'
 printf 'Production URL: https://www.quantxterminal.com\n'

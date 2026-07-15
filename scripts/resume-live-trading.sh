@@ -11,11 +11,12 @@ curl -fsS http://127.0.0.1:9000/api/health >/dev/null
 curl -fsS https://www.quantxterminal.com/api/health >/dev/null
 
 docker exec quantx-backend python -c '
+from app.core.config import settings
 from app.db.session import SessionLocal
-from app.decision_engine.repository import get_setting, owner
+from app.decision_engine.repository import get_setting
 db=SessionLocal()
 try:
-    assert get_setting(db, owner("admin")).decision_engine == "active_drive_v2"
+    assert get_setting(db, settings.admin_username).decision_engine == "active_drive_v2"
 finally:
     db.close()
 '
