@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MARKER="$PROJECT_DIR/backend/data/deployment-maintenance"
-EXPECTED_TAG="${BACKEND_IMAGE:-quantx-backend:active-drive-v2-b109280}"
+EXPECTED_TAG="${BACKEND_IMAGE:-quantx-backend:active-drive-v2-fc087dc}"
 EXPECTED_IMAGE="$(docker image inspect "$EXPECTED_TAG" --format '{{.Id}}')"
 RUNNING_IMAGE="$(docker inspect quantx-backend --format '{{.Image}}')"
 
