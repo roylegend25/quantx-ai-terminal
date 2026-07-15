@@ -3,10 +3,12 @@ set -Eeuo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MARKER="$PROJECT_DIR/backend/data/deployment-maintenance"
-EXPECTED_IMAGE="$(docker image inspect quantx-backend:active-drive-v2 --format '{{.Id}}')"
+EXPECTED_TAG="${BACKEND_IMAGE:-quantx-backend:active-drive-v2-b109280}"
+EXPECTED_IMAGE="$(docker image inspect "$EXPECTED_TAG" --format '{{.Id}}')"
 RUNNING_IMAGE="$(docker inspect quantx-backend --format '{{.Image}}')"
 
 test "$RUNNING_IMAGE" = "$EXPECTED_IMAGE"
+test "$(docker inspect quantx-backend --format '{{index .Config.Labels "com.quantx.decision-engine"}}')" = "active_drive_v2"
 test "$(docker ps --filter name=^/quantx-backend$ --format '{{.ID}}' | wc -l)" -eq 1
 curl -fsS http://127.0.0.1:9000/api/health >/dev/null
 curl -fsS https://www.quantxterminal.com/api/health >/dev/null
