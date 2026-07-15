@@ -9,6 +9,10 @@ for(const [width,height] of viewports){
     const tf=page.locator(".tf-btn").filter({hasText:"15m"}).first(); await tf.click();
     await expect(page.getByText("AI Forecast — Informational").first()).toBeVisible({timeout:30000});
     await expect(page.locator(".pcx-canvas-wrap canvas")).toBeVisible();
+    const geometry=await page.locator(".pcx-canvas-wrap").evaluate(el=>({points:Number(el.getAttribute("data-forecast-points")),now:Number(el.getAttribute("data-now-fraction")),span:Number(el.getAttribute("data-forecast-span-fraction"))}));
+    expect(geometry.points).toBeGreaterThanOrEqual(3);
+    expect(geometry.now).toBeGreaterThanOrEqual(.65); expect(geometry.now).toBeLessThanOrEqual(.75);
+    expect(geometry.span).toBeGreaterThanOrEqual(.25);
     const forecastPixels=await page.locator(".pcx-canvas-wrap canvas").evaluate((node:HTMLCanvasElement)=>{
       const context=node.getContext("2d"); if(!context)return 0;
       const pixels=context.getImageData(0,0,node.width,node.height).data; let count=0;

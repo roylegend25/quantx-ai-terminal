@@ -30,11 +30,11 @@ BASE = dict(
 
 
 def _assert_series_valid(points, last_time, interval_ms):
-    assert len(points) > 0
-    prev_t = last_time
-    for p in points:
-        assert p["time"] == prev_t + interval_ms
-        prev_t = p["time"]
+    assert len(points) >= 3
+    reference = last_time // 1000
+    interval_seconds = interval_ms // 1000
+    for index, p in enumerate(points):
+        assert p["time"] == reference + index * interval_seconds
         assert isinstance(p["price"], float)
         assert math.isfinite(p["price"]) and p["price"] > 0
 
@@ -57,7 +57,7 @@ def test_directional_forecast_produces_full_horizon(interval, direction):
     assert fc["trade_actionable"] is True
 
     for key in ("forecast_points", "upper_band_points", "lower_band_points"):
-        assert len(fc[key]) == bars
+        assert len(fc[key]) == bars + 1
         _assert_series_valid(fc[key], BASE["last_candle_time"], INTERVAL_MS[interval])
 
     # forecast converges on the target; bands bracket the forecast at
@@ -93,7 +93,7 @@ def test_band_basis_fallback_chain():
         **{**BASE, "atr": None, "realized_volatility": None},
     )
     assert no_vol["band_basis"] == "fallback_pct"
-    assert len(no_vol["upper_band_points"]) == HORIZON_BARS["1h"]
+    assert len(no_vol["upper_band_points"]) == HORIZON_BARS["1h"] + 1
 
     nan_atr = build_forecast(
         interval="1h", interval_ms=INTERVAL_MS["1h"], direction="LONG",
@@ -164,10 +164,12 @@ def test_prediction_route_exposes_consistent_forecast_fields(monkeypatch, symbol
     assert body["prediction_horizon"]["bars"] == HORIZON_BARS[timeframe]
 
     if body["forecast"]["available"]:
-        assert len(body["forecast_points"]) == HORIZON_BARS[timeframe]
+        assert len(body["forecast_points"]) == HORIZON_BARS[timeframe] + 1
         assert len(body["upper_band_points"]) == len(body["lower_band_points"]) == len(body["forecast_points"])
         times = [p["time"] for p in body["forecast_points"]]
         assert times == sorted(times) and len(set(times)) == len(times)
+        assert times[1] - times[0] == INTERVAL_MS[timeframe] // 1000
+        assert body["forecast_diagnostics"]["timestamp_format"] == "unix_seconds"
         for series in ("forecast_points", "upper_band_points", "lower_band_points"):
             for p in body[series]:
                 assert math.isfinite(p["price"]) and p["price"] > 0

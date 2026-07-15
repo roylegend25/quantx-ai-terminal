@@ -13,7 +13,7 @@ from app.core.config import settings
 from app.decision_engine.repository import get_setting, owner
 from app.decision_engine.router import decision_engine_router
 from app.decision_engine.ledger import persist as persist_engine_decision
-from app.quant.forecast import build_forecast
+from app.quant.forecast import TIMEFRAME_SECONDS, build_forecast, validate_forecast
 from app.quant.indicators import compute_features
 from app.trading import risk_manager
 from app.trading.risk_manager import calculate_levels
@@ -805,6 +805,16 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
         data_fresh=data_fresh,
         candle_count=len(candles),
     )
+    timestamps_valid, validation_reason = validate_forecast(
+        forecast, reference_time=candles[-1]["time"], interval=interval
+    )
+    if not timestamps_valid and forecast.get("available"):
+        forecast.update({
+            "available": False, "trade_actionable": False, "forecast_type": "unavailable",
+            "median_path": [], "upper_band": [], "lower_band": [],
+            "forecast_points": [], "upper_band_points": [], "lower_band_points": [],
+            "target_price": None, "invalidation_price": None, "reason": validation_reason,
+        })
     pred["forecast_points"] = forecast["forecast_points"]
     pred["upper_band_points"] = forecast["upper_band_points"]
     pred["lower_band_points"] = forecast["lower_band_points"]
@@ -818,7 +828,7 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
         "timeframe": interval,
         "decision_id": pred.get("decision_id"),
         "generated_at": pred["decision_engine"].get("generated_at"),
-        "reference_time": candles[-1]["time"] if candles else None,
+        "reference_time": int(candles[-1]["time"] // 1000) if candles else None,
         "reference_price": pred.get("price"),
         "horizon_bars": forecast["bars"],
         "horizon_seconds": forecast["horizon_seconds"],
@@ -838,11 +848,24 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
         "lower_bound": forecast["lower_band_points"],
     }
     pred["forecast_diagnostics"] = {
+        "available": forecast["available"],
         "candidate_count": len(candidates),
         "forecast_model_available": bool(directional_sources),
         "points_generated": len(forecast["median_path"]),
+        "median_point_count": len(forecast["median_path"]),
+        "upper_point_count": len(forecast["upper_band"]),
+        "lower_point_count": len(forecast["lower_band"]),
+        "reference_timestamp": int(candles[-1]["time"] // 1000),
+        "last_candle_timestamp": int(candles[-1]["time"] // 1000),
+        "first_future_timestamp": forecast["median_path"][1]["time"] if len(forecast["median_path"]) > 1 else None,
+        "last_future_timestamp": forecast["median_path"][-1]["time"] if len(forecast["median_path"]) > 1 else None,
+        "interval_seconds": TIMEFRAME_SECONDS[interval],
+        "horizon_bars": forecast["bars"],
+        "timestamps_valid": timestamps_valid,
+        "prices_valid": timestamps_valid,
+        "symbol_match": True,
         "timeframe_match": True,
-        "timestamp_format": "unix_milliseconds",
+        "timestamp_format": "unix_seconds",
         "data_fresh": data_fresh,
         "reason_if_unavailable": None if forecast["available"] else forecast["reason"],
     }

@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 
 HORIZON_BARS={"1m":24,"3m":16,"5m":12,"15m":8,"30m":6,"1h":6,"4h":4,"1d":4}
+TIMEFRAME_SECONDS={"1m":60,"3m":180,"5m":300,"15m":900,"30m":1800,"1h":3600,"4h":14400,"1d":86400}
 FALLBACK_BAND_PCT=.006
 
 def _ease_out(t): return 1-(1-t)**2
@@ -30,8 +31,8 @@ def build_forecast(*,interval,interval_ms,last_candle_time,price,direction,confi
                    atr=None,realized_volatility=None,informational_direction=None,
                    informational_strength=None,data_fresh=True,candle_count=0):
     """Return finite, ordered millisecond points beginning after the last bar."""
-    bars=horizon_bars(interval)
-    if not bars or interval_ms<=0: return _unavailable(interval,interval_ms,"Unsupported or invalid forecast timeframe")
+    bars=horizon_bars(interval); interval_seconds=TIMEFRAME_SECONDS.get(interval,0)
+    if not bars or interval_ms<=0 or interval_seconds<=0: return _unavailable(interval,interval_ms,"Unsupported or invalid forecast timeframe")
     if candle_count<30: return _unavailable(interval,interval_ms,"Insufficient candle history for an informational forecast")
     if not data_fresh: return _unavailable(interval,interval_ms,"Market data is stale")
     if not _positive(price) or not _positive(last_candle_time): return _unavailable(interval,interval_ms,"No finite reference candle and price")
@@ -52,9 +53,15 @@ def build_forecast(*,interval,interval_ms,last_candle_time,price,direction,confi
         reason="Forecast available, but it is informational and not a trade signal"
     measured,basis=_spread(float(price),atr,realized_volatility)
     width=measured*max(.5,1.5-(conf if conf is not None else .5))
-    median=[]; upper=[]; lower=[]
+    # Public chart contract uses Unix seconds. Binance candle inputs are
+    # milliseconds, so normalize exactly once and include the real anchor;
+    # future points begin one complete selected interval later.
+    reference_seconds=int(last_candle_time//1000 if last_candle_time>10_000_000_000 else last_candle_time)
+    median=[{"time":reference_seconds,"price":round(float(price),8)}]
+    upper=[{"time":reference_seconds,"price":round(float(price),8)}]
+    lower=[{"time":reference_seconds,"price":round(float(price),8)}]
     for i in range(1,bars+1):
-        e=_ease_out(i/bars); timestamp=int(last_candle_time+i*interval_ms)
+        e=_ease_out(i/bars); timestamp=reference_seconds+i*interval_seconds
         midpoint=float(price)+(end-float(price))*e; band=width*math.sqrt(i/bars)
         median.append({"time":timestamp,"price":round(midpoint,8)})
         upper.append({"time":timestamp,"price":round(midpoint+band,8)})
@@ -65,3 +72,18 @@ def build_forecast(*,interval,interval_ms,last_candle_time,price,direction,confi
       "horizon_seconds":bars*interval_ms//1000,"band_basis":basis,"confidence_level":conf,
       "target_price":float(target) if actionable and _positive(target) else None,
       "invalidation_price":float(stop) if actionable and _positive(stop) else None,"reason":reason}
+
+def validate_forecast(forecast,*,reference_time,interval):
+    """Strict chart-contract validator; never upgrades invalid data."""
+    if not forecast.get("available"): return False,forecast.get("reason") or "Forecast unavailable"
+    expected=TIMEFRAME_SECONDS.get(interval)
+    series=[forecast.get(k) or [] for k in ("median_path","upper_band","lower_band")]
+    if not expected or any(len(points)<3 for points in series): return False,"Forecast has fewer than three chart points"
+    if len({len(points) for points in series})!=1: return False,"Forecast band lengths do not match"
+    ref=int(reference_time//1000 if reference_time>10_000_000_000 else reference_time)
+    for points in series:
+        for index,point in enumerate(points):
+            if not isinstance(point.get("time"),int) or not _positive(point.get("price")): return False,"Forecast contains invalid timestamp or price"
+            if index==0 and point["time"]!=ref: return False,"Forecast anchor does not match the final candle"
+            if index>0 and point["time"]!=ref+index*expected: return False,"Forecast timestamps do not match the selected timeframe"
+    return True,None

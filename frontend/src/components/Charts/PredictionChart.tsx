@@ -27,6 +27,7 @@ import type { Candle } from "../../hooks/useAppData";
 import { api } from "../../services/api";
 import { fmtNum, fmtUsd } from "../../lib/format";
 import { formatCompactLocalDateTime } from "../../utils/dateTime";
+import { validateForecastChartData } from "../../lib/forecastChartData";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import ProChartCanvas, {
   type HistoryPoint,
@@ -355,7 +356,10 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
   const direction = prediction?.direction;
   const isNoTrade = !prediction || direction === "NO_TRADE" || !direction;
   const forecast = prediction?.forecast;
-  const forecastAvailable = forecast?.available === true;
+  const lastCandleTime=displayCandles.at(-1)?.time??0;
+  const validatedForecast=useMemo(()=>validateForecastChartData(prediction,symbol,tfConfig.ms,lastCandleTime),[prediction,symbol,tfConfig.ms,lastCandleTime]);
+  const forecastAvailable = validatedForecast.valid;
+  const chartForecast={...forecast,available:forecastAvailable,reason:validatedForecast.reason??forecast?.reason};
   const confidence = typeof prediction?.confidence === "number" ? Math.max(0, Math.min(100, prediction.confidence)) : null;
   const target = prediction?.target;
   const stop = prediction?.stop;
@@ -660,7 +664,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
           <span className="pc-legend-item" title="Live market candles / price line">
             <i className="pc-swatch solid purple" /> Actual Price
           </span>
-          <ForecastLegend forecast={forecast} bands={prefs.bands} />
+          <ForecastLegend forecast={chartForecast} bands={prefs.bands} />
           <span
             className={`pc-legend-item${!prefs.history || !historyData.points.length ? " pc-legend-off" : ""}`}
             title={
@@ -828,6 +832,12 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
           <div className="pc-debug-row"><span>history points</span><b>{historyData.points.length}</b></div>
           <div className="pc-debug-row"><span>forecast points</span><b>{forecastPointCount}</b></div>
           <div className="pc-debug-row"><span>forecast hidden reason</span><b>{forecastHiddenReason ?? "n/a - forecast is showing"}</b></div>
+          <div className="pc-debug-row"><span>decision ID</span><b>{prediction?.decision_id ?? "—"}</b></div>
+          <div className="pc-debug-row"><span>last candle (ms)</span><b>{lastCandleTime || "—"}</b></div>
+          <div className="pc-debug-row"><span>forecast anchor (s)</span><b>{validatedForecast.anchorTime ?? "—"}</b></div>
+          <div className="pc-debug-row"><span>last forecast (s)</span><b>{validatedForecast.lastTime ?? "—"}</b></div>
+          <div className="pc-debug-row"><span>interval seconds</span><b>{tfConfig.ms / 1000}</b></div>
+          <div className="pc-debug-row"><span>series valid</span><b>{String(validatedForecast.valid)}</b></div>
         </div>
       )}
     </div>

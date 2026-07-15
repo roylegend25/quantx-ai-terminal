@@ -12,6 +12,7 @@
 
 import { memo, useEffect, useMemo, useRef } from "react";
 import type { Candle } from "../../hooks/useAppData";
+import { validateForecastChartData } from "../../lib/forecastChartData";
 import {
   adx,
   atr,
@@ -183,26 +184,12 @@ type Calc = {
 };
 
 type Cone = { predicted: number[]; upper: number[]; lower: number[] };
+const visibleBarsForForecast=(futureBars:number)=>Math.max(24,Math.ceil(futureBars/.28));
 
 /** Backend point series -> plain price array, accepting only finite,
  *  positive prices on strictly-increasing timestamps. One bad point
  *  invalidates the series (never plot a partially-garbled cone). */
-function sanitizeSeries(points: any): number[] | null {
-  if (!Array.isArray(points) || points.length === 0) return null;
-  const out: number[] = [];
-  let prevT = -Infinity;
-  for (const p of points) {
-    const t = p?.time;
-    const v = p?.price;
-    if (typeof t !== "number" || !Number.isFinite(t) || t <= 0 || t <= prevT) return null;
-    if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return null;
-    prevT = t;
-    out.push(v);
-  }
-  return out;
-}
-
-function buildCone(candlesArr: Candle[], prediction: any): Cone {
+function buildCone(candlesArr: Candle[], prediction: any, symbol: string, timeframeMs: number): Cone {
   const predicted: number[] = [];
   const upper: number[] = [];
   const lower: number[] = [];
@@ -210,17 +197,9 @@ function buildCone(candlesArr: Candle[], prediction: any): Cone {
   const lastClose = last?.close ?? 0;
   if (!lastClose) return { predicted, upper, lower };
 
-  const forecast = prediction?.forecast;
-  if (!forecast?.available) return { predicted, upper, lower };
-  // Exact server-computed series only. Invalid or incomplete data is never
-  // replaced by a locally invented target/cone.
-  const sf = sanitizeSeries(forecast.median_path ?? forecast.forecast_points ?? prediction?.forecast_points);
-  const su = sanitizeSeries(forecast.upper_band ?? forecast.upper_bound ?? prediction?.upper_band_points);
-  const sl = sanitizeSeries(forecast.lower_band ?? forecast.lower_bound ?? prediction?.lower_band_points);
-  if (sf && su && sl && sf.length === su.length && su.length === sl.length) {
-    return { predicted: sf, upper: su, lower: sl };
-  }
-  return { predicted, upper, lower };
+  const validated=validateForecastChartData(prediction,symbol,timeframeMs,last.time);
+  if(!validated.valid)return {predicted,upper,lower};
+  return {predicted:validated.median.map(p=>p.price),upper:validated.upper.map(p=>p.price),lower:validated.lower.map(p=>p.price)};
 }
 
 const TF_LABELS: Record<number, string> = {
@@ -373,8 +352,8 @@ function ProChartCanvas(props: Props) {
   }, [candles, indicatorKey]);
 
   const coneTarget = useMemo(
-    () => buildCone(candles, props.prediction),
-    [candles, props.prediction, props.forecastBars]
+    () => buildCone(candles, props.prediction, props.symbol, props.timeframeMs),
+    [candles, props.prediction, props.symbol, props.timeframeMs]
   );
 
   const calcRef = useRef(calc);
@@ -392,10 +371,13 @@ function ProChartCanvas(props: Props) {
   // far off). Regular 10s polls extend by 0-1 bars and keep the view.
   const datasetKey = `${props.symbol}|${timeframeMs}`;
   const prevDatasetKey = useRef("");
+  const prevForecastCount = useRef(0);
   useEffect(() => {
-    const total = candles.length + props.forecastBars;
+    const futureBars=coneTarget.predicted.length;
+    const total = candles.length + futureBars;
+    const forecastChanged=prevForecastCount.current!==futureBars;
     if (!viewInitialized.current || prevDatasetKey.current !== datasetKey) {
-      viewRef.current = { end: total, bars: Math.min(total, 160), lockedY: null };
+      viewRef.current = { end: total, bars: futureBars?visibleBarsForForecast(futureBars):Math.min(Math.max(candles.length,40),80), lockedY: null };
       viewInitialized.current = candles.length > 0;
       prevDatasetKey.current = datasetKey;
       animRef.current.initialized = false;
@@ -408,17 +390,21 @@ function ProChartCanvas(props: Props) {
       // every stat still rendering.
       animRef.current.yMin = NaN;
       animRef.current.yMax = NaN;
+    } else if(forecastChanged&&futureBars){
+      viewRef.current={end:total,bars:visibleBarsForForecast(futureBars),lockedY:null};
     } else {
       // keep right edge pinned if the user was already at the right edge
       const v = viewRef.current;
       if (v.end >= total - 2) v.end = total;
       if (v.end > total) v.end = total;
     }
+    prevForecastCount.current=futureBars;
     dirtyRef.current = true;
-  }, [datasetKey, candles.length]);
+  }, [datasetKey, candles.length, coneTarget.predicted.length]);
 
   useEffect(() => {
-    viewRef.current = { end: candles.length + props.forecastBars, bars: Math.min(candles.length + props.forecastBars, 160), lockedY: null };
+    const futureBars=coneTarget.predicted.length;
+    viewRef.current = { end: candles.length + futureBars, bars: futureBars?visibleBarsForForecast(futureBars):Math.min(Math.max(candles.length,40),80), lockedY: null };
     animRef.current.initialized = false;
     dirtyRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1227,6 +1213,11 @@ function ProChartCanvas(props: Props) {
           g.moveTo(nowX, yAt(liveClose));
           for (let i = 0; i < cone.predicted.length; i++) g.lineTo(coneX(i), yAt(cone.predicted[i]));
           g.stroke();
+          g.shadowBlur = 0;
+          g.fillStyle = T.cyan;
+          for(let i=0;i<cone.predicted.length;i++){
+            g.beginPath(); g.arc(coneX(i),yAt(cone.predicted[i]),2.4,0,Math.PI*2); g.fill();
+          }
           g.restore();
         }
       }
@@ -1580,7 +1571,11 @@ function ProChartCanvas(props: Props) {
   }, [props.onExportRef]);
 
   return (
-    <div ref={wrapRef} className="pcx-canvas-wrap">
+    <div ref={wrapRef} className="pcx-canvas-wrap"
+      data-forecast-points={coneTarget.predicted.length}
+      data-forecast-visible={coneTarget.predicted.length>0?"true":"false"}
+      data-now-fraction={coneTarget.predicted.length>0?((visibleBarsForForecast(coneTarget.predicted.length)-coneTarget.predicted.length-.5)/visibleBarsForForecast(coneTarget.predicted.length)).toFixed(3):"1"}
+      data-forecast-span-fraction={coneTarget.predicted.length>0?(coneTarget.predicted.length/visibleBarsForForecast(coneTarget.predicted.length)).toFixed(3):"0"}>
       <canvas ref={canvasRef} className="pcx-canvas" />
     </div>
   );
