@@ -15,6 +15,7 @@ from app.db.session import SessionLocal
 from app.db.models import Trade
 from app.trading import margin as margin_calc
 from app.trading.position_manager import should_close_position
+from app.core.security import create_internal_service_token
 
 
 def make_client(monkeypatch, prices, user=None):
@@ -31,7 +32,7 @@ def make_client(monkeypatch, prices, user=None):
     app.include_router(paper_module.router)
     if user is not None:
         app.dependency_overrides[paper_module.get_optional_user] = lambda: user
-    return TestClient(app)
+    return TestClient(app, headers={"Authorization":f"Bearer {create_internal_service_token()}"})
 
 
 # ---------------------------------------------------------------- formulas

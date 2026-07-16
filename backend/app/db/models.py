@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, BigInteger, String, Float, DateTime, Text, JSON, Boolean, Index, UniqueConstraint
+from sqlalchemy import Column, Integer, BigInteger, String, Float, DateTime, Text, JSON, Boolean, Index, UniqueConstraint, ForeignKey
 from datetime import datetime, timezone
 from app.db.session import Base
 
@@ -83,6 +83,11 @@ class UserBotSetting(Base):
     user_id = Column(String, primary_key=True)
     decision_engine = Column(String, nullable=False, default="active_drive_v2")
     compare_engines_shadow = Column(Boolean, nullable=False, default=False)
+    trading_profile = Column(String, nullable=False, default="auto_adaptive")
+    strict_timeframe_unanimity = Column(Boolean, nullable=False, default=True)
+    auto_profile_enabled = Column(Boolean, nullable=False, default=True)
+    profile_updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    profile_revision = Column(Integer, nullable=False, default=1)
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 class DecisionEngineChange(Base):
@@ -109,11 +114,74 @@ class ActiveDriveDecision(Base):
     short_points = Column(Float, nullable=False, default=0.0)
     confidence = Column(Float, nullable=False, default=0.0)
     expected_edge = Column(Float, nullable=True)
+    gross_expected_edge = Column(Float, nullable=True)
+    net_expected_edge = Column(Float, nullable=True)
+    edge_supported = Column(Boolean, nullable=True)
+    edge_block_reason = Column(String, nullable=True)
+    edge_sample_size = Column(Integer, nullable=True)
+    edge_source = Column(String, nullable=True)
     eligible_for_execution = Column(Boolean, nullable=False, default=False)
     blocking_reasons = Column(JSON, nullable=False, default=list)
     decision_payload = Column(JSON, nullable=False, default=dict)
     shadow = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class TradingHorizonDecision(Base):
+    """Immutable, server-issued authority for one possible new entry."""
+    __tablename__ = "trading_horizon_decisions"
+    id = Column(String, primary_key=True)
+    # Historical authorities created before the fingerprint migration remain
+    # NULL; every newly issued authority is required to provide a fingerprint.
+    issuance_fingerprint = Column(String, nullable=True, unique=True, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    selected_profile = Column(String, nullable=False)
+    profile_revision = Column(Integer, nullable=False)
+    authoritative_execution_timeframe = Column(String, nullable=False)
+    final_direction = Column(String, nullable=False)
+    engine_id = Column(String, nullable=False)
+    engine_version = Column(String, nullable=False)
+    unanimous = Column(Boolean, nullable=False)
+    readiness = Column(Boolean, nullable=False)
+    execution_eligible = Column(Boolean, nullable=False)
+    generated_at = Column(DateTime, nullable=False)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    market_data_revision = Column(String, nullable=False)
+    performance_snapshot_revision = Column(String, nullable=False)
+    expected_edge = Column(Float, nullable=True)
+    directional_confidence = Column(Float, nullable=True)
+    point_margin = Column(Float, nullable=True)
+    evidence = Column(JSON, nullable=False, default=dict)
+    blocking_reasons = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class TradingHorizonTimeframeLink(Base):
+    """Immutable proof linking horizon authority to persisted V2 decisions."""
+    __tablename__ = "trading_horizon_timeframe_links"
+    __table_args__ = (
+        UniqueConstraint("horizon_decision_id", "timeframe", "role", name="uq_horizon_timeframe_role"),
+    )
+    id = Column(Integer, primary_key=True)
+    horizon_decision_id = Column(String, ForeignKey("trading_horizon_decisions.id"), nullable=False, index=True)
+    decision_id = Column(String, ForeignKey("active_drive_decisions.decision_id"), nullable=False, index=True)
+    timeframe = Column(String, nullable=False)
+    role = Column(String, nullable=False)
+    direction = Column(String, nullable=False)
+    confidence = Column(Float, nullable=True)
+    eligible = Column(Boolean, nullable=False)
+    engine_id = Column(String, nullable=False)
+    engine_version = Column(String, nullable=False)
+    generated_at = Column(DateTime, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+
+
+class TradingHorizonConsumption(Base):
+    __tablename__ = "trading_horizon_consumptions"
+    horizon_decision_id = Column(String, ForeignKey("trading_horizon_decisions.id"), primary_key=True)
+    idempotency_key = Column(String, nullable=False, unique=True)
+    consumed_at = Column(DateTime, nullable=False)
 
 class SignalCandidateRecord(Base):
     __tablename__ = "signal_candidates"
@@ -983,6 +1051,42 @@ class TradingAuditLog(Base):
     symbol = Column(String, index=True, nullable=True)
     detail = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class ExecutionIntentLock(Base):
+    """Cross-worker new-entry mutex. One active intent per user/symbol/engine."""
+    __tablename__ = "execution_intent_locks"
+    scope_key = Column(String, primary_key=True)
+    idempotency_key = Column(String, nullable=False, unique=True, index=True)
+    owner_token = Column(String, nullable=False)
+    fencing_token = Column(Integer, nullable=False)
+    heartbeat_at = Column(DateTime, nullable=False)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class ExecutionIntentAudit(Base):
+    """Durable idempotency outcome and authority provenance for every intent."""
+    __tablename__ = "execution_intent_audit"
+    id = Column(Integer, primary_key=True, index=True)
+    idempotency_key = Column(String, nullable=False, unique=True, index=True)
+    scope_key = Column(String, nullable=False, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    engine = Column(String, nullable=False)
+    profile_decision_id = Column(String, nullable=False)
+    execution_timeframe = Column(String, nullable=False)
+    direction = Column(String, nullable=False)
+    status = Column(String, nullable=False, index=True)
+    result = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    completed_at = Column(DateTime, nullable=True)
+
+
+class ExecutionFenceCounter(Base):
+    __tablename__ = "execution_fence_counters"
+    scope_key = Column(String, primary_key=True)
+    current_token = Column(Integer, nullable=False, default=0)
 
 
 class BinanceExecutionAttempt(Base):

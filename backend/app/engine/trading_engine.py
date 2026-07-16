@@ -1,12 +1,10 @@
 import logging
-from datetime import datetime, timezone
-import httpx
+import time
 
 from app.core.config import settings
-from app.core.security import create_internal_service_token
+from app.core.security import INTERNAL_SERVICE_SUBJECT
 from app.execution.order_router import OrderType
 from app.monitoring.logging import get_logger, log_event
-from app.trading import risk_manager
 from app.trading.execution_router import router as execution_router
 
 logger = get_logger("quantx.trading_engine")
@@ -19,136 +17,59 @@ class TradingEngine:
         # traded settings.default_symbol, which is why ETHUSDT never got a
         # paper trade even though its prediction/risk pipeline worked fine.
         self.symbols = settings.symbols
-        self._token = create_internal_service_token()
 
     async def run_cycle(self, execution_lease_owner: str | None = None):
-        headers = {"Authorization": f"Bearer {self._token}"}
-        async with httpx.AsyncClient(timeout=20, headers=headers) as client:
-            for symbol in self.symbols:
-                # One symbol's failure (bad market data, a timed-out
-                # prediction call, ...) must not stop the rest from being
-                # evaluated this cycle.
-                try:
-                    await self._run_symbol_cycle(client, symbol)
-                except Exception as e:
-                    log_event(
-                        logger,
-                        message="scheduler_symbol_error",
-                        level=logging.ERROR,
-                        category="scheduler",
-                        symbol=symbol,
-                        error=repr(e),
-                    )
+        for symbol in self.symbols:
+            # One symbol's failure must not stop the rest of the cycle.
+            try:
+                await self._run_symbol_cycle(symbol, execution_lease_owner)
+            except Exception as e:
+                log_event(
+                    logger,
+                    message="scheduler_symbol_error",
+                    level=logging.ERROR,
+                    category="scheduler",
+                    symbol=symbol,
+                    error=repr(e),
+                )
 
-    async def _run_symbol_cycle(self, client: httpx.AsyncClient, symbol: str):
-        prediction_response = (
-            await client.get(
-                f"http://127.0.0.1:8000/api/prediction/{symbol}"
-            )
-        ).json()
-        prediction = prediction_response["prediction"]
-
-        portfolio = (
-            await client.get(
-                "http://127.0.0.1:8000/api/paper/portfolio"
-            )
-        ).json()
-
-        positions = (
-            await client.get(
-                "http://127.0.0.1:8000/api/paper/positions"
-            )
-        ).json()["positions"]
-
-        trade_history = (
-            await client.get(
-                "http://127.0.0.1:8000/api/paper/history"
-            )
-        ).json().get("trades", [])
-
-        # Best-effort: a malformed/empty order book (see the
-        # bad_orderbook_response stress scenario) must never block a
-        # cycle - spread_pct just stays None and evaluate_risk() fails
-        # open on that one check, same as any other unavailable input.
-        spread_pct = None
-        try:
-            book = (
-                await client.get(f"http://127.0.0.1:8000/api/orderbook/{symbol}")
-            ).json()
-            bids, asks = book.get("bids"), book.get("asks")
-            if bids and asks and bids[0]["price"] > 0:
-                spread_pct = (asks[0]["price"] - bids[0]["price"]) / bids[0]["price"] * 100
-        except Exception:
-            spread_pct = None
-
-        features = prediction.get("features") or {}
-        data_quality = prediction.get("data_quality") or {}
-        signal_time = datetime.now(timezone.utc)
-
-        decision = risk_manager.evaluate_risk(
-            confidence=prediction["confidence"],
-            direction=prediction["direction"],
-            open_positions=len(positions),
-            portfolio=portfolio,
-            trade_history=trade_history,
-            spread_pct=spread_pct,
-            volume=features.get("volume"),
-            volume_sma20=features.get("volume_sma20"),
-            data_reliable=data_quality.get("reliable"),
-            data_reason=data_quality.get("reason"),
-        )
-
+    async def _run_symbol_cycle(self, symbol: str, execution_lease_owner: str | None = None):
+        from app.api.timeframes import evaluate_and_issue_horizon_authority
+        horizon = await evaluate_and_issue_horizon_authority(
+            user_id=INTERNAL_SERVICE_SUBJECT, account_id="default", symbol=symbol,
+            evaluation_reason="scheduler",
+            idempotency_key=f"scheduler:{int(time.time() // settings.scheduler_interval_seconds)}")
+        if horizon.get("authority_status") != "persisted_authority" or not horizon.get("horizon_decision_id"):
+            log_event(logger, message="scheduler_no_trade", category="scheduler", symbol=symbol,
+                      reason="Trading Horizon authority was not issued")
+            return
         log_event(
             logger,
             message="scheduler_cycle",
             category="scheduler",
             symbol=symbol,
-            direction=prediction["direction"],
-            confidence=prediction["confidence"],
-            reason=decision["reason"],
+            direction=horizon["direction"],
+            confidence=horizon.get("calibrated_confidence"),
+            reason="Persisted Trading Horizon authority issued",
         )
 
-        if decision["allowed"]:
+        # The router loads direction, timeframe, confidence, stop, target and
+        # evidence from the immutable snapshot. This call carries no model output.
+        result = await execution_router.open_position(
+            symbol=symbol,
+            clamp_to_max=True,
+            order_type=OrderType.IOC,
+            automated_execution=True,
+            execution_lease_owner=execution_lease_owner,
+            horizon_decision_id=horizon["horizon_decision_id"],
+            user_id=horizon["user_id"],
+        )
 
-            # Execution intent goes to the mode-resolving router (Phase 23),
-            # never to a provider directly: PAPER books a simulated fill via
-            # the existing execution engine, BINANCE_LIVE runs the real risk
-            # gate and places an actual order, and a locked/killed state
-            # blocks with a reason - all decided per-cycle, no restart.
-            result = await execution_router.open_position(
-                symbol=symbol,
-                side=prediction["direction"],
-                notional_usdt=decision["settings"]["max_position_size_usd"],
-                clamp_to_max=True,
-                order_type=OrderType.IOC,
-                sl=prediction["stop"],
-                tp=prediction["target"],
-                confidence=prediction["confidence"],
-                data_reliable=data_quality.get("reliable"),
-                spread_pct=spread_pct,
-                feature_id=prediction.get("feature_id"),
-                regime=prediction["regime"],
-                strategies=prediction["strategies"],
-                signal_time=signal_time,
-                open_positions=len(positions),
-                equity=portfolio.get("equity"),
-                timeframe=prediction_response.get("timeframe"),
-                decision_engine=prediction.get("decision_engine"),
-                automated_execution=True,
-                execution_lease_owner=execution_lease_owner,
-            )
-
-            log_event(
-                logger,
-                message="scheduler_execution_result",
-                category="scheduler",
-                symbol=symbol,
-                mode=result.mode,
-                reason=result.reason if not result.ok else None,
-            )
-
-        else:
-            log_event(
-                logger, message="scheduler_no_trade", category="scheduler",
-                symbol=symbol, reason=decision["reason"],
-            )
+        log_event(
+            logger,
+            message="scheduler_execution_result",
+            category="scheduler",
+            symbol=symbol,
+            mode=result.mode,
+            reason=result.reason if not result.ok else None,
+        )

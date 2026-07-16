@@ -6,14 +6,27 @@ and independent source composition exist. This module never executes.
 """
 from __future__ import annotations
 import math
+import calendar
+from datetime import datetime, timezone
 
-HORIZON_BARS={"1m":24,"3m":16,"5m":12,"15m":8,"30m":6,"1h":6,"4h":4,"1d":4}
-TIMEFRAME_SECONDS={"1m":60,"3m":180,"5m":300,"15m":900,"30m":1800,"1h":3600,"4h":14400,"1d":86400}
+HORIZON_BARS={"1m":24,"3m":16,"5m":12,"15m":8,"30m":6,"1h":6,"4h":4,"1d":4,"1w":4,"1M":3}
+TIMEFRAME_SECONDS={"1m":60,"3m":180,"5m":300,"15m":900,"30m":1800,"1h":3600,"4h":14400,"1d":86400,"1w":604800}
 FALLBACK_BAND_PCT=.006
 
 def _ease_out(t): return 1-(1-t)**2
 def horizon_bars(interval): return HORIZON_BARS.get(interval,0)
 def _positive(v): return isinstance(v,(int,float)) and math.isfinite(v) and v>0
+
+def _advance_calendar_month(timestamp_seconds: int, months: int = 1) -> int:
+    """Advance a UTC candle timestamp by calendar months, clamping its day."""
+    value=datetime.fromtimestamp(timestamp_seconds,tz=timezone.utc)
+    total=value.year*12+(value.month-1)+months; year,month=divmod(total,12); month+=1
+    day=min(value.day,calendar.monthrange(year,month)[1])
+    return int(value.replace(year=year,month=month,day=day).timestamp())
+
+def _forecast_timestamp(reference_seconds:int,interval:str,index:int)->int:
+    if interval=="1M": return _advance_calendar_month(reference_seconds,index)
+    return reference_seconds+index*TIMEFRAME_SECONDS.get(interval,0)
 
 def _spread(price,atr,rv):
     if _positive(atr): return float(atr),"atr"
@@ -25,18 +38,24 @@ def _unavailable(interval,interval_ms,reason):
     return {"available":False,"trade_actionable":False,"forecast_type":"unavailable","direction":"NEUTRAL",
       "median_path":[],"upper_band":[],"lower_band":[],"forecast_points":[],"upper_band_points":[],"lower_band_points":[],
       "bars":bars,"horizon_ms":bars*interval_ms,"horizon_seconds":bars*interval_ms//1000,"band_basis":None,
-      "confidence_level":None,"target_price":None,"invalidation_price":None,"reason":reason}
+      "confidence_level":None,"target_price":None,"invalidation_price":None,"reason":reason,
+      "actionable":False,"execution_eligible":False,"informational_only":interval=="1M",
+      "entry":None,"stop_loss":None,"order_instruction":None,"blockers":["MONTHLY_FORECAST_INFORMATIONAL_ONLY"] if interval=="1M" else []}
 
 def build_forecast(*,interval,interval_ms,last_candle_time,price,direction,confidence,target,stop,
                    atr=None,realized_volatility=None,informational_direction=None,
                    informational_strength=None,data_fresh=True,candle_count=0):
     """Return finite, ordered millisecond points beginning after the last bar."""
-    bars=horizon_bars(interval); interval_seconds=TIMEFRAME_SECONDS.get(interval,0)
-    if not bars or interval_ms<=0 or interval_seconds<=0: return _unavailable(interval,interval_ms,"Unsupported or invalid forecast timeframe")
+    bars=horizon_bars(interval); interval_seconds=TIMEFRAME_SECONDS.get(interval)
+    if not bars or (interval!="1M" and interval_ms<=0) or (interval!="1M" and not interval_seconds): return _unavailable(interval,interval_ms,"Unsupported or invalid forecast timeframe")
     if candle_count<30: return _unavailable(interval,interval_ms,"Insufficient candle history for an informational forecast")
     if not data_fresh: return _unavailable(interval,interval_ms,"Market data is stale")
     if not _positive(price) or not _positive(last_candle_time): return _unavailable(interval,interval_ms,"No finite reference candle and price")
-    actionable=direction in ("LONG","SHORT")
+    monthly = interval == "1M"
+    actionable=direction in ("LONG","SHORT") and not monthly
+    if monthly and direction in ("LONG", "SHORT"):
+        informational_direction = "BULLISH" if direction == "LONG" else "BEARISH"
+        informational_strength = informational_strength if informational_strength is not None else max(0., min(1., float(confidence or 0) / 100.))
     if actionable:
         forecast_direction="BULLISH" if direction=="LONG" else "BEARISH"
         end=float(target) if _positive(target) else float(price)
@@ -61,15 +80,20 @@ def build_forecast(*,interval,interval_ms,last_candle_time,price,direction,confi
     upper=[{"time":reference_seconds,"price":round(float(price),8)}]
     lower=[{"time":reference_seconds,"price":round(float(price),8)}]
     for i in range(1,bars+1):
-        e=_ease_out(i/bars); timestamp=reference_seconds+i*interval_seconds
+        e=_ease_out(i/bars); timestamp=_forecast_timestamp(reference_seconds,interval,i)
         midpoint=float(price)+(end-float(price))*e; band=width*math.sqrt(i/bars)
         median.append({"time":timestamp,"price":round(midpoint,8)})
         upper.append({"time":timestamp,"price":round(midpoint+band,8)})
         lower.append({"time":timestamp,"price":round(max(1e-12,midpoint-band),8)})
-    return {"available":True,"trade_actionable":actionable,"forecast_type":kind,"direction":forecast_direction,
+    actual_horizon_ms=(median[-1]["time"]-reference_seconds)*1000
+    return {"available":True,"trade_actionable":actionable,"actionable":actionable,
+      "execution_eligible":False if monthly else actionable,"informational_only":monthly or not actionable,
+      "entry":None,"stop_loss":None,"order_instruction":None,
+      "blockers":["MONTHLY_FORECAST_INFORMATIONAL_ONLY"] if monthly else [],
+      "forecast_type":kind,"direction":forecast_direction,
       "median_path":median,"upper_band":upper,"lower_band":lower,"forecast_points":median,
-      "upper_band_points":upper,"lower_band_points":lower,"bars":bars,"horizon_ms":bars*interval_ms,
-      "horizon_seconds":bars*interval_ms//1000,"band_basis":basis,"confidence_level":conf,
+      "upper_band_points":upper,"lower_band_points":lower,"bars":bars,"horizon_ms":actual_horizon_ms,
+      "horizon_seconds":actual_horizon_ms//1000,"band_basis":basis,"confidence_level":conf,
       "target_price":float(target) if actionable and _positive(target) else None,
       "invalidation_price":float(stop) if actionable and _positive(stop) else None,"reason":reason}
 
@@ -78,12 +102,12 @@ def validate_forecast(forecast,*,reference_time,interval):
     if not forecast.get("available"): return False,forecast.get("reason") or "Forecast unavailable"
     expected=TIMEFRAME_SECONDS.get(interval)
     series=[forecast.get(k) or [] for k in ("median_path","upper_band","lower_band")]
-    if not expected or any(len(points)<3 for points in series): return False,"Forecast has fewer than three chart points"
+    if (interval!="1M" and not expected) or any(len(points)<3 for points in series): return False,"Forecast has fewer than three chart points"
     if len({len(points) for points in series})!=1: return False,"Forecast band lengths do not match"
     ref=int(reference_time//1000 if reference_time>10_000_000_000 else reference_time)
     for points in series:
         for index,point in enumerate(points):
             if not isinstance(point.get("time"),int) or not _positive(point.get("price")): return False,"Forecast contains invalid timestamp or price"
             if index==0 and point["time"]!=ref: return False,"Forecast anchor does not match the final candle"
-            if index>0 and point["time"]!=ref+index*expected: return False,"Forecast timestamps do not match the selected timeframe"
+            if index>0 and point["time"]!=_forecast_timestamp(ref,interval,index): return False,"Forecast timestamps do not match the selected timeframe"
     return True,None

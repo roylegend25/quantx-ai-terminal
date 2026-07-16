@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from datetime import datetime, timezone
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from app.core.deps import get_current_user
 from app.db.session import get_db
@@ -9,6 +9,9 @@ from app.decision_engine.cache import invalidate_user
 from app.decision_engine.repository import get_setting, is_available, set_engine
 from app.decision_engine.router import decision_engine_router
 from app.decision_engine.types import DecisionEngineType
+from app.deployment import maintenance
+from app.deployment.lease import execution_lease
+from app.trading import scheduler as trading_scheduler
 
 router = APIRouter(prefix="/api/bot", tags=["bot"])
 
@@ -24,33 +27,56 @@ def update_state(action: str):
     BOT_STATE["last_action"] = action
     BOT_STATE["updated_at"] = datetime.now(timezone.utc).isoformat()
 
+def _effective_status() -> str:
+    """BOT_STATE alone used to be the entire answer, and it started at
+    "running" the instant this module was imported - before the scheduler's
+    startup grace period even elapsed, and with no link at all to whether
+    the asyncio loop in app.trading.scheduler was actually alive. A real
+    trade can now actually be placed once current-edge support is wired up,
+    so this can no longer just be a decorative label: "running" is only
+    reported when the scheduler loop is actually iterating and not
+    deployment-maintenance-blocked."""
+    if trading_scheduler.RUNNING:
+        return "paused" if maintenance.enabled() else "running"
+    return BOT_STATE["status"] if BOT_STATE["status"] in ("paused", "stopped") else "stopped"
+
+def _status_payload() -> dict:
+    return {**BOT_STATE, "status": _effective_status(),
+            "scheduler_running": trading_scheduler.RUNNING,
+            "maintenance_mode": maintenance.enabled(),
+            "execution_lease_held": execution_lease.held,
+            "effective_trading_active": trading_scheduler.RUNNING and not maintenance.enabled()}
+
 @router.get("/status")
 async def bot_status():
-    return BOT_STATE
+    return _status_payload()
 
 @router.post("/start")
 async def start_bot():
+    trading_scheduler.start_scheduler()
     BOT_STATE["status"] = "running"
     update_state("start")
-    return {"ok": True, "message": "Bot started", "state": BOT_STATE}
+    return {"ok": True, "message": "Bot started", "state": _status_payload()}
 
 @router.post("/pause")
 async def pause_bot():
+    trading_scheduler.stop_scheduler()
     BOT_STATE["status"] = "paused"
     update_state("pause")
-    return {"ok": True, "message": "Bot paused", "state": BOT_STATE}
+    return {"ok": True, "message": "Bot paused", "state": _status_payload()}
 
 @router.post("/stop")
 async def stop_bot():
+    trading_scheduler.stop_scheduler()
     BOT_STATE["status"] = "stopped"
     update_state("stop")
-    return {"ok": True, "message": "Bot stopped", "state": BOT_STATE}
+    return {"ok": True, "message": "Bot stopped", "state": _status_payload()}
 
 @router.post("/paper")
 async def paper_mode():
     BOT_STATE["mode"] = "paper"
     update_state("paper")
-    return {"ok": True, "message": "Paper mode enabled", "state": BOT_STATE}
+    return {"ok": True, "message": "Paper mode enabled", "state": _status_payload()}
 
 @router.post("/live")
 async def live_mode():
@@ -60,7 +86,7 @@ async def live_mode():
     return {
         "ok": False,
         "message": "Live mode is locked until API keys, risk limits, and execution safeguards are configured.",
-        "state": BOT_STATE,
+        "state": _status_payload(),
     }
 
 class EngineSwitchRequest(BaseModel):
@@ -70,6 +96,61 @@ class EngineSwitchRequest(BaseModel):
 
 class ShadowCompareRequest(BaseModel):
     enabled: bool
+
+
+TRADING_PROFILES = {"auto_adaptive", "short_term", "mid_term", "safe"}
+
+
+class TradingProfilePatch(BaseModel):
+    trading_profile: str
+    strict_timeframe_unanimity: bool = True
+    auto_profile_enabled: bool = True
+    expected_revision: int = Field(ge=1)
+
+
+def _profile_state(setting) -> dict:
+    return {
+        "trading_profile": setting.trading_profile or "auto_adaptive",
+        "strict_timeframe_unanimity": setting.strict_timeframe_unanimity is not False,
+        "strict_unanimity_required": True,
+        "auto_profile_enabled": setting.auto_profile_enabled is not False,
+        "profile_updated_at": setting.profile_updated_at.isoformat() if setting.profile_updated_at else None,
+        "profile_revision": setting.profile_revision or 1,
+        "persistence_available": True,
+        "authority_source": "server",
+    }
+
+
+@router.get("/trading-profile")
+def get_trading_profile(current_user: str = Depends(get_current_user), db: Session = Depends(get_db)):
+    return _profile_state(get_setting(db, current_user))
+
+
+@router.patch("/trading-profile")
+def patch_trading_profile(body: TradingProfilePatch, current_user: str = Depends(get_current_user), db: Session = Depends(get_db)):
+    if body.trading_profile not in TRADING_PROFILES:
+        raise HTTPException(status_code=422, detail="Invalid trading_profile")
+    if body.trading_profile == "auto_adaptive" and not body.auto_profile_enabled:
+        raise HTTPException(status_code=422, detail="auto_profile_enabled is required for auto_adaptive")
+    if body.strict_timeframe_unanimity is not True:
+        raise HTTPException(status_code=422, detail="STRICT_TIMEFRAME_UNANIMITY_REQUIRED")
+    setting = get_setting(db, current_user)
+    revision = setting.profile_revision or 1
+    if revision != body.expected_revision:
+        raise HTTPException(status_code=409, detail="PROFILE_REVISION_CONFLICT")
+    previous = _profile_state(setting)
+    setting.trading_profile = body.trading_profile
+    setting.strict_timeframe_unanimity = True
+    setting.auto_profile_enabled = body.auto_profile_enabled
+    setting.profile_updated_at = datetime.now(timezone.utc)
+    setting.profile_revision = revision + 1
+    db.commit()
+    db.refresh(setting)
+    invalidate_user(setting.user_id)
+    from app.trading import modes
+    modes.audit("trading_profile_changed", detail={"user_id": setting.user_id, "previous": previous,
+                "current": _profile_state(setting), "affects": "future_entries_only"})
+    return _profile_state(setting)
 
 
 def _engine_state(db: Session, user_id: str) -> dict:

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import asyncio
 
 import httpx
 
@@ -30,7 +31,6 @@ from app.core.config import settings
 from app.core.security import create_internal_service_token
 from app.db.models import ExchangePositionRow
 from app.db.session import SessionLocal
-from app.decision_engine.router import decision_engine_router
 from app.decision_engine.repository import owner
 from app.deployment import maintenance
 from app.deployment.lease import execution_lease
@@ -58,7 +58,9 @@ from app.trading.execution_pipeline import (
     classify_binance_error,
     classify_gate_failure,
 )
-
+from app.trading_horizon.idempotency import durable_intents
+from app.trading_horizon.authority import HorizonAuthorityError, validate_horizon_decision
+from app.trading_horizon.sizing import PositionSizingError, calculate_position_size
 PAPER_API = "http://127.0.0.1:8000"
 
 
@@ -72,6 +74,27 @@ class RouterResult:
 
     def to_dict(self) -> dict:
         return {"ok": self.ok, "mode": self.mode, "action": self.action, "reason": self.reason, **self.detail}
+
+
+def revalidate_snapshot_price(snapshot: dict, current_price: float) -> str | None:
+    """Current price may veto an old thesis; it never creates a replacement thesis."""
+    reference = snapshot.get("entry_policy", {}).get("reference_price")
+    tolerance_bps = snapshot.get("entry_policy", {}).get("maximum_slippage_bps")
+    if not isinstance(reference, (int, float)) or reference <= 0:
+        return "ENTRY_NO_LONGER_VALID"
+    if not isinstance(current_price, (int, float)) or current_price <= 0:
+        return "ENTRY_NO_LONGER_VALID"
+    if isinstance(tolerance_bps, (int, float)):
+        drift_bps = abs(current_price - reference) / reference * 10_000
+        if drift_bps > tolerance_bps:
+            return "DECISION_PRICE_DRIFT_EXCEEDED"
+    risk = snapshot.get("risk", {})
+    stop, target, direction = risk.get("stop_price"), risk.get("target_price"), snapshot.get("direction")
+    if isinstance(stop, (int, float)) and isinstance(target, (int, float)):
+        valid = stop < current_price < target if direction == "LONG" else target < current_price < stop
+        if not valid:
+            return "ENTRY_NO_LONGER_VALID"
+    return None
 
 
 class PaperExecutionProvider:
@@ -91,6 +114,9 @@ class PaperExecutionProvider:
         # bot-originated order journals identically whether the strategy
         # engine called the paper engine directly (pre-Phase 23) or through
         # this router.
+        guard = kwargs.pop("_pre_submit_guard", None)
+        if guard is not None and not await guard():
+            return RouterResult(ok=False, mode=self.mode, action="open_position", reason="EXECUTION_LEASE_LOST")
         result = await paper_engine.submit_order(
             symbol=symbol,
             side=side,
@@ -256,8 +282,24 @@ class BinanceExecutionProvider:
             modes.audit("order_rejected", symbol=symbol, detail={"error": reason})
             return self._result(False, "open_position", reason=reason)
 
+        market_revalidation = kwargs.get("_market_revalidation")
+        if market_revalidation is not None:
+            market_blocker = market_revalidation(mark)
+            if market_blocker:
+                recorder.stage(STAGE_QUANTITY_CALCULATION, STATUS_FAILED, market_blocker)
+                recorder.finish("failed", reason=market_blocker)
+                return self._result(False, "open_position", reason=market_blocker)
+
         raw_qty = notional_usdt / mark
         qty = _round_qty(symbol, raw_qty)
+        actual_notional = qty * mark
+        if qty <= 0 or actual_notional > notional_usdt + 1e-9:
+            reason = ("EXCHANGE_MIN_NOTIONAL_NOT_MET: quantity below the minimum order size"
+                      if qty <= 0 else "APPROVED_NOTIONAL_EXCEEDED")
+            recorder.stage(STAGE_QUANTITY_CALCULATION, STATUS_FAILED,
+                           "Quantity below minimum" if qty <= 0 else reason)
+            recorder.finish("failed", reason=reason)
+            return self._result(False, "open_position", reason=reason)
         recorder.requested_quantity = round(raw_qty, 8)
         recorder.adjusted_quantity = qty
         recorder.margin_required = round(notional_usdt / max(leverage, 1.0), 2)
@@ -293,6 +335,11 @@ class BinanceExecutionProvider:
         recorder.stage(STAGE_BINANCE_VALIDATION, STATUS_SUCCESS)
 
         try:
+            guard = kwargs.pop("_pre_submit_guard", None)
+            if guard is not None and not await guard():
+                recorder.stage(STAGE_ENTRY_ORDER_SUBMITTED, STATUS_FAILED, "Execution lease lost")
+                recorder.finish("failed", reason="EXECUTION_LEASE_LOST")
+                return self._result(False, "open_position", reason="EXECUTION_LEASE_LOST")
             order = await self.client.place_market_order(
                 symbol=symbol, side="BUY" if side == "LONG" else "SELL", quantity=qty,
             )
@@ -975,21 +1022,94 @@ class ExecutionRouter:
             if kwargs.get("execution_lease_owner") != execution_lease.owner or not await execution_lease.owns():
                 return RouterResult(ok=False, mode=modes.effective_mode(), action="open_position",
                                     reason="EXECUTION_LEASE_NOT_HELD")
-        decision = kwargs.get("decision_engine")
-        if decision:
-            db = SessionLocal()
+        required = ("horizon_decision_id", "symbol", "user_id")
+        if any(kwargs.get(field) is None for field in required):
+            return RouterResult(ok=False, mode=modes.effective_mode(), action="open_position", reason="HORIZON_AUTHORITY_REQUIRED")
+        symbol = str(kwargs["symbol"]).upper()
+        db = SessionLocal()
+        try:
+            persisted = validate_horizon_decision(db, horizon_decision_id=kwargs["horizon_decision_id"],
+                user_id=kwargs["user_id"], symbol=symbol)
+            if kwargs.get("side") is not None and str(kwargs["side"]).upper() != persisted.final_direction:
+                return RouterResult(ok=False, mode=modes.effective_mode(), action="open_position",
+                                    reason="HORIZON_DECISION_DIRECTION_MISMATCH")
+            if kwargs.get("timeframe") is not None and kwargs["timeframe"] != persisted.authoritative_execution_timeframe:
+                return RouterResult(ok=False, mode=modes.effective_mode(), action="open_position",
+                                    reason="TIMEFRAME_NOT_EXECUTION_AUTHORITY")
+            authority_tf = persisted.authoritative_execution_timeframe
+            direction = persisted.final_direction
+            engine_version = persisted.engine_version
+            selected_profile = persisted.selected_profile
+            snapshot = persisted.execution_snapshot
+            execution_decision = persisted.execution_decision
+            risk_approval = snapshot.get("risk_approval")
+            if not isinstance(risk_approval, dict):
+                return RouterResult(ok=False, mode=modes.effective_mode(), action="open_position",
+                                    reason="RISK_POLICY_UNAVAILABLE")
+            sizing = calculate_position_size(db, user_id=owner(kwargs["user_id"]), symbol=symbol,
+                risk_approval=risk_approval, mode=modes.effective_mode(),
+                requested_notional=kwargs.get("notional_usdt"))
+        except HorizonAuthorityError as exc:
+            return RouterResult(ok=False, mode=modes.effective_mode(), action="open_position", reason=str(exc))
+        except PositionSizingError as exc:
+            return RouterResult(ok=False, mode=modes.effective_mode(), action="open_position", reason=str(exc))
+        finally:
+            db.close()
+        authority = {"user_id": owner(kwargs["user_id"]), "symbol": symbol, "engine": "active_drive_v2",
+                     "profile_decision_id": kwargs["horizon_decision_id"], "execution_timeframe": authority_tf,
+                     "direction": direction}
+        claimed, claim_reason, lease = await durable_intents.acquire(authority, kwargs.get("idempotency_key"))
+        if not claimed or lease is None:
+            return RouterResult(ok=False, mode=modes.effective_mode(), action="open_position", reason=claim_reason)
+        lost = asyncio.Event()
+        heartbeat = asyncio.create_task(durable_intents.heartbeat(lease, lost))
+        async def pre_submit_guard() -> bool:
+            if lost.is_set() or not await durable_intents.owns(lease):
+                return False
+            verify_db = SessionLocal()
             try:
-                decision_engine_router.assert_authoritative(db, owner(kwargs.get("user_id") or "internal-scheduler"), decision)
-                generated = decision.get("generated_at")
-                if generated:
-                    generated_at = datetime.fromisoformat(generated.replace("Z", "+00:00"))
-                    if (datetime.now(timezone.utc) - generated_at).total_seconds() > 120:
-                        return RouterResult(ok=False, mode=modes.effective_mode(), action="open_position", reason="DECISION_EXPIRED")
-            except ValueError as exc:
-                return RouterResult(ok=False, mode=modes.effective_mode(), action="open_position", reason=str(exc))
+                validate_horizon_decision(verify_db, horizon_decision_id=kwargs["horizon_decision_id"],
+                    user_id=kwargs["user_id"], symbol=symbol,
+                    consume_key=lease.idempotency_key)
+                return await durable_intents.owns(lease)
+            except HorizonAuthorityError:
+                return False
             finally:
-                db.close()
-        return await self.provider().open_position(**kwargs)
+                verify_db.close()
+        try:
+            provider_kwargs = dict(kwargs)
+            for untrusted in ("horizon_decision", "profile_decision_id", "selected_trading_profile",
+                              "authoritative_execution_timeframe", "engine_id", "engine_version",
+                              "generated_at", "expires_at", "profile_revision", "side", "timeframe",
+                              "sl", "tp", "confidence", "expected_edge", "feature_id", "regime",
+                              "strategies", "signal_time", "decision_engine"):
+                provider_kwargs.pop(untrusted, None)
+            risk_snapshot = snapshot["risk"]
+            evidence_snapshot = snapshot["evidence"]
+            provider_kwargs["notional_usdt"] = sizing["final_approved_notional_usd"]
+            provider_kwargs["position_sizing"] = sizing
+            provider_kwargs["side"] = direction
+            provider_kwargs["timeframe"] = authority_tf
+            provider_kwargs["sl"] = risk_snapshot.get("stop_price")
+            provider_kwargs["tp"] = risk_snapshot.get("target_price")
+            provider_kwargs["confidence"] = evidence_snapshot.get("directional_confidence")
+            provider_kwargs["regime"] = evidence_snapshot.get("market_regime")
+            provider_kwargs["signal_time"] = persisted.generated_at
+            provider_kwargs["decision_engine"] = {"engine": "active_drive_v2", "engine_version": engine_version,
+                "decision_id": execution_decision.decision_id, "horizon_decision_id": kwargs["horizon_decision_id"],
+                "selected_profile": selected_profile, "execution_snapshot": snapshot}
+            provider_kwargs["_market_revalidation"] = lambda current_price: revalidate_snapshot_price(snapshot, current_price)
+            provider_kwargs["_pre_submit_guard"] = pre_submit_guard
+            routed = await self.provider().open_position(**provider_kwargs)
+            routed.detail.setdefault("position_sizing", sizing)
+            return routed
+        finally:
+            lost.set()
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
+            terminal = locals().get("routed")
+            await durable_intents.complete(lease, terminal.to_dict() if terminal is not None else
+                                           {"ok": False, "reason": "ROUTING_EXCEPTION"})
 
     async def close_position(self, **kwargs) -> RouterResult:
         # Closing/canceling stays allowed while live is merely locked, but a

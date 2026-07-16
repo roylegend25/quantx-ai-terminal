@@ -24,7 +24,7 @@ from app.monitoring.logging import RequestLoggingMiddleware
 from app.monitoring.metrics import PrometheusMiddleware, instrument_db_engine
 from datetime import datetime, timezone
 from app.core.deps import get_current_user
-from app.db.init_db import init_db
+from app.db.init_db import SchemaCompatibilityError, init_db
 from app.db.session import engine as db_engine
 from app.trading.scheduler import start_scheduler
 from app.trading.position_manager import start_position_manager
@@ -71,7 +71,11 @@ async def startup_event():
     apply_env_file_to_settings()
     if settings.deployment_maintenance_mode:
         maintenance.enable("application-startup")
-    init_db()
+    try:
+        init_db()
+    except SchemaCompatibilityError:
+        maintenance.enable("TRADING_HORIZON_MIGRATION_REQUIRED")
+        return
     instrument_db_engine(db_engine)
     asyncio.create_task(delayed_background_start())
 

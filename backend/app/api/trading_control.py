@@ -1020,13 +1020,11 @@ class TestOrderRequest(BaseModel):
 
 @router.post("/binance/test-order")
 async def binance_test_order(body: TestOrderRequest, db: Session = Depends(get_db)):
-    """Places Binance's smallest legal order for `symbol` (or the default
-    symbol) through the exact same execution pipeline as a real bot order -
-    same risk gate, same stage-by-stage instrumentation - then immediately
-    closes the resulting position, reduce-only. Requires live trading to
-    already be fully unlocked AND an explicit confirm=true: this spends
-    real (tiny) money and pays taker fees on both legs. The exact exchange
-    response is always returned, success or rejection - never swallowed."""
+    """Legacy diagnostic entry is disabled by mandatory Horizon authority.
+
+    Keep confirmation and allowlist validation for a precise operator error,
+    but never read the exchange or route an entry from this endpoint.
+    """
     _require_live(db)
     if not body.confirm:
         raise HTTPException(status_code=400, detail="Explicit confirmation required to place a real test order (confirm=true)")
@@ -1034,56 +1032,9 @@ async def binance_test_order(body: TestOrderRequest, db: Session = Depends(get_d
     symbol = (body.symbol or settings.default_symbol).upper()
     if symbol not in settings.binance_allowed_symbols:
         raise HTTPException(status_code=400, detail=f"{symbol} is not in BINANCE_ALLOWED_SYMBOLS")
-
-    client = execution_router.provider().client
-    try:
-        filters = await client.get_exchange_filters(symbol)
-        mark = await client.get_mark_price(symbol)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Could not read Binance exchange rules: {_safe_error(e)}")
-
-    # 2% headroom over the exact exchange minimum so mark-price movement
-    # between this read and order placement can't drop the order below it.
-    min_qty_notional = filters["min_qty"] * mark
-    notional = round(max(filters["min_notional"], min_qty_notional) * 1.02, 2)
-    if notional > settings.binance_max_notional_per_trade:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Exchange minimum order for {symbol} is ~${notional:.2f} notional, which exceeds the configured "
-                f"max per-trade notional (${settings.binance_max_notional_per_trade:.2f}). Raise "
-                "BINANCE_MAX_NOTIONAL_PER_TRADE to test, or test a different symbol."
-            ),
-        )
-
-    # Test orders go through the exact same protection requirement as a
-    # real bot entry - a tight, symmetric bracket around mark is enough to
-    # exercise the whole placement+verification path without meaning
-    # anything about where the position is expected to move.
-    test_tp = round(mark * 1.02, filters["price_precision"])
-    test_sl = round(mark * 0.98, filters["price_precision"])
-
-    submit = await execution_router.open_position(
-        symbol=symbol, side="LONG", notional_usdt=notional, leverage=1, confidence=100.0, is_test=True,
-        sl=test_sl, tp=test_tp,
-    )
-
-    # close_position cancels any remaining protective orders for this
-    # symbol as part of closing (orphan cleanup) - see
-    # BinanceExecutionProvider.close_position. Always attempt the close if
-    # the entry filled, even when protection itself failed, so a test never
-    # leaves real exposure behind.
-    close_result = None
-    if submit.ok or submit.detail.get("order"):
-        close_result = await execution_router.close_position(symbol=symbol)
-
-    return {
-        "symbol": symbol,
-        "requested_notional": notional,
-        "exchange_filters": filters,
-        "submit": submit.to_dict(),
-        "close": close_result.to_dict() if close_result else None,
-    }
+    # A diagnostic endpoint cannot invent Active Drive V2 authority. It is
+    # deliberately blocked before any exchange read or order operation.
+    raise HTTPException(status_code=409, detail="HORIZON_AUTHORITY_REQUIRED")
 
 
 # ============================================ TP/SL position protection repair

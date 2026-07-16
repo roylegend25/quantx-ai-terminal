@@ -19,6 +19,7 @@ from app.monitoring.logging import get_logger, log_event
 from app.risk import settings_repository
 from app.trading import margin as margin_calc
 from app.trading.position_manager import should_close_position
+from app.core.security import INTERNAL_SERVICE_SUBJECT
 
 router = APIRouter(prefix="/api/paper", tags=["paper"])
 
@@ -284,6 +285,7 @@ async def open_trade(
     feature_id: int | None = None,
     entry_price: float | None = None,
     context: StrategyContext | None = None,
+    authorization: str | None = Header(default=None),
     user: str | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
@@ -296,6 +298,13 @@ async def open_trade(
     from app.trading import modes as trading_modes
     if trading_modes.kill_switch_active():
         raise HTTPException(status_code=423, detail="Kill switch active - all trading halted")
+
+    # This is an internal ledger-booking sink used only after the common
+    # ExecutionRouter authority/fencing gate. Authenticated UI/API callers
+    # cannot use it as an alternative new-entry route.
+    token_subject = decode_access_token(authorization.removeprefix("Bearer ").strip()) if authorization and authorization.startswith("Bearer ") else None
+    if token_subject != INTERNAL_SERVICE_SUBJECT:
+        raise HTTPException(status_code=403, detail="HORIZON_AUTHORITY_REQUIRED")
 
     if side not in ["LONG", "SHORT"]:
         raise HTTPException(status_code=400, detail="side must be LONG or SHORT")

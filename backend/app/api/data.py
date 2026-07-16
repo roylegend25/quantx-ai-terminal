@@ -6,10 +6,13 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.data_sources import coinglass, cryptoquant, downloader, glassnode, hyblock, scheduler as data_scheduler
-from app.data_sources.normalizer import SUPPORTED_SYMBOLS, TIMEFRAMES_MS
+from app.data_sources.normalizer import SUPPORTED_SYMBOLS
+from app.data_sources.validator import validate_candle_sequence
 from app.db.models import DataQualityReport
 from app.db.session import get_db
 from app.features import engine as feature_engine
+from app.timeframes.canonical import (TIMEFRAME_CAPABILITIES, is_supported_data_timeframe,
+                                      parse_timeframe, storage_interval, timeframe_capabilities)
 
 router = APIRouter(prefix="/api/data", tags=["data"])
 
@@ -36,7 +39,7 @@ def _iso_to_ms(value: str | None) -> int | None:
 async def sources():
     return {
         "symbols": SUPPORTED_SYMBOLS,
-        "timeframes": list(TIMEFRAMES_MS),
+        "timeframes": [value for value, metadata in TIMEFRAME_CAPABILITIES.items() if metadata.data_api_supported],
         "data_types": downloader.DATA_TYPES,
         "providers": [
             {"name": "binance_futures", "available": True, "kind": "market", "requires_key": False},
@@ -155,18 +158,32 @@ async def candles(
     include_interpolated: bool = True,
     db: Session = Depends(get_db),
 ):
-    if timeframe.lower() not in TIMEFRAMES_MS:
+    try:
+        canonical, stored = parse_timeframe(timeframe).value, storage_interval(timeframe)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Unsupported timeframe '{timeframe}'")
+    if not is_supported_data_timeframe(canonical):
         raise HTTPException(status_code=422, detail=f"Unsupported timeframe '{timeframe}'")
     rows = downloader.load_candles(
         symbol,
-        timeframe.lower(),
+        stored,
         start_ms=_iso_to_ms(start_date),
         end_ms=_iso_to_ms(end_date),
         limit=limit,
         include_interpolated=include_interpolated,
         db=db,
     )
-    return {"symbol": symbol.upper(), "timeframe": timeframe.lower(), "count": len(rows), "candles": rows}
+    metadata = timeframe_capabilities(canonical)
+    _, validation = validate_candle_sequence(rows, canonical) if rows else ([], {
+        "valid": True, "stale": False, "open_current_candle": False, "gaps": [], "gap_count": 0,
+    })
+    return {"symbol": symbol.upper(), "timeframe": canonical, "timeframe_kind": metadata.kind,
+            "fixed_duration_ms": metadata.fixed_duration_ms, "count": len(rows), "candles": rows,
+            "data_status": "stale" if validation["stale"] else "cached",
+            "current_candle_open": validation["open_current_candle"], "validation": {
+                "valid": validation["valid"], "gap_count": validation["gap_count"],
+                "gaps": validation["gaps"],
+            }}
 
 
 @router.get("/features")
@@ -179,18 +196,34 @@ async def features(
 ):
     """Generated multi-timeframe features. With refresh=true (default) they
     are recomputed from the stored candles and persisted before returning."""
+    try:
+        parsed_timeframe = parse_timeframe(timeframe)
+        metadata = timeframe_capabilities(parsed_timeframe)
+        if not metadata.data_api_supported:
+            raise ValueError("unsupported data timeframe")
+    except ValueError as exc:
+        supported = [value for value, capability in TIMEFRAME_CAPABILITIES.items()
+                     if capability.data_api_supported]
+        raise HTTPException(status_code=422, detail={
+            "code": "UNSUPPORTED_TIMEFRAME",
+            "message": "Unsupported timeframe.",
+            "provided": str(timeframe)[:64],
+            "supported": supported,
+        }) from exc
+    canonical_timeframe = parsed_timeframe.value
+    stored_timeframe = metadata.storage_key
     summary = None
     if refresh:
         try:
-            summary = feature_engine.generate_and_store(symbol, timeframe.lower(), db=db)
+            summary = feature_engine.generate_and_store(symbol, stored_timeframe, db=db)
         except feature_engine.InsufficientDataError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
-    snapshots = feature_engine.load_snapshots(symbol, timeframe.lower(), limit=limit, db=db)
+    snapshots = feature_engine.load_snapshots(symbol, stored_timeframe, limit=limit, db=db)
     return {
         "symbol": symbol.upper(),
-        "timeframe": timeframe.lower(),
+        "timeframe": canonical_timeframe,
         "feature_version": feature_engine.FEATURE_VERSION,
         "summary": summary,
         "count": len(snapshots),

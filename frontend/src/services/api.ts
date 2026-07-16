@@ -69,6 +69,11 @@ export const api = {
   marketContext: (symbol: string) => getJson(`/api/market/context?symbol=${symbol}`),
   liquidationHeatmap: (symbol: string) => getJson(`/api/market/${symbol}/liquidation-heatmap`),
   timeframes: (symbol: string) => getJson(`/api/timeframes/${symbol}`),
+  tradingHorizon: (symbol: string, chartTimeframe?: string) =>
+    getJson(`/api/timeframes/${encodeURIComponent(symbol)}/horizon${chartTimeframe ? `?chart_timeframe=${encodeURIComponent(chartTimeframe)}` : ""}`),
+  tradingProfile: () => getJson("/api/bot/trading-profile"),
+  updateTradingProfile: (body: { trading_profile: string; strict_timeframe_unanimity: boolean; auto_profile_enabled: boolean; expected_revision: number }) =>
+    patchJson("/api/bot/trading-profile", body),
   strategyWeights: () => getJson("/api/strategy/weights"),
   botStatus: () => getJson("/api/bot/status"),
   botAction: (action: string) => postJson(`/api/bot/${action}`),

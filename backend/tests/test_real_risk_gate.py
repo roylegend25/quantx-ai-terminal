@@ -52,6 +52,8 @@ class FakeClient:
 
 @pytest.fixture(autouse=True)
 def testnet_mode():
+    original_unprotected_gate = settings.binance_block_new_trades_if_unprotected
+    settings.binance_block_new_trades_if_unprotected = True
     db = SessionLocal()
     try:
         db.query(TradingControl).delete()
@@ -61,6 +63,7 @@ def testnet_mode():
     real_risk_gate.reset_duplicate_guard()
     modes.set_mode(modes.MODE_TESTNET)
     yield
+    settings.binance_block_new_trades_if_unprotected = original_unprotected_gate
     modes.set_mode(modes.MODE_PAPER)
 
 

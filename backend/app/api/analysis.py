@@ -9,6 +9,7 @@ from app.db.session import SessionLocal
 from app.decision_engine import scheduler as resolver_scheduler
 from app.decision_engine.v2 import SHADOW_MODELS
 from app.quant.forecast import TIMEFRAME_SECONDS
+from app.timeframes.canonical import parse_timeframe
 
 router=APIRouter(prefix="/api/analysis",tags=["analysis"])
 QUANT_INPUTS={
@@ -31,7 +32,7 @@ def _group(rows,key_fn):
 
 def _filtered_rows(db,symbol,timeframe,engine,source_type,source_name,source_version,market_regime,date_from,date_to):
     q=db.query(PredictionLedger,PredictionResolution).outerjoin(PredictionResolution,PredictionResolution.prediction_id==PredictionLedger.prediction_id)
-    for field,value in ((PredictionLedger.symbol,symbol.upper() if symbol else None),(PredictionLedger.timeframe,timeframe.lower() if timeframe else None),(PredictionLedger.engine,engine),(PredictionLedger.source_type,source_type),(PredictionLedger.source_name,source_name),(PredictionLedger.source_version,source_version),(PredictionLedger.market_regime,market_regime)):
+    for field,value in ((PredictionLedger.symbol,symbol.upper() if symbol else None),(PredictionLedger.timeframe,parse_timeframe(timeframe).value if timeframe else None),(PredictionLedger.engine,engine),(PredictionLedger.source_type,source_type),(PredictionLedger.source_name,source_name),(PredictionLedger.source_version,source_version),(PredictionLedger.market_regime,market_regime)):
         if value:q=q.filter(field==value)
     if date_from:q=q.filter(PredictionLedger.generated_at>=date_from)
     if date_to:q=q.filter(PredictionLedger.generated_at<=date_to)
@@ -41,7 +42,9 @@ def _filtered_rows(db,symbol,timeframe,engine,source_type,source_name,source_ver
 def prediction_resolution_summary(symbol:str|None=None,timeframe:str|None=None,engine:str|None=None,source_type:str|None=None,source_name:str|None=None,source_version:str|None=None,market_regime:str|None=None,date_from:datetime|None=None,date_to:datetime|None=None):
     db=SessionLocal()
     try:
-        rows=_filtered_rows(db,symbol,timeframe,engine,source_type,source_name,source_version,market_regime,date_from,date_to); resolved=[(l,r) for l,r in rows if r is not None]; correct=sum(r.correct is True for _,r in resolved); wrong=sum(r.correct is False for _,r in resolved); neutral=sum(bool(r.neutral_result) for _,r in resolved); now=datetime.utcnow()
+        try: rows=_filtered_rows(db,symbol,timeframe,engine,source_type,source_name,source_version,market_regime,date_from,date_to)
+        except ValueError as exc: raise HTTPException(422,{"code":"UNSUPPORTED_TIMEFRAME","message":"Unsupported timeframe."}) from exc
+        resolved=[(l,r) for l,r in rows if r is not None]; correct=sum(r.correct is True for _,r in resolved); wrong=sum(r.correct is False for _,r in resolved); neutral=sum(bool(r.neutral_result) for _,r in resolved); now=datetime.utcnow()
         expired=sum(r is None and l.resolution_deadline < now-timedelta(seconds=TIMEFRAME_SECONDS.get(l.timeframe,300)) for l,r in rows)
         by_tf=_group(rows,lambda l:l.timeframe); present={x["key"] for x in by_tf}; by_tf.extend({"key":tf,"total_predictions":0,"resolved":0,"unresolved":0,"correct":0,"wrong":0,"neutral":0,"accuracy":None,"average_realized_return":None,"expected_edge_sample_count":0,"first_prediction":None,"latest_prediction":None} for tf in TIMEFRAMES if tf not in present)
         return {"total_predictions":len(rows),"resolved":len(resolved),"unresolved":len(rows)-len(resolved),"expired_unresolved":expired,"correct":correct,"wrong":wrong,"neutral":neutral,
@@ -50,7 +53,9 @@ def prediction_resolution_summary(symbol:str|None=None,timeframe:str|None=None,e
 
 @router.get("/source-health")
 def source_health(symbol:str=Query("BTCUSDT"),timeframe:str=Query("15m"),decision_id:str|None=None):
-    symbol,timeframe=symbol.upper(),timeframe.lower(); db=SessionLocal()
+    try: timeframe=parse_timeframe(timeframe).value
+    except ValueError as exc: raise HTTPException(422,{"code":"UNSUPPORTED_TIMEFRAME","message":"Unsupported timeframe."}) from exc
+    symbol=symbol.upper(); db=SessionLocal()
     try:
         q=db.query(ActiveDriveDecision).filter(ActiveDriveDecision.engine=="active_drive_v2",ActiveDriveDecision.symbol==symbol,ActiveDriveDecision.timeframe==timeframe)
         decision=db.get(ActiveDriveDecision,decision_id) if decision_id else q.order_by(ActiveDriveDecision.created_at.desc()).first()

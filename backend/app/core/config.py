@@ -47,6 +47,17 @@ class Settings(BaseSettings):
     active_drive_min_resolved_samples: int = 20
     active_drive_family_cap: float = 12.0
 
+    # Current-edge economics (Phase C/D/L): all rates are decimal return
+    # fractions (0.0005 == 5 bps), matching the ".2%"-formatted expected_edge
+    # everywhere downstream. Conservative-by-default: a real net edge must
+    # clear real round-trip costs before current_edge_supported is ever True.
+    active_drive_min_net_edge: float = 0.0005
+    active_drive_estimated_taker_fee_rate: float = 0.0005
+    active_drive_estimated_spread_bps: float = 2.0
+    active_drive_estimated_slippage_bps: float = 3.0
+    active_drive_estimated_funding_cost_rate: float = 0.0
+    active_drive_max_edge_evidence_age_seconds: int = 86400
+
     deployment_maintenance_mode: bool = False
     deployment_maintenance_file: str = "/app/data/deployment-maintenance"
     scheduler_startup_grace_seconds: int = 15
@@ -72,6 +83,9 @@ class Settings(BaseSettings):
 
     scheduler_interval_seconds: int = 300
     position_manager_interval_seconds: int = 5
+    horizon_evaluation_timeout_seconds: float = 45.0
+    horizon_timeframe_timeout_seconds: float = 20.0
+    horizon_evaluation_concurrency: int = 3
 
     binance_fapi_url: str = "https://fapi.binance.com"
 

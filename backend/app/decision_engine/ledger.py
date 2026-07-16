@@ -10,11 +10,20 @@ def persist(db, user_id: str, result: dict, reference_price: float | None, featu
     now = datetime.now(timezone.utc)
     safe_features = {k: features.get(k) for k in sorted(features) if isinstance(features.get(k), (str, int, float, bool, type(None)))}
     fingerprint = hashlib.sha256(json.dumps(safe_features, sort_keys=True, default=str).encode()).hexdigest()
+    decision_payload = {k:v for k,v in result.items() if k != "candidates"}
+    decision_payload.update({
+        "reference_price": reference_price,
+        "target_horizon_seconds": HORIZON_SECONDS.get(result["timeframe"], 1500),
+        "feature_snapshot_hash": fingerprint,
+    })
     db.add(ActiveDriveDecision(decision_id=decision_id, user_id=user_id, engine=result["engine"], engine_version=result["engine_version"],
         symbol=result["symbol"], timeframe=result["timeframe"], signal=result["final_signal"], long_points=result.get("long_points", 0),
         short_points=result.get("short_points", 0), confidence=result.get("confidence") or 0, expected_edge=result.get("expected_edge"),
+        gross_expected_edge=result.get("gross_expected_edge"), net_expected_edge=result.get("net_expected_edge"),
+        edge_supported=result.get("current_edge_supported", result.get("edge_supported")), edge_block_reason=result.get("edge_block_reason"),
+        edge_sample_size=result.get("edge_sample_size"), edge_source=result.get("edge_source"),
         eligible_for_execution=result.get("eligible_for_execution", False), blocking_reasons=result.get("blocking_reasons", []),
-        decision_payload={k:v for k,v in result.items() if k != "candidates"}, shadow=shadow, created_at=now))
+        decision_payload=decision_payload, shadow=shadow, created_at=now))
     horizon = HORIZON_SECONDS.get(result["timeframe"], 1500)
     for candidate in result.get("candidates", []):
         candidate_id = uuid.uuid4().hex

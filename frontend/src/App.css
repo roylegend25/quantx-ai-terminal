@@ -445,6 +445,23 @@ button, select, input {
   border-radius: 14px;
 }
 
+.horizon-settings { display: grid; gap: 16px; }
+.horizon-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+.horizon-controls label { display: grid; gap: 6px; min-width: 190px; color: #aeb4c9; font-size: 12px; }
+.horizon-controls select { width: 100%; }
+.horizon-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.horizon-summary div { padding: 12px; border: 1px solid rgba(255,255,255,.1); border-radius: 10px; background: rgba(255,255,255,.025); }
+.horizon-summary span { display: block; color: #9299b2; font-size: 11px; margin-bottom: 5px; }
+.horizon-why { margin: 0; padding: 12px; border-radius: 10px; }
+.horizon-why.ready { background: rgba(0,245,160,.1); }
+.horizon-why.blocked { background: rgba(255,190,60,.1); }
+.horizon-matrix-wrap { overflow-x: auto; }
+.horizon-matrix { width: 100%; border-collapse: collapse; min-width: 520px; }
+.horizon-matrix th, .horizon-matrix td { padding: 9px; border-bottom: 1px solid rgba(255,255,255,.08); text-align: left; }
+.horizon-invalidation { display: flex; flex-wrap: wrap; gap: 20px; }
+@media (max-width: 760px) { .horizon-summary { grid-template-columns: 1fr 1fr; } .horizon-controls label { min-width: 100%; } }
+@media (max-width: 430px) { .horizon-summary { grid-template-columns: 1fr; } }
+
 .design-toggle-compact {
   padding: 3px;
   gap: 6px;

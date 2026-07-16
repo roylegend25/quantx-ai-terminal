@@ -61,8 +61,9 @@ const TIMEFRAME_CONFIG: Record<string, { label: string; ms: number }> = {
   "4h": { label: "4H", ms: 4 * 3_600_000 },
   "1d": { label: "1D", ms: 86_400_000 },
   "1w": { label: "1W", ms: 7 * 86_400_000 },
+  "1M": { label: "1M", ms: 30 * 86_400_000 },
 };
-const TIMEFRAME_ORDER = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"];
+const TIMEFRAME_ORDER = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"];
 
 const FORECAST_BARS = 40;
 
@@ -168,6 +169,7 @@ function candlesMatchTimeframe(candles: Candle[], tfMs: number): boolean {
   if (candles.length < 3) return candles.length > 0;
   const d1 = candles[1].time - candles[0].time;
   const d2 = candles[2].time - candles[1].time;
+  if (tfMs === 30 * 86_400_000) return [d1, d2].every(d => d >= 28 * 86_400_000 && d <= 31 * 86_400_000);
   return Math.min(d1, d2) === tfMs;
 }
 

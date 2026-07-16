@@ -1,6 +1,6 @@
 from __future__ import annotations
 from app.core.config import settings
-from app.decision_engine.repository import get_setting
+from app.decision_engine.repository import get_setting, owner
 from app.decision_engine.types import DecisionEngineType
 from app.decision_engine.v1 import ActiveDriveV1Adapter
 from app.decision_engine.v2 import ActiveDriveV2Engine
@@ -14,7 +14,7 @@ class DecisionEngineRouter:
     def evaluate(self, db, user_id, context):
         engine = self.get_active_engine(db, user_id)
         try:
-            return engine.evaluate({**context, "db": db})
+            return engine.evaluate({**context, "db": db, "user_id": owner(user_id)})
         except Exception as exc:
             return {"engine": engine.name.value, "engine_info":{"id":engine.name.value,"name":"Active Drive V2" if engine.name==DecisionEngineType.ACTIVE_DRIVE_V2 else "Active Drive V1","version":engine.version,"authoritative":True}, "engine_version": engine.version, "symbol": context["symbol"], "timeframe": context["timeframe"],
                     "signal":"NO_TRADE", "final_signal": "NO_TRADE", "confidence": None, "directional_confidence":None, "decision_confidence":None, "abstention_confidence":1.0, "probability_up": 0.5, "probability_down": 0.5,

@@ -4,9 +4,11 @@
 .env.*.local
 __pycache__/
 *.pyc
+backend/.venv/
 backend/data/env-backups/
 backend/data/models/
 backend/data/ml_lab/
+backend/data/pg-backups/
 
 # Local rollback snapshots may contain secrets
 backups/
