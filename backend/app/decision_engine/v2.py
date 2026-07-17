@@ -62,6 +62,8 @@ EDGE_BLOCK_NO_EXPECTANCY = "expectancy_unavailable"
 EDGE_BLOCK_STALE_MARKET_DATA = "stale_market_data"
 EDGE_BLOCK_STALE_PERFORMANCE_DATA = "stale_performance_data"
 EDGE_BLOCK_EDGE_NOT_FINITE = "edge_not_finite"
+EDGE_BLOCK_NEGATIVE_GROSS_EDGE = "negative_gross_edge"
+EDGE_BLOCK_COSTS_EXCEED_EDGE = "costs_exceed_edge"
 EDGE_BLOCK_NET_EDGE_BELOW_THRESHOLD = "net_edge_below_threshold"
 
 
@@ -121,12 +123,13 @@ def _current_edge(direction: str, entry: float | None, target: float | None, sto
     risk_distance = (entry - stop) if direction == "LONG" else (stop - entry)
     if reward_distance <= 0 or risk_distance <= 0:
         return blocked(EDGE_BLOCK_INVALID_LEVELS)
+    audit = {"entry": entry, "reward_distance": round(reward_distance, 6), "risk_distance": round(risk_distance, 6)}
     if probability_up is None or not (0.0 < probability_up < 1.0):
-        return blocked(EDGE_BLOCK_INVALID_PROBABILITY)
+        return blocked(EDGE_BLOCK_INVALID_PROBABILITY, **audit)
     if edge_evidence["resolved"] < settings.active_drive_min_resolved_samples:
-        return blocked(EDGE_BLOCK_INSUFFICIENT_SAMPLES)
+        return blocked(EDGE_BLOCK_INSUFFICIENT_SAMPLES, **audit)
     if edge_evidence["average_win_return"] is None or edge_evidence["average_loss_return"] is None:
-        return blocked(EDGE_BLOCK_NO_EXPECTANCY)
+        return blocked(EDGE_BLOCK_NO_EXPECTANCY, **audit)
     evidence_ts = edge_evidence.get("evidence_timestamp")
     if evidence_ts:
         try:
@@ -134,7 +137,7 @@ def _current_edge(direction: str, entry: float | None, target: float | None, sto
         except ValueError:
             age = None
         if age is not None and age > settings.active_drive_max_edge_evidence_age_seconds:
-            return blocked(EDGE_BLOCK_STALE_PERFORMANCE_DATA)
+            return blocked(EDGE_BLOCK_STALE_PERFORMANCE_DATA, **audit)
     probability_of_win = probability_up if direction == "LONG" else 1.0 - probability_up
     probability_of_loss = 1.0 - probability_of_win
     expected_win_return = reward_distance / entry
@@ -148,10 +151,21 @@ def _current_edge(direction: str, entry: float | None, target: float | None, sto
     gross_edge = probability_of_win * blended_win_return - probability_of_loss * blended_loss_return
     net_edge = gross_edge - _cost_total(costs)
     if not isfinite(gross_edge) or not isfinite(net_edge):
-        return blocked(EDGE_BLOCK_EDGE_NOT_FINITE)
+        return blocked(EDGE_BLOCK_EDGE_NOT_FINITE, **audit)
+    audit_edges = {**audit, "gross_edge": round(gross_edge, 6), "net_edge": round(net_edge, 6)}
+    # Three previously-collapsed causes now report distinct codes: the
+    # model's own directional estimate is unprofitable before costs
+    # (negative_gross_edge); a positive directional estimate is wiped out
+    # by round-trip costs (costs_exceed_edge); or it survives costs but
+    # doesn't clear the configured minimum-profitability bar
+    # (net_edge_below_threshold).
+    if gross_edge <= 0:
+        return blocked(EDGE_BLOCK_NEGATIVE_GROSS_EDGE, **audit_edges)
+    if net_edge <= 0:
+        return blocked(EDGE_BLOCK_COSTS_EXCEED_EDGE, **audit_edges)
     if net_edge <= settings.active_drive_min_net_edge:
-        return blocked(EDGE_BLOCK_NET_EDGE_BELOW_THRESHOLD, gross_edge=round(gross_edge, 6), net_edge=round(net_edge, 6))
-    return {"supported": True, "block_reason": None, "gross_edge": round(gross_edge, 6), "net_edge": round(net_edge, 6),
+        return blocked(EDGE_BLOCK_NET_EDGE_BELOW_THRESHOLD, **audit_edges)
+    return {"supported": True, "block_reason": None, **audit_edges,
             "costs": costs, "sample_size": edge_evidence["resolved"], "probability_of_win": round(probability_of_win, 4)}
 
 
@@ -216,6 +230,8 @@ class ActiveDriveV2Engine:
         return {"decision_id":None,"engine":self.name.value,"engine_info":{"id":self.name.value,"name":"Active Drive V2","version":self.version,"authoritative":True},"engine_version":self.version,"decision_method":"weighted_ensemble","symbol":context["symbol"],"timeframe":context["timeframe"],"generated_at":now.isoformat(),"expires_at":(now+timedelta(seconds=60)).isoformat(),"performance_snapshot_revision":now.isoformat(),"market_data_revision":legacy.get("data_quality",{}).get("last_candle_time"),
           "signal":signal,"final_signal":signal,"directional_confidence":round(decision_conf,4) if decision_conf is not None else None,"decision_confidence":round(decision_conf,4) if decision_conf is not None else None,"abstention_confidence":round(min(1.,len(blockers)/4),4) if signal=="NO_TRADE" else None,"confidence":round(decision_conf,4) if decision_conf is not None else None,"confidence_diagnostics":{"raw_probability_up":champion.get("p_up"),"raw_probability_down":1-champion.get("p_up") if isinstance(champion.get("p_up"),(int,float)) else None,"combined_probability_up":raw_up if history_pass else None,"combined_probability_down":round(1-raw_up,4) if history_pass else None,"indicative_point_score_up":raw_up,"indicative_point_score_down":round(1-raw_up,4),"calibrated_directional_confidence":metrics["confidence"]["value"],"required_confidence":settings.active_drive_min_confidence,"passed":metrics["confidence"]["passed"],"eligible_probability_sources":len(directional_sources),"required_probability_sources":1,"calibration_sample_count":relevant_samples,"minimum_calibration_samples":settings.active_drive_min_resolved_samples,"failure_code":confidence_failure["code"] if confidence_failure else None,"failure_reason":confidence_failure["reason"] if confidence_failure else None},
           "required_confidence":settings.active_drive_min_confidence,"minimum_total_evidence":settings.active_drive_min_total_evidence,"required_point_margin":settings.active_drive_min_point_margin,"probability_up":raw_up if history_pass else None,"probability_down":round(1-raw_up,4) if history_pass else None,
-          "expected_edge":edge_result["net_edge"],"gross_expected_edge":edge_result["gross_edge"],"net_expected_edge":edge_result["net_edge"],"current_edge_supported":edge_result["supported"],"edge_supported":edge_result["supported"],"edge_block_reason":edge_result["block_reason"],"edge_costs":edge_result["costs"],"edge_sample_size":edge_evidence["resolved"],"edge_source":"aggregated_eligible_sources" if edge_evidence["resolved"] else "none","edge_evidence_timestamp":edge_evidence["evidence_timestamp"],"expected_value":edge_result["net_edge"],"risk_reward_ratio":context.get("risk_reward_ratio"),"recommended_target":legacy.get("target") if signal in ("LONG","SHORT") else None,"recommended_stop":legacy.get("stop") if signal in ("LONG","SHORT") else None,
+          "expected_edge":edge_result["net_edge"],"gross_expected_edge":edge_result["gross_edge"],"net_expected_edge":edge_result["net_edge"],"current_edge_supported":edge_result["supported"],"edge_supported":edge_result["supported"],"edge_block_reason":edge_result["block_reason"],"edge_costs":edge_result["costs"],"edge_sample_size":edge_evidence["resolved"],"edge_source":"aggregated_eligible_sources" if edge_evidence["resolved"] else "none","edge_evidence_timestamp":edge_evidence["evidence_timestamp"],"expected_value":edge_result["net_edge"],"risk_reward_ratio":context.get("risk_reward_ratio"),
+          "entry_price":edge_result.get("entry"),"reward_distance":edge_result.get("reward_distance"),"risk_distance":edge_result.get("risk_distance"),
+          "recommended_target":legacy.get("target") if signal in ("LONG","SHORT") else None,"recommended_stop":legacy.get("stop") if signal in ("LONG","SHORT") else None,
           "long_points":round(long_points,3),"short_points":round(short_points,3),"neutral_points":0.,"point_margin":round(margin,3),"total_evidence":round(evidence,3),"evidence_tier":"insufficient_evidence" if not history_pass else "early_evidence","eligible_for_execution":eligible,"blocking_reasons":blockers,"execution":{"eligible":eligible,"risk_gate_passed":False,"reason":blockers[0] if blockers else None},"decision_metrics":metrics,
           "top_supporting_sources":[c for c in ranked if c["final_points"]>0][:5],"top_conflicting_sources":[c for c in ranked if c["final_points"]<0][:5],"supporting_sources":[c for c in ranked if c["final_points"]>0][:5],"conflicting_sources":[c for c in ranked if c["final_points"]<0][:5],"candidates":candidates,"family_totals":totals,"market_regime":regime,"data_status":{"fresh":context.get("data_status")=="live","stale":context.get("data_status")=="stale","age_seconds":context.get("data_age_seconds",0),"source":context.get("data_status","live")},"history":{"resolved_sample_count":resolved,"relevant_resolved_sample_count":relevant_samples,"evidence_status":"insufficient" if not history_pass else "early","performance_updated_at":now.isoformat(),**histories},"candidate_count":len(candidates)}

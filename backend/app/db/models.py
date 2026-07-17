@@ -48,6 +48,13 @@ class Trade(Base):
     trailing_stop = Column(Float, nullable=True)  # trailing distance in price units
     realized_pnl = Column(Float, nullable=True)  # accumulates across partial closes
     updated_at = Column(DateTime, nullable=True)
+    # --- automated-entry provenance (Trading Horizon) - all nullable: a
+    # manual/direct API open has no decision or authority behind it and
+    # honestly stays NULL rather than fabricating a link.
+    decision_id = Column(String, nullable=True, index=True)  # ActiveDriveDecision.decision_id that authorized entry
+    authority_id = Column(String, nullable=True, index=True)  # TradingHorizonDecision.id consumed to open this trade
+    execution_mode = Column(String, nullable=True)  # "automatic" (Trading Horizon) | "manual" (direct API open)
+    edge_at_entry = Column(Float, nullable=True)  # net_expected_edge from the authorizing decision at entry time
 
 
 class PredictionFeature(Base):

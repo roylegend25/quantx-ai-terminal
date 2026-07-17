@@ -22,6 +22,8 @@ LEGACY_ADDITIVE_COLUMNS = {
         "user_id": "VARCHAR", "leverage": "FLOAT", "margin_mode": "VARCHAR", "margin_used": "FLOAT",
         "maintenance_margin_rate": "FLOAT", "liquidation_price": "FLOAT", "trailing_stop": "FLOAT",
         "realized_pnl": "FLOAT", "updated_at": "DATETIME",
+        "decision_id": "VARCHAR", "authority_id": "VARCHAR", "execution_mode": "VARCHAR",
+        "edge_at_entry": "FLOAT",
     },
     "prediction_features": {"target": "FLOAT", "stop": "FLOAT", "latency_ms": "FLOAT"},
     "mlops_models": {

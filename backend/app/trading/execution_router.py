@@ -1095,9 +1095,12 @@ class ExecutionRouter:
             provider_kwargs["confidence"] = evidence_snapshot.get("directional_confidence")
             provider_kwargs["regime"] = evidence_snapshot.get("market_regime")
             provider_kwargs["signal_time"] = persisted.generated_at
+            top_sources = (execution_decision.decision_payload or {}).get("top_supporting_sources") or []
             provider_kwargs["decision_engine"] = {"engine": "active_drive_v2", "engine_version": engine_version,
                 "decision_id": execution_decision.decision_id, "horizon_decision_id": kwargs["horizon_decision_id"],
-                "selected_profile": selected_profile, "execution_snapshot": snapshot}
+                "selected_profile": selected_profile, "execution_snapshot": snapshot,
+                "execution_mode": "automatic", "edge_at_entry": evidence_snapshot.get("expected_edge"),
+                "strategy_used": (top_sources[0].get("name") if top_sources else None) or "active_drive_v2"}
             provider_kwargs["_market_revalidation"] = lambda current_price: revalidate_snapshot_price(snapshot, current_price)
             provider_kwargs["_pre_submit_guard"] = pre_submit_guard
             routed = await self.provider().open_position(**provider_kwargs)

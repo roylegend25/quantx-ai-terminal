@@ -1,16 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from app.core.deps import get_current_user
 from app.db.session import get_db
-from app.db.models import ActiveDriveDecision, DecisionEngineChange, PredictionLedger, PredictionResolution
+from app.db.models import ActiveDriveDecision, DecisionEngineChange, PredictionLedger, PredictionResolution, Trade
 from app.decision_engine.cache import invalidate_user
 from app.decision_engine.repository import get_setting, is_available, set_engine
 from app.decision_engine.router import decision_engine_router
 from app.decision_engine.types import DecisionEngineType
 from app.deployment import maintenance
 from app.deployment.lease import execution_lease
+from app.core.config import settings
 from app.trading import scheduler as trading_scheduler
 
 router = APIRouter(prefix="/api/bot", tags=["bot"])
@@ -40,37 +41,65 @@ def _effective_status() -> str:
         return "paused" if maintenance.enabled() else "running"
     return BOT_STATE["status"] if BOT_STATE["status"] in ("paused", "stopped") else "stopped"
 
-def _status_payload() -> dict:
+def _next_cycle_estimate(last_cycle_iso: str | None) -> str | None:
+    if not last_cycle_iso:
+        return None
+    try:
+        last = datetime.fromisoformat(last_cycle_iso)
+    except ValueError:
+        return None
+    return (last + timedelta(seconds=settings.scheduler_interval_seconds)).isoformat()
+
+def _automated_trade_fields(db: Session | None) -> dict:
+    """Best-effort automated-trade observability - never blocks status on a
+    query failure, since /api/bot/status must stay usable even if the DB is
+    briefly unreachable."""
+    if db is None:
+        return {"open_automatic_positions": None, "last_automatic_trade_id": None, "last_automatic_trade_at": None}
+    try:
+        open_automatic = db.query(Trade).filter(Trade.status == "OPEN", Trade.execution_mode == "automatic").count()
+        latest = (db.query(Trade).filter(Trade.execution_mode == "automatic")
+                  .order_by(Trade.opened_at.desc()).first())
+        return {"open_automatic_positions": open_automatic,
+                "last_automatic_trade_id": latest.id if latest else None,
+                "last_automatic_trade_at": latest.opened_at.isoformat() if latest and latest.opened_at else None}
+    except Exception:
+        return {"open_automatic_positions": None, "last_automatic_trade_id": None, "last_automatic_trade_at": None}
+
+def _status_payload(db: Session | None = None) -> dict:
     return {**BOT_STATE, "status": _effective_status(),
             "scheduler_running": trading_scheduler.RUNNING,
             "maintenance_mode": maintenance.enabled(),
             "execution_lease_held": execution_lease.held,
-            "effective_trading_active": trading_scheduler.RUNNING and not maintenance.enabled()}
+            "effective_trading_active": trading_scheduler.RUNNING and not maintenance.enabled(),
+            "scheduler_last_cycle": trading_scheduler.LAST_CYCLE_AT,
+            "scheduler_next_cycle": _next_cycle_estimate(trading_scheduler.LAST_CYCLE_AT),
+            **_automated_trade_fields(db)}
 
 @router.get("/status")
-async def bot_status():
-    return _status_payload()
+async def bot_status(db: Session = Depends(get_db)):
+    return _status_payload(db)
 
 @router.post("/start")
-async def start_bot():
+async def start_bot(db: Session = Depends(get_db)):
     trading_scheduler.start_scheduler()
     BOT_STATE["status"] = "running"
     update_state("start")
-    return {"ok": True, "message": "Bot started", "state": _status_payload()}
+    return {"ok": True, "message": "Bot started", "state": _status_payload(db)}
 
 @router.post("/pause")
-async def pause_bot():
+async def pause_bot(db: Session = Depends(get_db)):
     trading_scheduler.stop_scheduler()
     BOT_STATE["status"] = "paused"
     update_state("pause")
-    return {"ok": True, "message": "Bot paused", "state": _status_payload()}
+    return {"ok": True, "message": "Bot paused", "state": _status_payload(db)}
 
 @router.post("/stop")
-async def stop_bot():
+async def stop_bot(db: Session = Depends(get_db)):
     trading_scheduler.stop_scheduler()
     BOT_STATE["status"] = "stopped"
     update_state("stop")
-    return {"ok": True, "message": "Bot stopped", "state": _status_payload()}
+    return {"ok": True, "message": "Bot stopped", "state": _status_payload(db)}
 
 @router.post("/paper")
 async def paper_mode():

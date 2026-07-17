@@ -13,6 +13,8 @@ from app.decision_engine.types import DecisionEngineType
 from app.decision_engine.v2 import (
     ActiveDriveV2Engine, EDGE_BLOCK_INSUFFICIENT_SAMPLES, EDGE_BLOCK_INVALID_LEVELS,
     EDGE_BLOCK_INVALID_PROBABILITY, EDGE_BLOCK_MISSING_ENTRY, EDGE_BLOCK_NET_EDGE_BELOW_THRESHOLD,
+    EDGE_BLOCK_COSTS_EXCEED_EDGE, EDGE_BLOCK_NEGATIVE_GROSS_EDGE, EDGE_BLOCK_STALE_MARKET_DATA,
+    EDGE_BLOCK_STALE_PERFORMANCE_DATA,
     _aggregate_edge_evidence, _current_edge,
 )
 from app.trading.execution_router import ExecutionRouter
@@ -228,13 +230,62 @@ def test_current_edge_blocked_insufficient_samples():
 
 def test_current_edge_blocked_when_costs_erode_thin_edge():
     # A barely-profitable gross edge that estimated round-trip costs (fees +
-    # spread + slippage) push at or below the net-edge threshold.
+    # spread + slippage) push into outright negative net edge - a distinct
+    # code from "positive net edge that just misses the minimum bar".
     thin_evidence = {"resolved": 30, "average_win_return": 0.0015, "average_loss_return": -0.0015,
                      "evidence_timestamp": datetime.now(timezone.utc).isoformat()}
     result = _current_edge("LONG", entry=100.0, target=100.15, stop=99.85, probability_up=0.51, edge_evidence=thin_evidence)
     assert result["supported"] is False
+    assert result["gross_edge"] > 0
+    assert result["net_edge"] <= 0
+    assert result["block_reason"] == EDGE_BLOCK_COSTS_EXCEED_EDGE
+
+
+def test_current_edge_blocked_negative_gross_edge():
+    # Symmetric reward/risk and evidence, but the calibrated win probability
+    # itself favors the loss side - the model's own directional estimate is
+    # unprofitable before any cost is even considered.
+    evidence = {"resolved": 30, "average_win_return": 0.03, "average_loss_return": -0.03,
+                "evidence_timestamp": datetime.now(timezone.utc).isoformat()}
+    result = _current_edge("LONG", entry=100.0, target=103.0, stop=97.0, probability_up=0.3, edge_evidence=evidence)
+    assert result["supported"] is False
+    assert result["gross_edge"] < 0
+    assert result["block_reason"] == EDGE_BLOCK_NEGATIVE_GROSS_EDGE
+
+
+def test_current_edge_blocked_net_edge_below_threshold_after_costs():
+    # Gross edge is positive and survives costs into positive net edge, but
+    # doesn't clear the configured minimum-profitability bar - distinct from
+    # both negative_gross_edge and costs_exceed_edge.
+    evidence = {"resolved": 30, "average_win_return": 0.026, "average_loss_return": -0.026,
+                "evidence_timestamp": datetime.now(timezone.utc).isoformat()}
+    result = _current_edge("LONG", entry=100.0, target=101.0, stop=99.0, probability_up=0.55, edge_evidence=evidence)
+    assert result["supported"] is False
+    assert result["gross_edge"] > 0
+    assert 0 < result["net_edge"] <= settings.active_drive_min_net_edge
     assert result["block_reason"] == EDGE_BLOCK_NET_EDGE_BELOW_THRESHOLD
-    assert result["net_edge"] <= settings.active_drive_min_net_edge
+
+
+def test_current_edge_blocked_stale_performance_data():
+    stale_evidence = _profitable_evidence()
+    stale_evidence["evidence_timestamp"] = "2020-01-01T00:00:00+00:00"
+    result = _current_edge("LONG", entry=100.0, target=103.0, stop=99.0, probability_up=0.65, edge_evidence=stale_evidence)
+    assert result["supported"] is False
+    assert result["block_reason"] == EDGE_BLOCK_STALE_PERFORMANCE_DATA
+
+
+def test_v2_stale_market_data_blocks_edge_regardless_of_signal():
+    db = SessionLocal()
+    try:
+        result = ActiveDriveV2Engine().evaluate({"db": db, "symbol": "BTCUSDT", "timeframe": "5m", "legacy": legacy(),
+            "regime": "TRENDING", "data_status": "stale", "risk_reward_ratio": 2.0})
+        assert result["current_edge_supported"] is False
+        assert result["edge_supported"] is False
+        assert result["expected_edge"] is None
+        assert result["edge_block_reason"] == EDGE_BLOCK_STALE_MARKET_DATA
+        assert result["final_signal"] == "NO_TRADE"
+    finally:
+        db.close()
 
 
 def test_current_edge_blocked_expectancy_unavailable():

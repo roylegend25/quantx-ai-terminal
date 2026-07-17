@@ -15,7 +15,7 @@ from app.db.session import SessionLocal
 from app.db.models import Trade
 from app.trading import margin as margin_calc
 from app.trading.position_manager import should_close_position
-from app.core.security import create_internal_service_token
+from app.core.security import create_access_token, create_internal_service_token
 
 
 def make_client(monkeypatch, prices, user=None):
@@ -103,6 +103,45 @@ def test_positions_payload_schema_complete(monkeypatch):
     # pnl = (100-101)*10 = -10 on 200 margin -> -5%
     assert pos["unrealized_pnl"] == pytest.approx(-10.0)
     assert pos["unrealized_pnl_pct"] == pytest.approx(-5.0)
+
+
+def test_manual_open_is_honestly_recorded_as_manual(monkeypatch):
+    """A direct API/UI open (no decision_engine context) must never be
+    fabricated as an automated Trading Horizon entry."""
+    client = make_client(monkeypatch, prices=[100.0, 100.0])
+    client.post("/api/paper/open", params={"symbol": "BTCUSDT", "side": "LONG", "usdt_size": 1000, "leverage": 5})
+    pos = client.get("/api/paper/positions").json()["positions"][0]
+    assert pos["execution_mode"] == "manual"
+    assert pos["decision_id"] is None
+    assert pos["authority_id"] is None
+    assert pos["edge_at_entry"] is None
+
+
+def test_real_user_can_still_open_a_manual_trade(monkeypatch):
+    """The frontend's Open Long/Short buttons authenticate as a normal
+    logged-in user, never the internal-service token - this must keep
+    working exactly as it did before Trading Horizon existed. Regression
+    test: /api/paper/open must not universally require the internal
+    service token, only for requests that actually claim automated
+    provenance (see test_external_caller_cannot_fake_automated_provenance)."""
+    client = make_client(monkeypatch, prices=[100.0, 100.0])
+    client.headers["Authorization"] = f"Bearer {create_access_token(subject='a-real-logged-in-user')}"
+    r = client.post("/api/paper/open", params={"symbol": "BTCUSDT", "side": "LONG", "usdt_size": 1000, "leverage": 5})
+    assert r.status_code == 200
+    pos = client.get("/api/paper/positions").json()["positions"][0]
+    assert pos["execution_mode"] == "manual"
+
+
+def test_external_caller_cannot_fake_automated_provenance(monkeypatch):
+    """A non-internal caller claiming Trading Horizon provenance (here, a
+    decision_id) must still be rejected - only the actual claim is gated,
+    not every manual open."""
+    client = make_client(monkeypatch, prices=[100.0, 100.0])
+    client.headers["Authorization"] = f"Bearer {create_access_token(subject='a-real-logged-in-user')}"
+    r = client.post("/api/paper/open", params={"symbol": "BTCUSDT", "side": "LONG", "usdt_size": 1000, "leverage": 5},
+                     json={"decision_id": "forged-decision-id"})
+    assert r.status_code == 403
+    assert r.json()["detail"] == "HORIZON_AUTHORITY_REQUIRED"
 
 
 def test_legacy_position_reports_nulls_with_reasons(monkeypatch):

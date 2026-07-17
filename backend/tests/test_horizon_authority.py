@@ -332,6 +332,23 @@ def test_router_uses_bound_snapshot_when_later_model_changes(monkeypatch):
     assert "later-short" not in str(provider.last_kwargs)
 
 
+def test_automated_open_position_decision_engine_carries_full_provenance(monkeypatch):
+    """Automated Trading Horizon entries must record enough provenance for
+    the paper ledger to link the resulting trade back to the decision and
+    authority that opened it (decision_id/authority_id/edge_at_entry), and
+    must be distinguishable from a manual open (execution_mode)."""
+    setup_user(); durable_intents._client=NoRedis(); decision=persisted_decision()
+    router=ExecutionRouter(); provider=Provider(); monkeypatch.setattr(router,"provider",lambda:provider)
+    result=asyncio.run(router.open_position(**authority(decision)))
+    assert result.ok
+    de=provider.last_kwargs["decision_engine"]
+    assert de["execution_mode"]=="automatic"
+    assert de["horizon_decision_id"]==decision["profile_decision_id"]
+    assert de["decision_id"]
+    assert de["edge_at_entry"]==pytest.approx(.02)
+    assert de["strategy_used"]=="active_drive_v2"
+
+
 def test_current_price_can_only_block_persisted_snapshot():
     snapshot={"direction":"LONG","entry_policy":{"reference_price":65000.0,"maximum_slippage_bps":50},
               "risk":{"stop_price":64000.0,"target_price":68000.0}}

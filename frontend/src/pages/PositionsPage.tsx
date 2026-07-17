@@ -20,6 +20,8 @@ const ENGINE_LABEL: Record<string, string> = {
   strategy_ensemble: "Strategy Ensemble",
   fallback: "Fallback",
   manual: "Manual",
+  active_drive_v1: "Active Drive V1",
+  active_drive_v2: "Active Drive V2",
 };
 
 type Props = AppData & { navigate: (key: NavKey) => void };
@@ -131,6 +133,14 @@ function JournalDetail({ t }: { t: any }) {
           <b className={`tile-value ${toneClass(toneOf(t.realized_pnl ?? t.pnl))}`}>
             {fmtUsd(t.realized_pnl ?? (t.status === "CLOSED" ? t.pnl : null))}
           </b>
+        </div>
+        <div>
+          <span className="tile-label">Source</span>
+          <b className="tile-value">{t.execution_mode === "automatic" ? "Active Drive V2 (automatic)" : "Manual"}</b>
+        </div>
+        <div>
+          <span className="tile-label">Edge at Entry</span>
+          <b className="tile-value">{t.edge_at_entry != null ? `${(t.edge_at_entry * 100).toFixed(2)}%` : "—"}</b>
         </div>
       </div>
       <div className="journal-detail-reasons">
