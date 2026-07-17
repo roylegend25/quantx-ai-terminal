@@ -180,6 +180,16 @@ const JOURNAL_COLUMNS: AutoCardColumn<any>[] = [
     ),
   },
   { key: "confidence", label: "Confidence", render: (t) => (typeof t.confidence === "number" ? `${t.confidence.toFixed(0)}%` : "—") },
+  {
+    key: "source",
+    label: "Source",
+    render: (t) => (
+      <span className={t.execution_mode === "automatic" ? "green" : ""}>
+        {t.execution_mode === "automatic" ? "Active Drive V2" : "Manual"}
+      </span>
+    ),
+  },
+  { key: "edge_at_entry", label: "Edge at Entry", render: (t) => (t.edge_at_entry != null ? `${(t.edge_at_entry * 100).toFixed(2)}%` : "—") },
   { key: "opened", label: "Opened Time", render: (t) => fmtLocalDateTime(t.opened_at) },
   { key: "closed", label: "Closed Time", render: (t) => (t.closed_at ? fmtLocalDateTime(t.closed_at) : "Open") },
   { key: "duration", label: "Duration", render: (t) => fmtTradeDuration(t.opened_at, t.closed_at) },
