@@ -219,10 +219,24 @@ class SignalCandidateRecord(Base):
     data_freshness = Column(String, nullable=False, default="live")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
+class PredictionCycle(Base):
+    """User-initiated prediction cycle marker. Starting a new cycle never
+    deletes or rewrites history - older ledger rows simply keep their old
+    cycle_id (or NULL for rows that predate cycles) and dashboards can
+    filter to the current cycle for a fresh-start view."""
+    __tablename__ = "prediction_cycles"
+    id = Column(String, primary_key=True)
+    user_id = Column(String, nullable=False, index=True)
+    label = Column(String, nullable=True)
+    idempotency_key = Column(String, nullable=True, unique=True, index=True)
+    started_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
 class PredictionLedger(Base):
     __tablename__ = "prediction_ledger"
     __table_args__ = (Index("ix_prediction_ledger_scope", "source_name", "source_version", "symbol", "timeframe", "generated_at"), UniqueConstraint("candidate_id", name="uq_prediction_ledger_candidate"))
     prediction_id = Column(String, primary_key=True)
+    cycle_id = Column(String, nullable=True, index=True)
     candidate_id = Column(String, nullable=False)
     decision_id = Column(String, nullable=False, index=True)
     user_id = Column(String, nullable=False, index=True)

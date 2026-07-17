@@ -29,6 +29,34 @@ def _rejection_code(reason,shadow=False):
     if "confirm" in text:return "CONFIRMATION_MISSING"
     return "NO_TRIGGER"
 
+def _history_eta(db, user_id, limiting: dict | None, relevant_samples: int) -> dict:
+    """Honest readiness estimate for the calibration-history gate, measured
+    from the actual resolution cadence of the least-supported eligible
+    source's exact evidence bucket (user+source+version+symbol+timeframe+
+    regime) over the last 6 hours - never a hard-coded 'one per minute'
+    assumption. No qualifying resolutions in the window means no ETA."""
+    remaining = max(0, settings.active_drive_min_resolved_samples - relevant_samples)
+    out = {"samples_remaining": remaining, "current_qualifying_rate_per_hour": None,
+           "estimated_minutes_remaining": None, "estimated_ready_at": None,
+           "limiting_source": limiting["name"] if limiting else None}
+    if limiting is None or not remaining:
+        return out
+    window_start = datetime.now(timezone.utc) - timedelta(hours=6)
+    recent = db.query(PredictionResolution).join(
+        PredictionLedger, PredictionResolution.prediction_id == PredictionLedger.prediction_id).filter(
+        PredictionLedger.user_id == user_id, PredictionLedger.engine == "active_drive_v2",
+        PredictionLedger.source_name == limiting["name"], PredictionLedger.source_version == limiting["version"],
+        PredictionLedger.symbol == limiting["symbol"], PredictionLedger.timeframe == limiting["timeframe"],
+        PredictionLedger.market_regime == limiting["market_regime"],
+        PredictionResolution.resolved_at >= window_start).count()
+    if recent:
+        rate = recent / 6.0
+        minutes = round(remaining / rate * 60)
+        out.update(current_qualifying_rate_per_hour=round(rate, 2), estimated_minutes_remaining=minutes,
+                   estimated_ready_at=(datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat())
+    return out
+
+
 def _history_counts(db,user_id,symbol,timeframe,regime):
     def count(*filters):
         return db.query(PredictionResolution).join(PredictionLedger,PredictionResolution.prediction_id==PredictionLedger.prediction_id).filter(PredictionLedger.user_id==user_id,PredictionLedger.engine=="active_drive_v2",*filters).count()
@@ -52,9 +80,12 @@ def _history_counts(db,user_id,symbol,timeframe,regime):
 # ---------------------------------------------------------------------------
 
 EDGE_BLOCK_NO_TRADE_DIRECTION = "no_trade_direction"
-EDGE_BLOCK_MISSING_ENTRY = "missing_entry"
-EDGE_BLOCK_MISSING_TARGET = "missing_target"
-EDGE_BLOCK_MISSING_STOP = "missing_stop"
+# An actionable LONG/SHORT that reaches edge evaluation without a usable
+# entry, target, or stop. This is a real defect (levels should have been
+# generated for an actionable signal), unlike no_trade_direction, which is
+# the normal short-circuit for abstentions where levels are intentionally
+# absent and must never be reported as missing/invalid.
+EDGE_BLOCK_ACTIONABLE_MISSING_LEVELS = "actionable_signal_missing_trade_levels"
 EDGE_BLOCK_INVALID_LEVELS = "invalid_entry_target_stop"
 EDGE_BLOCK_INVALID_PROBABILITY = "invalid_probability"
 EDGE_BLOCK_INSUFFICIENT_SAMPLES = "insufficient_samples"
@@ -113,12 +144,9 @@ def _current_edge(direction: str, entry: float | None, target: float | None, sto
                                       "net_edge": None, "costs": costs, "sample_size": edge_evidence["resolved"], **extra}
     if direction not in ("LONG", "SHORT"):
         return blocked(EDGE_BLOCK_NO_TRADE_DIRECTION)
-    if entry is None or entry <= 0:
-        return blocked(EDGE_BLOCK_MISSING_ENTRY)
-    if target is None:
-        return blocked(EDGE_BLOCK_MISSING_TARGET)
-    if stop is None:
-        return blocked(EDGE_BLOCK_MISSING_STOP)
+    if entry is None or entry <= 0 or target is None or stop is None:
+        return blocked(EDGE_BLOCK_ACTIONABLE_MISSING_LEVELS,
+                       missing=[name for name, v in (("entry", entry), ("target", target), ("stop", stop)) if v is None or (name == "entry" and (v is None or v <= 0))])
     reward_distance = (target - entry) if direction == "LONG" else (entry - target)
     risk_distance = (entry - stop) if direction == "LONG" else (stop - entry)
     if reward_distance <= 0 or risk_distance <= 0:
@@ -201,28 +229,42 @@ class ActiveDriveV2Engine:
         totals={k:max(-settings.active_drive_family_cap,min(settings.active_drive_family_cap,v)) for k,v in raw_family.items()}
         long_points=sum(max(0,v) for v in totals.values()); short_points=sum(max(0,-v) for v in totals.values()); evidence=long_points+short_points; margin=abs(long_points-short_points); directional=margin/evidence if evidence else None; signed=long_points-short_points
         regime=regime_for(context); histories=_history_counts(db,context["user_id"],context["symbol"],context["timeframe"],regime["label"]); directional_sources=[c for c in candidates if c["eligible"]]
-        relevant_samples=min((c["resolved_samples"] for c in directional_sources),default=0); history_pass=relevant_samples>=settings.active_drive_min_resolved_samples
+        limiting_source=min(directional_sources,key=lambda c:c["resolved_samples"],default=None)
+        relevant_samples=limiting_source["resolved_samples"] if limiting_source else 0; history_pass=relevant_samples>=settings.active_drive_min_resolved_samples
+        history_eta=_history_eta(db,context["user_id"],
+            {"name":limiting_source["name"],"version":limiting_source["version"],"symbol":context["symbol"],
+             "timeframe":context["timeframe"],"market_regime":regime["label"]} if limiting_source else None,
+            relevant_samples)
         raw_up=round(.5+signed/max(evidence,1)*.5,4)
         preliminary_direction="LONG" if signed>0 else "SHORT" if signed<0 else "NO_TRADE"
         entry,target,stop=_entry_target_stop(context); edge_evidence=_aggregate_edge_evidence(directional_sources)
-        if context.get("data_status")=="stale":
-            edge_result={"supported":False,"block_reason":EDGE_BLOCK_STALE_MARKET_DATA,"gross_edge":None,"net_edge":None,"costs":_edge_costs(),"sample_size":edge_evidence["resolved"]}
-        else:
-            edge_result=_current_edge(preliminary_direction,entry,target,stop,raw_up if history_pass else None,edge_evidence)
+        # Validation order matters: gates that are independent of trade
+        # levels (data freshness, evidence, margin, calibration history,
+        # confidence, risk/reward) run first. Only a decision that is still
+        # actionable after those gates has its entry/target/stop and edge
+        # evaluated - an abstention's absent levels are intentional, not a
+        # defect, and must short-circuit as no_trade_direction rather than
+        # surface as invalid/missing-level errors.
         blockers=[]
         if context.get("data_status")=="stale":blockers.append("Market data is stale")
         if evidence<settings.active_drive_min_total_evidence:blockers.append("Insufficient total evidence")
         if margin<settings.active_drive_min_point_margin:blockers.append("Point margin below required threshold")
         if not history_pass: blockers.append(f"Calibrated directional confidence not established: relevant source history {relevant_samples}/{settings.active_drive_min_resolved_samples}")
         elif directional is None or directional<settings.active_drive_min_confidence:blockers.append("Calibrated directional confidence below threshold")
-        if not edge_result["supported"]:blockers.append(f"Current edge is not supported: {edge_result['block_reason']}")
         if context.get("risk_reward_ratio") is None:blockers.append("Risk/reward is unavailable")
+        if context.get("data_status")=="stale":
+            edge_result={"supported":False,"block_reason":EDGE_BLOCK_STALE_MARKET_DATA,"gross_edge":None,"net_edge":None,"costs":_edge_costs(),"sample_size":edge_evidence["resolved"]}
+        elif blockers or preliminary_direction not in ("LONG","SHORT"):
+            edge_result={"supported":False,"block_reason":EDGE_BLOCK_NO_TRADE_DIRECTION,"gross_edge":None,"net_edge":None,"costs":_edge_costs(),"sample_size":edge_evidence["resolved"]}
+        else:
+            edge_result=_current_edge(preliminary_direction,entry,target,stop,raw_up if history_pass else None,edge_evidence)
+        if not edge_result["supported"] and edge_result["block_reason"]!=EDGE_BLOCK_NO_TRADE_DIRECTION:blockers.append(f"Current edge is not supported: {edge_result['block_reason']}")
         signal="NO_TRADE" if blockers else ("LONG" if signed>0 else "SHORT"); decision_conf=directional if signal in ("LONG","SHORT") else None; now=datetime.now(timezone.utc); eligible=signal!="NO_TRADE"
         confidence_failure=None if history_pass else {"code":"INSUFFICIENT_CALIBRATION_HISTORY","reason":f"Only {relevant_samples} resolved predictions are available for the least-supported eligible source in {context['symbol']} {context['timeframe']} {regime['label']}; {settings.active_drive_min_resolved_samples} are required."}
         metrics={
           "evidence":{"name":"total_evidence","value":round(evidence,3),"required":settings.active_drive_min_total_evidence,"passed":evidence>=settings.active_drive_min_total_evidence,"scope":f"{context['symbol']} {context['timeframe']}","formula":"sum(abs(family_points_after_cap))","description":"Total usable signal strength after reliability weighting and family caps.","contributions":[{"family":k,"absolute_points":round(abs(v),4)} for k,v in totals.items()]},
           "point_margin":{"name":"point_margin","value":round(margin,3),"required":settings.active_drive_min_point_margin,"passed":margin>=settings.active_drive_min_point_margin,"scope":f"{context['symbol']} {context['timeframe']}","formula":"abs(long_points - short_points)","description":"Directional lead after family caps.","long_points":round(long_points,3),"short_points":round(short_points,3),"winning_direction":"LONG" if signed>0 else "SHORT" if signed<0 else "NONE"},
-          "history":{"name":"relevant_history","value":relevant_samples,"required":settings.active_drive_min_resolved_samples,"passed":history_pass,"scope":f"eligible source/version · {context['symbol']} {context['timeframe']} · {regime['label']}","formula":"minimum resolved count across currently eligible authoritative sources","description":"Conservative source-specific calibration coverage.",**histories},
+          "history":{"name":"relevant_history","value":relevant_samples,"required":settings.active_drive_min_resolved_samples,"passed":history_pass,"scope":f"eligible source/version · {context['symbol']} {context['timeframe']} · {regime['label']}","formula":"minimum resolved count across currently eligible authoritative sources","description":"Conservative source-specific calibration coverage.",**histories,**history_eta},
           "confidence":{"name":"directional_confidence","value":round(directional,4) if history_pass and directional is not None else None,"raw_value":round(directional,4) if directional is not None else None,"required":settings.active_drive_min_confidence,"passed":bool(history_pass and directional is not None and directional>=settings.active_drive_min_confidence),"scope":f"{context['symbol']} {context['timeframe']} · decision snapshot","formula":"abs(long_points-short_points)/total_evidence, available only after relevant calibration history","description":"Calibrated directional separation, not a champion-model probability.","failure":confidence_failure},
           "edge":{"name":"current_net_edge","value":edge_result["net_edge"],"required":settings.active_drive_min_net_edge,"passed":edge_result["supported"],"scope":f"{context['symbol']} {context['timeframe']} · execution authority","formula":"probability_of_win*blended_win_return - probability_of_loss*blended_loss_return - (fees+spread+slippage+funding)","description":"Net expected edge after estimated round-trip costs, from resolved out-of-sample history blended with the current entry/target/stop.","gross_edge":edge_result["gross_edge"],"sample_size":edge_evidence["resolved"],"required_sample_size":settings.active_drive_min_resolved_samples,"block_reason":edge_result["block_reason"],"costs":edge_result["costs"]},
         }

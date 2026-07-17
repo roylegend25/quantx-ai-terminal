@@ -1,12 +1,17 @@
 """Authenticated, read-only Active Drive diagnostics from one persisted snapshot."""
+import uuid
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from app.core.config import settings
-from app.db.models import ActiveDriveDecision, MarketCandle, PredictionLedger, PredictionResolution, SignalCandidateRecord
+from app.core.deps import get_current_user
+from app.db.models import ActiveDriveDecision, MarketCandle, PredictionCycle, PredictionLedger, PredictionResolution, SignalCandidateRecord
 from app.db.session import SessionLocal
 from app.decision_engine import scheduler as resolver_scheduler
+from app.decision_engine.repository import owner
+from app.decision_engine.ledger import HORIZON_SECONDS
 from app.decision_engine.v2 import SHADOW_MODELS
 from app.quant.forecast import TIMEFRAME_SECONDS
 from app.timeframes.canonical import parse_timeframe
@@ -15,40 +20,90 @@ router=APIRouter(prefix="/api/analysis",tags=["analysis"])
 QUANT_INPUTS={
  "regression_slope_proxy":["ema20","ema50"],"kalman_trend_proxy":["ema20","ema50"],"mean_reversion_zscore":["price","ema20","atr"],"atr_expected_move":["price","atr"],
  "realized_volatility":["realized_volatility"],"compression_state":["bb_width"],"volume_anomaly":["volume","volume_sma20"],"persistence_proxy":["rsi"],
- "funding_divergence":["price","funding_history"],"open_interest_divergence":["price","open_interest_history"],"order_book_imbalance":["order_book"],"correlation_beta_context":["btc_eth_history"]}
-MISSING_CODES={"funding_divergence":"MISSING_FUNDING_HISTORY","open_interest_divergence":"MISSING_OPEN_INTEREST_HISTORY","order_book_imbalance":"MISSING_ORDER_BOOK","correlation_beta_context":"MISSING_CROSS_ASSET_HISTORY"}
-TIMEFRAMES=["1m","3m","5m","15m","30m","1h","4h","1d","unknown/legacy"]
+ "funding_divergence":["funding_rate","price","ema20"],"open_interest_divergence":["oi_change_pct","cvd"],"order_book_imbalance":["bid_ask_ratio"],"correlation_beta_context":["btc_eth_history"]}
+MISSING_CODES={"funding_divergence":"MISSING_FUNDING_RATE","open_interest_divergence":"MISSING_OPEN_INTEREST_CHANGE","order_book_imbalance":"MISSING_ORDER_BOOK_DEPTH","correlation_beta_context":"MISSING_CROSS_ASSET_HISTORY"}
+# Canonical prediction timeframes, 1m through one calendar month. 1M is a
+# calendar month and must never be conflated with 1m/30m. Non-canonical or
+# NULL timeframes are reported in a separate legacy section, never as a row
+# of the primary per-timeframe axis.
+TIMEFRAMES=["1m","3m","5m","15m","30m","1h","4h","1d","1w","1M"]
+LEGACY_KEY="legacy_unattributed"
 
 def _iso(v):return v.isoformat() if v else None
 
-def _group(rows,key_fn):
+def _naive_utc_now():
+    """DB datetimes round-trip through SQLite tz-naive; compare like with like."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+def _unresolved_reason(ledger,now,candle_latest_ms,resolver_running):
+    """Structured reason one prediction has not resolved, mirroring exactly
+    what resolver.resolve_due needs before it can write an outcome."""
+    if ledger.reference_price is None: return "legacy_missing_metadata"
+    if ledger.timeframe not in TIMEFRAMES: return "unsupported_timeframe"
+    deadline=ledger.resolution_deadline
+    if deadline is None: return "legacy_missing_metadata"
+    if deadline.tzinfo is not None: deadline=deadline.replace(tzinfo=None)
+    if deadline>now: return "awaiting_horizon"
+    latest=candle_latest_ms.get((ledger.symbol,ledger.timeframe))
+    if latest is None or latest<int(deadline.replace(tzinfo=timezone.utc).timestamp()*1000):
+        tf_ms=TIMEFRAME_SECONDS.get(ledger.timeframe,300)*1000
+        stale=latest is None or (int(now.replace(tzinfo=timezone.utc).timestamp()*1000)-latest)>2*tf_ms+300_000
+        return "market_data_gap" if stale else "awaiting_future_candle"
+    return "resolver_backlog" if resolver_running else "resolver_not_running"
+
+def _group(rows,key_fn,now=None,candle_latest_ms=None,resolver_running=True,with_reasons=False):
     groups=defaultdict(list)
-    for ledger,resolution in rows:groups[str(key_fn(ledger) or "unknown/legacy")].append((ledger,resolution))
+    for ledger,resolution in rows:groups[str(key_fn(ledger) or LEGACY_KEY)].append((ledger,resolution))
     out=[]
     for key,items in sorted(groups.items()):
         resolved=[(l,r) for l,r in items if r is not None]; correct=sum(r.correct is True for _,r in resolved); wrong=sum(r.correct is False for _,r in resolved); neutral=sum(bool(r.neutral_result) for _,r in resolved); directional=correct+wrong; returns=[r.actual_return for _,r in resolved if r.actual_return is not None]
-        out.append({"key":key,"total_predictions":len(items),"resolved":len(resolved),"unresolved":len(items)-len(resolved),"correct":correct,"wrong":wrong,"neutral":neutral,"accuracy":round(correct/directional,4) if directional>=20 else None,"average_realized_return":round(sum(returns)/len(returns),8) if returns else None,"expected_edge_sample_count":directional,"first_prediction":_iso(min((l.generated_at for l,_ in items),default=None)),"latest_prediction":_iso(max((l.generated_at for l,_ in items),default=None))})
+        row={"key":key,"total_predictions":len(items),"resolved":len(resolved),"unresolved":len(items)-len(resolved),"correct":correct,"wrong":wrong,"neutral":neutral,"accuracy":round(correct/directional,4) if directional>=20 else None,"neutral_rate":round(neutral/len(resolved),4) if resolved else None,"average_realized_return":round(sum(returns)/len(returns),8) if returns else None,"expected_edge_sample_count":directional,"first_prediction":_iso(min((l.generated_at for l,_ in items),default=None)),"latest_prediction":_iso(max((l.generated_at for l,_ in items),default=None))}
+        if with_reasons and now is not None:
+            unresolved=[l for l,r in items if r is None]
+            reasons=Counter(_unresolved_reason(l,now,candle_latest_ms or {},resolver_running) for l in unresolved)
+            resolved_ats=[r.resolved_at for _,r in resolved if r.resolved_at is not None]
+            delays=[(r.resolved_at-l.resolution_deadline).total_seconds() for l,r in resolved if r.resolved_at is not None and l.resolution_deadline is not None]
+            pending=[l.resolution_deadline for l in unresolved if l.resolution_deadline is not None and l.reference_price is not None]
+            row.update({"unresolved_reasons":dict(reasons),
+                "first_resolved_at":_iso(min(resolved_ats,default=None)),"latest_resolved_at":_iso(max(resolved_ats,default=None)),
+                "oldest_unresolved_at":_iso(min((l.generated_at for l in unresolved),default=None)),
+                "next_resolution_at":_iso(min((d for d in pending if d>now),default=None)),
+                "average_resolution_delay_seconds":round(sum(delays)/len(delays)) if delays else None,
+                "expected_horizon_seconds":HORIZON_SECONDS.get(key) if key in HORIZON_SECONDS else None,
+                "relevant_calibration_samples":directional,"required_calibration_samples":20,
+                "readiness_status":"ready" if directional>=20 else "warming_up" if directional else "no_resolved_samples"})
+        out.append(row)
     return out
 
-def _filtered_rows(db,symbol,timeframe,engine,source_type,source_name,source_version,market_regime,date_from,date_to):
+def _filtered_rows(db,symbol,timeframe,engine,source_type,source_name,source_version,market_regime,date_from,date_to,cycle_id=None):
     q=db.query(PredictionLedger,PredictionResolution).outerjoin(PredictionResolution,PredictionResolution.prediction_id==PredictionLedger.prediction_id)
-    for field,value in ((PredictionLedger.symbol,symbol.upper() if symbol else None),(PredictionLedger.timeframe,parse_timeframe(timeframe).value if timeframe else None),(PredictionLedger.engine,engine),(PredictionLedger.source_type,source_type),(PredictionLedger.source_name,source_name),(PredictionLedger.source_version,source_version),(PredictionLedger.market_regime,market_regime)):
+    for field,value in ((PredictionLedger.symbol,symbol.upper() if symbol else None),(PredictionLedger.timeframe,parse_timeframe(timeframe).value if timeframe else None),(PredictionLedger.engine,engine),(PredictionLedger.source_type,source_type),(PredictionLedger.source_name,source_name),(PredictionLedger.source_version,source_version),(PredictionLedger.market_regime,market_regime),(PredictionLedger.cycle_id,cycle_id)):
         if value:q=q.filter(field==value)
     if date_from:q=q.filter(PredictionLedger.generated_at>=date_from)
     if date_to:q=q.filter(PredictionLedger.generated_at<=date_to)
     return q.all()
 
 @router.get("/prediction-resolution-summary")
-def prediction_resolution_summary(symbol:str|None=None,timeframe:str|None=None,engine:str|None=None,source_type:str|None=None,source_name:str|None=None,source_version:str|None=None,market_regime:str|None=None,date_from:datetime|None=None,date_to:datetime|None=None):
+def prediction_resolution_summary(symbol:str|None=None,timeframe:str|None=None,engine:str|None=None,source_type:str|None=None,source_name:str|None=None,source_version:str|None=None,market_regime:str|None=None,date_from:datetime|None=None,date_to:datetime|None=None,cycle_id:str|None=None):
     db=SessionLocal()
     try:
-        try: rows=_filtered_rows(db,symbol,timeframe,engine,source_type,source_name,source_version,market_regime,date_from,date_to)
+        try: rows=_filtered_rows(db,symbol,timeframe,engine,source_type,source_name,source_version,market_regime,date_from,date_to,cycle_id)
         except ValueError as exc: raise HTTPException(422,{"code":"UNSUPPORTED_TIMEFRAME","message":"Unsupported timeframe."}) from exc
-        resolved=[(l,r) for l,r in rows if r is not None]; correct=sum(r.correct is True for _,r in resolved); wrong=sum(r.correct is False for _,r in resolved); neutral=sum(bool(r.neutral_result) for _,r in resolved); now=datetime.utcnow()
+        resolved=[(l,r) for l,r in rows if r is not None]; correct=sum(r.correct is True for _,r in resolved); wrong=sum(r.correct is False for _,r in resolved); neutral=sum(bool(r.neutral_result) for _,r in resolved); now=_naive_utc_now()
         expired=sum(r is None and l.resolution_deadline < now-timedelta(seconds=TIMEFRAME_SECONDS.get(l.timeframe,300)) for l,r in rows)
-        by_tf=_group(rows,lambda l:l.timeframe); present={x["key"] for x in by_tf}; by_tf.extend({"key":tf,"total_predictions":0,"resolved":0,"unresolved":0,"correct":0,"wrong":0,"neutral":0,"accuracy":None,"average_realized_return":None,"expected_edge_sample_count":0,"first_prediction":None,"latest_prediction":None} for tf in TIMEFRAMES if tf not in present)
+        candle_latest_ms={(s,tf):ms for s,tf,ms in db.query(MarketCandle.symbol,MarketCandle.timeframe,func.max(MarketCandle.timestamp)).group_by(MarketCandle.symbol,MarketCandle.timeframe)}
+        resolver_running=bool(resolver_scheduler.status().get("running"))
+        canonical=[(l,r) for l,r in rows if l.timeframe in TIMEFRAMES]; legacy=[(l,r) for l,r in rows if l.timeframe not in TIMEFRAMES]
+        by_tf=_group(canonical,lambda l:l.timeframe,now=now,candle_latest_ms=candle_latest_ms,resolver_running=resolver_running,with_reasons=True)
+        present={x["key"] for x in by_tf}; by_tf.extend({"key":tf,"total_predictions":0,"resolved":0,"unresolved":0,"correct":0,"wrong":0,"neutral":0,"accuracy":None,"neutral_rate":None,"average_realized_return":None,"expected_edge_sample_count":0,"first_prediction":None,"latest_prediction":None,"unresolved_reasons":{},"first_resolved_at":None,"latest_resolved_at":None,"oldest_unresolved_at":None,"next_resolution_at":None,"average_resolution_delay_seconds":None,"expected_horizon_seconds":HORIZON_SECONDS.get(tf),"relevant_calibration_samples":0,"required_calibration_samples":20,"readiness_status":"no_predictions"} for tf in TIMEFRAMES if tf not in present)
+        unresolved_reasons=Counter(_unresolved_reason(l,now,candle_latest_ms,resolver_running) for l,r in rows if r is None)
+        oldest_unresolved=min((l.generated_at for l,r in rows if r is None),default=None)
         return {"total_predictions":len(rows),"resolved":len(resolved),"unresolved":len(rows)-len(resolved),"expired_unresolved":expired,"correct":correct,"wrong":wrong,"neutral":neutral,
-          "by_symbol":_group(rows,lambda l:l.symbol),"by_timeframe":sorted(by_tf,key=lambda x:TIMEFRAMES.index(x["key"]) if x["key"] in TIMEFRAMES else 99),"by_symbol_timeframe":_group(rows,lambda l:f"{l.symbol} {l.timeframe}"),"by_engine":_group(rows,lambda l:l.engine),"by_source_type":_group(rows,lambda l:l.source_type),"by_source":_group(rows,lambda l:f"{l.source_type}:{l.source_name}:{l.source_version}"),"by_regime":_group(rows,lambda l:l.market_regime)}
+          "neutral_threshold":settings.resolution_neutral_band,"neutral_threshold_units":"decimal_return_fraction",
+          "unresolved_reasons":dict(unresolved_reasons),"oldest_unresolved_at":_iso(oldest_unresolved),
+          "timeframes":TIMEFRAMES,
+          "legacy":{"total_predictions":len(legacy),"note":"Rows whose timeframe is not a canonical prediction timeframe; excluded from the primary axis and from current calibration.","rows":_group(legacy,lambda l:l.timeframe)},
+          "by_symbol":_group(rows,lambda l:l.symbol),"by_timeframe":sorted(by_tf,key=lambda x:TIMEFRAMES.index(x["key"]) if x["key"] in TIMEFRAMES else 99),"by_symbol_timeframe":_group(canonical,lambda l:f"{l.symbol} {l.timeframe}"),"by_engine":_group(rows,lambda l:l.engine),"by_source_type":_group(rows,lambda l:l.source_type),"by_source":_group(rows,lambda l:f"{l.source_type}:{l.source_name}:{l.source_version}"),"by_regime":_group(rows,lambda l:l.market_regime)}
     finally:db.close()
 
 @router.get("/source-health")
@@ -79,3 +134,85 @@ def source_health(symbol:str=Query("BTCUSDT"),timeframe:str=Query("15m"),decisio
           "summary":{"ml_total":types["ml"],"ml_working":working["ml"],"strategy_total":types["strategy"],"strategy_working":working["strategy"],"strategy_eligible_now":sum(s["source_type"]=="strategy" and s.get("eligible_now") for s in sources),"quant_total":types["quant"],"quant_working":working["quant"],"quant_unavailable":sum(s["source_type"]=="quant" and s["runtime_status"]=="unavailable_data" for s in sources),"candidates_generated":len(rows),"ledger_writes":total,"resolver_healthy":resolver["healthy"]},"sources":sorted(sources,key=lambda x:(x["source_type"],x["source_name"])),"ledger":{"total":total,"resolved":resolved,"unresolved":total-resolved,"expired_unresolved":expired},"resolver":resolver,
           "decision_requirements":{"decision_id":decision.decision_id,"signal":decision.signal,"metrics":metrics,"history":history,"blocking_reasons":decision.blocking_reasons,"long_points":decision.long_points,"short_points":decision.short_points,"confidence_diagnostics":payload.get("confidence_diagnostics"),"expected_edge":decision.expected_edge,"risk_reward_ratio":payload.get("risk_reward_ratio"),"data_status":payload.get("data_status"),"market_regime":payload.get("market_regime")}}
     finally:db.close()
+
+
+# ===================================================== prediction cycles
+
+class NewCycleRequest(BaseModel):
+    label: str | None = Field(default=None, max_length=80)
+    idempotency_key: str | None = Field(default=None, max_length=80)
+    symbol: str = "BTCUSDT"
+    timeframe: str = "5m"
+
+
+def _cycle_payload(cycle, evaluation=None):
+    from app.trading import scheduler as trading_scheduler
+    next_cycle = None
+    if trading_scheduler.LAST_CYCLE_AT:
+        try:
+            next_cycle = (datetime.fromisoformat(trading_scheduler.LAST_CYCLE_AT)
+                          + timedelta(seconds=settings.scheduler_interval_seconds)).isoformat()
+        except ValueError:
+            next_cycle = None
+    return {"cycle_id": cycle.id if cycle else None, "label": cycle.label if cycle else None,
+            "started_at": _iso(cycle.started_at) if cycle else None,
+            "status": "active" if cycle else "no_cycle_started",
+            "scheduler_running": trading_scheduler.RUNNING,
+            "next_scheduled_prediction_at": next_cycle,
+            "evaluation": evaluation}
+
+
+@router.get("/prediction-cycle")
+def prediction_cycle_status(current_user: str = Depends(get_current_user)):
+    db = SessionLocal()
+    try:
+        cycle = db.query(PredictionCycle).filter(PredictionCycle.user_id == owner(current_user)).order_by(
+            PredictionCycle.started_at.desc()).first()
+        return _cycle_payload(cycle)
+    finally:
+        db.close()
+
+
+@router.post("/prediction-cycle")
+async def start_prediction_cycle(body: NewCycleRequest, current_user: str = Depends(get_current_user)):
+    """Start a new prediction cycle. Non-destructive by design: history is
+    never deleted, resolved outcomes are never rewritten, balances/model
+    performance/risk limits are untouched, and no order is placed - the one
+    evaluation triggered here flows through the exact same confidence, edge,
+    authority, and risk gates as any scheduled evaluation. Auth is the JWT
+    bearer dependency (no cookies, so CSRF does not apply); idempotency via
+    the client key plus a 60s server-side re-trigger guard."""
+    user_id = owner(current_user)
+    db = SessionLocal()
+    try:
+        if body.idempotency_key:
+            existing = db.query(PredictionCycle).filter(
+                PredictionCycle.idempotency_key == body.idempotency_key).first()
+            if existing:
+                return {**_cycle_payload(existing), "created": False}
+        latest = db.query(PredictionCycle).filter(PredictionCycle.user_id == user_id).order_by(
+            PredictionCycle.started_at.desc()).first()
+        now = datetime.now(timezone.utc)
+        if latest and latest.started_at and (now.replace(tzinfo=None)
+                - (latest.started_at.replace(tzinfo=None) if latest.started_at.tzinfo else latest.started_at)).total_seconds() < 60:
+            raise HTTPException(429, "A prediction cycle was started less than a minute ago")
+        cycle = PredictionCycle(id=uuid.uuid4().hex, user_id=user_id, label=body.label,
+                                idempotency_key=body.idempotency_key, started_at=now)
+        db.add(cycle)
+        db.commit()
+        db.refresh(cycle)
+    finally:
+        db.close()
+    evaluation = None
+    try:
+        timeframe = parse_timeframe(body.timeframe).value
+        from app.api.prediction import prediction as active_drive_prediction
+        result = await active_drive_prediction(body.symbol.upper(), timeframe=timeframe, current_user=current_user)
+        engine_result = result.get("decision_engine") or {}
+        evaluation = {"symbol": body.symbol.upper(), "timeframe": timeframe,
+                      "signal": engine_result.get("final_signal"),
+                      "decision_id": engine_result.get("decision_id"),
+                      "blocking_reasons": engine_result.get("blocking_reasons")}
+    except Exception as exc:  # evaluation failure must not lose the cycle row
+        evaluation = {"error": repr(exc)}
+    return {**_cycle_payload(cycle, evaluation), "created": True}

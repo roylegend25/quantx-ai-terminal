@@ -55,6 +55,12 @@ export const api = {
     getJson(`/api/dashboard/live-decision?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`),
   sourceHealth: (symbol: string, timeframe: string, decisionId: string) => getJson(`/api/analysis/source-health?symbol=${symbol}&timeframe=${timeframe}&decision_id=${decisionId}`),
   predictionResolutionSummary: (params = "") => getJson(`/api/analysis/prediction-resolution-summary${params ? `?${params}` : ""}`),
+  predictionCycleStatus: () => getJson("/api/analysis/prediction-cycle"),
+  startPredictionCycle: (label?: string, idempotencyKey?: string) =>
+    postJson("/api/analysis/prediction-cycle", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label: label ?? null, idempotency_key: idempotencyKey ?? null }),
+    }),
   prediction: (symbol: string, interval: string, signal?: AbortSignal) =>
     getJson(`/api/prediction/${symbol}?timeframe=${interval}`, { signal }),
   predictionHistory: (symbol: string, timeframe?: string, limit = 500) => {

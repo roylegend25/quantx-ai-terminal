@@ -12,3 +12,6 @@ backend/data/pg-backups/
 
 # Local rollback snapshots may contain secrets
 backups/
+
+# Graphify knowledge graph output
+graphify-out/

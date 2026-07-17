@@ -693,6 +693,17 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
         except Exception:
             market_context = None
 
+        # Route measured derivatives/order-flow values into the quant
+        # feature set. These collectors already run for every prediction
+        # (market_intelligence) but their outputs never reached
+        # quant_votes, so funding/OI/order-book quants reported
+        # "unavailable this cycle" forever despite live data existing.
+        if market_context:
+            for key in ("funding_rate", "oi_change_pct", "bid_ask_ratio", "cvd"):
+                value = market_context.get(key)
+                if isinstance(value, (int, float)):
+                    features[key] = float(value)
+
         try:
             consensus = (await evaluate_all_timeframes(symbol, market_context))["consensus"]
         except Exception:

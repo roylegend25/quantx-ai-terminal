@@ -46,7 +46,7 @@ LEGACY_ADDITIVE_COLUMNS = {
         "protection_verified_at": "DATETIME",
     },
     "risk_settings": {"safety_buffer_usdt": "FLOAT DEFAULT 1.0", "safety_buffer_pct": "FLOAT DEFAULT 0.10"},
-    "prediction_ledger": {"target_reference_price": "FLOAT", "stop_reference_price": "FLOAT", "data_revision": "VARCHAR"},
+    "prediction_ledger": {"target_reference_price": "FLOAT", "stop_reference_price": "FLOAT", "data_revision": "VARCHAR", "cycle_id": "VARCHAR"},
     "prediction_resolutions": {
         "target_hit": "BOOLEAN", "stop_hit": "BOOLEAN", "maximum_favorable_excursion": "FLOAT",
         "maximum_adverse_excursion": "FLOAT",

@@ -1,6 +1,6 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { ArrowDownRight, ArrowUpRight, Minus } from "lucide-react";
-import { fmtPct, fmtUsd } from "../../lib/format";
+import { fmtPct } from "../../lib/format";
 
 type Props = {
   prediction: any;
@@ -88,28 +88,16 @@ function PredictionGauge({ prediction, lastUpdated }: Props) {
         </div>
       </div>
 
-      {isNoTrade ? (
+      {/* Target/stop/strength intentionally not repeated here: the
+          authoritative decision summary (entry, target, stop, horizon,
+          confidence) lives in PredictionChart's pc-summary. This card is
+          only the at-a-glance confidence dial. */}
+      {isNoTrade && (
         <div className="no-trade-panel">
           <span className="no-trade-message">No active trade setup</span>
           {riskReason && <span className="no-trade-reason">{riskReason}</span>}
         </div>
-      ) : (
-        <div className="target-stop-row">
-          <div>
-            <span className="tile-label">Target Price</span>
-            <b className="tile-value green">{fmtUsd(prediction?.target)}</b>
-          </div>
-          <div className="align-right">
-            <span className="tile-label">Stop Loss</span>
-            <b className="tile-value red">{fmtUsd(prediction?.stop)}</b>
-          </div>
-        </div>
       )}
-
-      <div className={`strength-row${isNoTrade ? " disabled" : ""}`}>
-        <span className="tile-label">Prediction Strength</span>
-        <b>{isNoTrade ? "—" : fmtPct(confidence, 0)}</b>
-      </div>
       <progress value={isNoTrade ? 0 : confidence} max={100} className={isNoTrade ? "disabled" : undefined} />
     </div>
   );

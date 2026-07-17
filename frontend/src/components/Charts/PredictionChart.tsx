@@ -860,13 +860,13 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
 
         <div className="pc-tile">
           <span className="tile-label">Price Target {isNoTrade ? "" : `(${tfConfig.label})`}</span>
-          <b className="tile-value green">{isNoTrade ? "—" : fmtUsd(target)}</b>
-          <span className="pc-tile-sub green">{isNoTrade ? "" : fmtSignedPct(targetPct)}</span>
+          <b className="tile-value green">{isNoTrade ? "Not applicable" : fmtUsd(target)}</b>
+          <span className="pc-tile-sub green">{isNoTrade ? "No trade levels for an abstention" : fmtSignedPct(targetPct)}</span>
         </div>
 
         <div className="pc-tile">
           <span className="tile-label">Stop Loss</span>
-          <b className="tile-value red">{isNoTrade ? "—" : fmtUsd(stop)}</b>
+          <b className="tile-value red">{isNoTrade ? "Not applicable" : fmtUsd(stop)}</b>
           <span className="pc-tile-sub red">{isNoTrade ? "" : fmtSignedPct(stopPct)}</span>
         </div>
 

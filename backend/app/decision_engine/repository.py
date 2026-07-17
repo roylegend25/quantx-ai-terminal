@@ -52,19 +52,42 @@ def _signed_return(actual_return: float | None, direction: str | None) -> float 
 
 
 def performance(db: Session, user_id: str, source_name: str, source_version: str, symbol: str, timeframe: str, regime: str | None) -> dict:
-    q = db.query(PredictionResolution, PredictionLedger.direction).join(
-        PredictionLedger, PredictionResolution.prediction_id == PredictionLedger.prediction_id
-    ).filter(
-        PredictionLedger.user_id == owner(user_id),
-        PredictionLedger.engine == "active_drive_v2",
-        PredictionLedger.source_name == source_name,
-        PredictionLedger.source_version == source_version,
-        PredictionLedger.symbol == symbol,
-        PredictionLedger.timeframe == timeframe,
-    )
-    if regime:
-        q = q.filter(PredictionLedger.market_regime == regime)
-    rows = q.order_by(PredictionResolution.resolved_at.desc()).limit(100).all()
+    """Resolved out-of-sample performance for one source's evidence bucket.
+
+    Documented evidence hierarchy (no fabrication, fail-closed):
+      1. source + version + symbol + timeframe + regime (preferred)
+      2. source + version + symbol + timeframe (all regimes) - used only
+         when the regime bucket alone cannot meet the minimum sample
+         requirement. Regime labels fragment quickly (every volatility x
+         trend combination is a separate string, plus legacy labels), so
+         requiring 20 samples inside the CURRENT label made the history
+         gate near-permanently 0/20 despite thousands of resolved samples
+         for the same source/symbol/timeframe.
+    The fallback still faces the full 20-sample gate, keeps the Bayesian
+    shrinkage prior, and reports its scope; when even it has no rows the
+    result honestly stays empty (never established).
+    """
+    def bucket(with_regime: bool):
+        q = db.query(PredictionResolution, PredictionLedger.direction).join(
+            PredictionLedger, PredictionResolution.prediction_id == PredictionLedger.prediction_id
+        ).filter(
+            PredictionLedger.user_id == owner(user_id),
+            PredictionLedger.engine == "active_drive_v2",
+            PredictionLedger.source_name == source_name,
+            PredictionLedger.source_version == source_version,
+            PredictionLedger.symbol == symbol,
+            PredictionLedger.timeframe == timeframe,
+        )
+        if with_regime and regime:
+            q = q.filter(PredictionLedger.market_regime == regime)
+        return q.order_by(PredictionResolution.resolved_at.desc()).limit(100).all()
+
+    rows = bucket(with_regime=True)
+    evidence_scope = "source_symbol_timeframe_regime" if regime else "source_symbol_timeframe"
+    if regime and len(rows) < settings.active_drive_min_resolved_samples:
+        fallback = bucket(with_regime=False)
+        if len(fallback) > len(rows):
+            rows, evidence_scope = fallback, "source_symbol_timeframe"
     n = len(rows)
     wins = sum(1 for row, _ in rows if row.correct is True)
     directional = [(row, direction) for row, direction in rows if row.correct is not None]
@@ -81,7 +104,7 @@ def performance(db: Session, user_id: str, source_name: str, source_version: str
     losing_returns = [r for r in (_signed_return(row.actual_return, direction) for row, direction in rows if row.correct is False) if r is not None]
     tier = "trusted" if n >= 100 else "eligible" if n >= 50 else "early_evidence" if n >= 20 else "insufficient_evidence"
     latest_resolved_at = rows[0][0].resolved_at if rows and rows[0][0].resolved_at else None
-    return {"resolved": n, "accuracy": accuracy,
+    return {"resolved": n, "accuracy": accuracy, "evidence_scope": evidence_scope,
             "recent_accuracy": recent_wins / len(recent_directional) if recent_directional else None,
             "shrunk_accuracy": posterior, "recent_shrunk_accuracy": recent_posterior,
             "realized_edge": realized_edge, "tier": tier, "directional_resolved": directional_n,

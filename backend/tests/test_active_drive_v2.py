@@ -12,7 +12,7 @@ from app.decision_engine.router import decision_engine_router
 from app.decision_engine.types import DecisionEngineType
 from app.decision_engine.v2 import (
     ActiveDriveV2Engine, EDGE_BLOCK_INSUFFICIENT_SAMPLES, EDGE_BLOCK_INVALID_LEVELS,
-    EDGE_BLOCK_INVALID_PROBABILITY, EDGE_BLOCK_MISSING_ENTRY, EDGE_BLOCK_NET_EDGE_BELOW_THRESHOLD,
+    EDGE_BLOCK_INVALID_PROBABILITY, EDGE_BLOCK_ACTIONABLE_MISSING_LEVELS, EDGE_BLOCK_NET_EDGE_BELOW_THRESHOLD,
     EDGE_BLOCK_COSTS_EXCEED_EDGE, EDGE_BLOCK_NEGATIVE_GROSS_EDGE, EDGE_BLOCK_STALE_MARKET_DATA,
     EDGE_BLOCK_STALE_PERFORMANCE_DATA,
     _aggregate_edge_evidence, _current_edge,
@@ -65,8 +65,16 @@ def test_v2_small_sample_is_capped_and_fails_closed_without_edge():
         assert result["current_edge_supported"] is False
         assert result["edge_supported"] is False
         assert result["expected_edge"] is None
-        assert result["edge_block_reason"] is not None
-        assert any("Current edge is not supported" in reason for reason in result["blocking_reasons"])
+        # A NO_TRADE abstention short-circuits edge evaluation: its absent
+        # trade levels are intentional, so the edge reason must be the
+        # structured no_trade_direction code and never a missing/invalid
+        # level defect appended to the blocker list.
+        assert result["edge_block_reason"] == "no_trade_direction"
+        assert not any("Current edge is not supported" in reason for reason in result["blocking_reasons"])
+        assert any("relevant source history" in reason for reason in result["blocking_reasons"])
+        history = result["decision_metrics"]["history"]
+        assert history["samples_remaining"] >= 0
+        assert "estimated_ready_at" in history and "current_qualifying_rate_per_hour" in history
     finally: db.close()
 
 
@@ -203,9 +211,12 @@ def test_current_edge_short_direction_is_symmetric():
 
 
 def test_current_edge_blocked_missing_levels():
-    assert _current_edge("LONG", None, 103.0, 99.0, 0.65, _profitable_evidence())["block_reason"] == EDGE_BLOCK_MISSING_ENTRY
-    assert _current_edge("LONG", 100.0, 103.0, None, 0.65, _profitable_evidence())["block_reason"] == "missing_stop"
-    assert _current_edge("LONG", 100.0, None, 99.0, 0.65, _profitable_evidence())["block_reason"] == "missing_target"
+    # An actionable direction that reaches edge evaluation without complete
+    # levels is one structured defect code, never per-field "missing_*"
+    # noise (and never surfaced at all for a NO_TRADE abstention).
+    assert _current_edge("LONG", None, 103.0, 99.0, 0.65, _profitable_evidence())["block_reason"] == EDGE_BLOCK_ACTIONABLE_MISSING_LEVELS
+    assert _current_edge("LONG", 100.0, 103.0, None, 0.65, _profitable_evidence())["block_reason"] == EDGE_BLOCK_ACTIONABLE_MISSING_LEVELS
+    assert _current_edge("LONG", 100.0, None, 99.0, 0.65, _profitable_evidence())["block_reason"] == EDGE_BLOCK_ACTIONABLE_MISSING_LEVELS
 
 
 def test_current_edge_blocked_invalid_levels_wrong_side_of_entry():

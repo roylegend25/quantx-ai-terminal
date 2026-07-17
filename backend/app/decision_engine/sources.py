@@ -44,5 +44,25 @@ def quant_votes(f):
     if bbw is not None: add("compression_state","volatility","NEUTRAL",0,bbw,"Bollinger-width context")
     if None not in (vol,vavg) and vavg: add("volume_anomaly","order_flow","NEUTRAL",0,vol/vavg,"Volume anomaly; direction unavailable")
     if rsi is not None: add("persistence_proxy","quant_statistical","NEUTRAL",0,abs(rsi-50)/50,"Persistence proxy, not a Hurst claim")
-    for n,fam,reason in (("funding_divergence","derivatives","Funding unavailable this cycle"),("open_interest_divergence","derivatives","Open interest unavailable this cycle"),("order_book_imbalance","order_flow","Order book unavailable this cycle"),("correlation_beta_context","quant_statistical","Cross-asset history unavailable this cycle")): add(n,fam,"NO_TRADE",0,None,reason)
+    # Derivatives/order-flow quants read the measured values that
+    # market_intelligence collects every prediction cycle (routed into the
+    # feature set by app.api.prediction). Each stays honestly unavailable
+    # with a precise reason when its input was not collected this cycle.
+    funding,oi_change,bid_ask,cvd=(num(f,k) for k in ("funding_rate","oi_change_pct","bid_ask_ratio","cvd"))
+    if funding is not None and None not in (price,e20):
+        # Crowded funding opposing the prevailing short-term price direction
+        # is a divergence; the vote follows price against the crowd.
+        crowd="LONG" if funding>0 else "SHORT" if funding<0 else None; trend="LONG" if price>e20 else "SHORT" if price<e20 else None
+        d=trend if crowd and trend and crowd!=trend and abs(funding)>=.0003 else "NEUTRAL"
+        add("funding_divergence","derivatives",d,min(55.,abs(funding)/.001*40) if d!="NEUTRAL" else 0,funding,f"Funding {funding:+.5f} vs price trend" if d!="NEUTRAL" else f"Funding {funding:+.5f}, no divergence")
+    else: add("funding_divergence","derivatives","NO_TRADE",0,None,"Funding rate not collected this cycle")
+    if oi_change is not None:
+        d=("LONG" if cvd>0 else "SHORT") if oi_change>1. and cvd else "NEUTRAL"
+        add("open_interest_divergence","derivatives",d,min(55.,abs(oi_change)*10) if d!="NEUTRAL" else 0,oi_change,f"OI {oi_change:+.2f}% with CVD confirmation" if d!="NEUTRAL" else f"OI {oi_change:+.2f}%, no directional expansion")
+    else: add("open_interest_divergence","derivatives","NO_TRADE",0,None,"Open interest change not collected this cycle")
+    if bid_ask is not None:
+        d="LONG" if bid_ask>=.6 else "SHORT" if bid_ask<=.4 else "NEUTRAL"
+        add("order_book_imbalance","order_flow",d,min(60.,abs(bid_ask-.5)*200) if d!="NEUTRAL" else 0,bid_ask,f"Bid share {bid_ask:.2f} of top-of-book depth")
+    else: add("order_book_imbalance","order_flow","NO_TRADE",0,None,"Order book depth not collected this cycle")
+    add("correlation_beta_context","quant_statistical","NO_TRADE",0,None,"Cross-asset BTC/ETH joint history is not routed into features yet")
     return out

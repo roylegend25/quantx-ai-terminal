@@ -58,6 +58,14 @@ class Settings(BaseSettings):
     active_drive_estimated_funding_cost_rate: float = 0.0
     active_drive_max_edge_evidence_age_seconds: int = 86400
 
+    # Resolution neutral band, decimal return fraction (0.0005 == 5 bps).
+    # A resolved absolute return at or below this is NEUTRAL: too small to
+    # be a real directional outcome once spread+slippage are considered.
+    # Exact zero was the old implicit band, which made NEUTRAL impossible
+    # on float returns. Neutral outcomes are excluded from the directional
+    # accuracy denominator (correct stays NULL, neutral_result=True).
+    resolution_neutral_band: float = 0.0005
+
     deployment_maintenance_mode: bool = False
     deployment_maintenance_file: str = "/app/data/deployment-maintenance"
     scheduler_startup_grace_seconds: int = 15
