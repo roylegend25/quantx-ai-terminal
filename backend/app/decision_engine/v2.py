@@ -161,7 +161,13 @@ def _current_edge(direction: str, entry: float | None, target: float | None, sto
     evidence_ts = edge_evidence.get("evidence_timestamp")
     if evidence_ts:
         try:
-            age = (datetime.now(timezone.utc) - datetime.fromisoformat(evidence_ts)).total_seconds()
+            parsed_ts = datetime.fromisoformat(evidence_ts)
+            # SQLite drops tzinfo on round-trip even though resolved_at is
+            # always written as UTC-aware (see PredictionResolution model),
+            # so a naive result here still means UTC, not local time.
+            if parsed_ts.tzinfo is None:
+                parsed_ts = parsed_ts.replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - parsed_ts).total_seconds()
         except ValueError:
             age = None
         if age is not None and age > settings.active_drive_max_edge_evidence_age_seconds:

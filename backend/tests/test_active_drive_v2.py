@@ -203,6 +203,23 @@ def test_current_edge_supported_for_profitable_setup():
     assert result["gross_edge"] > result["net_edge"]  # costs strictly reduce gross -> net
 
 
+def test_current_edge_handles_naive_evidence_timestamp_from_sqlite_roundtrip():
+    # PredictionResolution.resolved_at is written UTC-aware, but SQLite
+    # drops tzinfo on read, so repository.performance() hands _current_edge
+    # a naive isoformat string here. Regression for a real production bug:
+    # datetime.now(timezone.utc) - naive datetime raised TypeError, which
+    # the decision-engine router swallowed and reported as a fake NO_TRADE
+    # ("Active Drive V2 failed closed: TypeError") for what was actually an
+    # actionable, profitable setup.
+    naive_evidence = {"resolved": 30, "average_win_return": 0.03, "average_loss_return": -0.01,
+                       "evidence_timestamp": datetime.now(timezone.utc).replace(tzinfo=None).isoformat()}
+    result = _current_edge("LONG", entry=100.0, target=103.0, stop=99.0, probability_up=0.65,
+        edge_evidence=naive_evidence)
+    assert result["supported"] is True
+    assert result["block_reason"] is None
+    assert result["net_edge"] > 0
+
+
 def test_current_edge_short_direction_is_symmetric():
     result = _current_edge("SHORT", entry=100.0, target=97.0, stop=101.0, probability_up=0.35,
         edge_evidence=_profitable_evidence())

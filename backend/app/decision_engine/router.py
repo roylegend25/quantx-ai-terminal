@@ -4,6 +4,9 @@ from app.decision_engine.repository import get_setting, owner
 from app.decision_engine.types import DecisionEngineType
 from app.decision_engine.v1 import ActiveDriveV1Adapter
 from app.decision_engine.v2 import ActiveDriveV2Engine
+from app.monitoring.logging import get_logger
+
+logger = get_logger("quantx.decision_engine")
 
 class DecisionEngineRouter:
     def __init__(self):
@@ -16,6 +19,17 @@ class DecisionEngineRouter:
         try:
             return engine.evaluate({**context, "db": db, "user_id": owner(user_id)})
         except Exception as exc:
+            # Fail closed to NO_TRADE (never trade on a broken evaluation),
+            # but log the real cause with a traceback - an opaque
+            # "TypeError" and nothing else previously hid genuine wiring
+            # bugs (e.g. a naive/aware datetime crash) behind what looked
+            # like a legitimate abstention.
+            logger.error(
+                f"decision_engine_failed_closed engine={engine.name.value} "
+                f"symbol={context.get('symbol')} timeframe={context.get('timeframe')}",
+                exc_info=True,
+                extra={"symbol": context.get("symbol"), "category": "decision_engine"},
+            )
             return {"engine": engine.name.value, "engine_info":{"id":engine.name.value,"name":"Active Drive V2" if engine.name==DecisionEngineType.ACTIVE_DRIVE_V2 else "Active Drive V1","version":engine.version,"authoritative":True}, "engine_version": engine.version, "symbol": context["symbol"], "timeframe": context["timeframe"],
                     "signal":"NO_TRADE", "final_signal": "NO_TRADE", "confidence": None, "directional_confidence":None, "decision_confidence":None, "abstention_confidence":1.0, "probability_up": 0.5, "probability_down": 0.5,
                     "expected_edge": None, "long_points": 0.0, "short_points": 0.0, "point_margin": 0.0,

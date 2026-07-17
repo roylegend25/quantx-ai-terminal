@@ -1433,9 +1433,16 @@ button, select, input {
 
 .pc-summary {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 12px;
   margin-top: 16px;
+}
+
+.pc-summary-note {
+  margin: 10px 2px 0;
+  color: #8b90a8;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .pc-tile {
