@@ -334,12 +334,20 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode }),
     }),
-  unlockBinanceLive: (confirmation: string, acknowledgements: Record<string, boolean>) =>
+  unlockBinanceLive: (body: {
+    password: string;
+    confirmation: string;
+    second_confirmation: string;
+    account_confirmation: string;
+    symbol_confirmation: string;
+    acknowledgements: Record<string, boolean>;
+  }) =>
     postJson("/api/trading/binance/unlock-live", {
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ confirmation, acknowledgements }),
+      body: JSON.stringify(body),
     }),
   lockBinanceLive: () => postJson("/api/trading/binance/lock-live"),
+  liveLeaseStatus: () => getJson("/api/trading/binance/live-lease-status"),
   binanceClosePosition: (body: Record<string, unknown>) =>
     postJson("/api/trading/binance/close-position", {
       headers: { "Content-Type": "application/json" },

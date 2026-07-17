@@ -146,7 +146,7 @@ describe("ExecutionPipelineCard", () => {
 
   it("requires confirmation before submitting a Test Order", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
-    render(<ExecutionPipelineCard symbol="BTCUSDT" pipeline={makePipeline()} onRefresh={onRefresh} showToast={showToast} />);
+    render(<ExecutionPipelineCard symbol="BTCUSDT" pipeline={makePipeline()} onRefresh={onRefresh} showToast={showToast} activeMode="BINANCE_LIVE" />);
     await userEvent.click(screen.getByRole("button", { name: /Test Order/ }));
     expect(confirmSpy).toHaveBeenCalled();
     expect(api.binanceTestOrder).not.toHaveBeenCalled();
@@ -160,7 +160,7 @@ describe("ExecutionPipelineCard", () => {
       submit: { ok: false, reason: "Margin is insufficient" },
       close: null,
     });
-    render(<ExecutionPipelineCard symbol="BTCUSDT" pipeline={makePipeline()} onRefresh={onRefresh} showToast={showToast} />);
+    render(<ExecutionPipelineCard symbol="BTCUSDT" pipeline={makePipeline()} onRefresh={onRefresh} showToast={showToast} activeMode="BINANCE_LIVE" />);
     await userEvent.click(screen.getByRole("button", { name: /Test Order/ }));
     await waitFor(() => expect(screen.getByText(/Rejected — Margin is insufficient/)).toBeInTheDocument());
     confirmSpy.mockRestore();

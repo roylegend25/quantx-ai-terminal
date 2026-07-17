@@ -929,6 +929,36 @@ class Portfolio(Base):
     losses = Column(Integer, default=0)
 
 
+class LiveAuthorizationLease(Base):
+    """Short-lived, single-use authorization required, in addition to
+    TradingControl.mode and BINANCE_LIVE_ENABLED, before any order reaches
+    the real Binance exchange (Phase 31).
+
+    Root cause this replaces: TradingControl.live_unlocked was a bare
+    persistent boolean with no expiry - an unlock completed for dev
+    verification on one day stayed armed for over three days and let an
+    unrelated later signal place two real orders. A lease instead expires
+    quickly (settings.live_lease_ttl_seconds, clamped), is consumed after
+    settings.live_lease_max_actions real orders, and is unconditionally
+    wiped on every backend startup (see modes.startup_safety_reset) - so it
+    can never survive a restart, deployment, or reboot, and never
+    accumulates unnoticed across days like the boolean did."""
+    __tablename__ = "live_authorization_leases"
+
+    id = Column(Integer, primary_key=True)
+    user = Column(String, nullable=False, index=True)
+    # None/"ALL" = unrestricted; a specific symbol narrows the lease to
+    # exactly the symbol the operator typed during the unlock ceremony.
+    symbol_scope = Column(String, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    expires_at = Column(DateTime, nullable=False, index=True)
+    actions_remaining = Column(Integer, default=1)
+    consumed_at = Column(DateTime, nullable=True)
+    revoked = Column(Boolean, default=False, index=True)
+    revoked_reason = Column(String, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+
 class TradingControl(Base):
     """Singleton row (id=1) of runtime trading-mode state (Phase 22, see
     app/trading/modes.py). The requested mode can only ever be one of

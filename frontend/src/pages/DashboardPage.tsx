@@ -23,7 +23,7 @@ import OrderBookCard from "../components/Dashboard/OrderBookCard";
 import RecentTradesCard from "../components/Dashboard/RecentTradesCard";
 import { useExecutionPipeline } from "../hooks/useExecutionPipeline";
 import { useMarginCalculator } from "../hooks/useMarginCalculator";
-import { useTradingStatus } from "../components/Trading/TradingShared";
+import { AutomaticExecutionBanner, useTradingStatus } from "../components/Trading/TradingShared";
 import type { AppData } from "../hooks/useAppData";
 import type { NavKey } from "../lib/nav";
 import LiveDecisionPanel from "../components/Dashboard/LiveDecisionPanel";
@@ -62,6 +62,7 @@ export default function DashboardPage(props: Props) {
 
   return (
     <div className="dash-grid">
+      <AutomaticExecutionBanner status={tradingStatus} />
       <div className="dash-row-1">
         <PredictionChart
           symbol={props.symbol}
@@ -117,6 +118,7 @@ export default function DashboardPage(props: Props) {
           errored={pipelineErrored}
           onRefresh={reloadPipeline}
           showToast={props.showToast}
+          activeMode={tradingStatus?.active_mode}
         />
       </Card>
 

@@ -54,16 +54,20 @@ def mock_connected(monkeypatch, value: bool):
 
 def go_fully_ready(monkeypatch):
     """Every live-readiness gate passing: configured, connected, server
-    lock on, unlocked, mode LIVE, kill switch off, valid limits, balance."""
+    lock on, live credentials configured, unlocked, an active lease, mode
+    LIVE, kill switch off, valid limits, balance."""
     use_mock_read_client(monkeypatch)
     mock_connected(monkeypatch, True)
     monkeypatch.setattr(settings, "binance_live_enabled", True)
+    monkeypatch.setattr(settings, "binance_live_api_key", FAKE_KEY)
+    monkeypatch.setattr(settings, "binance_live_api_secret", FAKE_SECRET)
     monkeypatch.setattr(settings, "binance_max_leverage", 3)
     monkeypatch.setattr(settings, "binance_max_notional_per_trade", 10)
     monkeypatch.setattr(settings, "binance_max_daily_loss_usdt", 5)
     monkeypatch.setattr(settings, "binance_allowed_symbols", ["BTCUSDT", "ETHUSDT"])
     modes.set_mode(modes.MODE_LIVE)
     modes.unlock_live()
+    modes.create_live_lease(user=settings.admin_username)
 
 
 # --------------------------------------------------------- live-readiness
@@ -76,13 +80,13 @@ def test_live_readiness_all_pass(monkeypatch):
     body = r.json()
     assert body["ok"] is True
     assert body["blocked_reason"] is None
-    assert len(body["steps"]) == 8
+    assert len(body["steps"]) == 10
     assert all(s["passed"] for s in body["steps"])
     keys = [s["key"] for s in body["steps"]]
     assert keys == [
         "binance_api_configured", "binance_account_connected", "server_live_lock",
-        "user_live_unlock", "active_mode_binance_live", "kill_switch_off",
-        "risk_limits_valid", "balance_available",
+        "user_live_unlock", "active_mode_binance_live", "live_credentials_configured",
+        "live_authorization_lease", "kill_switch_off", "risk_limits_valid", "balance_available",
     ]
 
 
@@ -140,7 +144,14 @@ def test_live_readiness_blocked_by_kill_switch(monkeypatch):
     client = make_client()
     body = client.get("/api/trading/live-readiness").json()
     assert body["ok"] is False
-    assert body["blocked_reason"] == "Kill switch off"
+    # Phase 31: Emergency Stop immediately revokes any active lease, so with
+    # the lease check ordered before kill_switch_off, the lease is what
+    # surfaces as blocked first - both are false, which is the point.
+    assert body["blocked_reason"] == "Live-authorization lease active"
+    kill_step = next(s for s in body["steps"] if s["key"] == "kill_switch_off")
+    lease_step = next(s for s in body["steps"] if s["key"] == "live_authorization_lease")
+    assert kill_step["passed"] is False
+    assert lease_step["passed"] is False
 
 
 def test_live_readiness_blocked_when_not_configured(monkeypatch):

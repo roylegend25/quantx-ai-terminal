@@ -355,6 +355,14 @@ class BinanceExecutionProvider:
         modes.audit("order_accepted", symbol=symbol,
                     detail={"order_id": order.order_id, "qty": qty, "side": side})
         recorder.stage(STAGE_ENTRY_ORDER_ACCEPTED, STATUS_SUCCESS)
+        if self.mode == modes.MODE_LIVE:
+            # Phase 31: the lease is consumed the moment a real order is
+            # actually accepted by the exchange - never on a blocked or
+            # failed attempt above. With the default live_lease_max_actions
+            # (1) this immediately re-locks live trading until a human
+            # re-authorizes, regardless of how this open_position call was
+            # triggered (manual endpoint or the automated scheduler).
+            modes.consume_active_lease()
 
         # Phase 27: the entry filling is NOT a complete trade - a naked real
         # position is unsafe. Protective TP/SL are attempted next and
@@ -1094,7 +1102,20 @@ class ExecutionRouter:
             provider_kwargs["tp"] = risk_snapshot.get("target_price")
             provider_kwargs["confidence"] = evidence_snapshot.get("directional_confidence")
             provider_kwargs["regime"] = evidence_snapshot.get("market_regime")
-            provider_kwargs["signal_time"] = persisted.generated_at
+            # SQLite drops tzinfo on read even though generated_at is always
+            # written as UTC-aware (see TradingHorizonDecision), so a naive
+            # result here still means UTC, not local time - the same class
+            # of bug fixed in decision_engine/v2.py's _current_edge(). Left
+            # naive, PaperExecutionProvider's signal-age check
+            # (execution_engine.submit_order) raises TypeError subtracting
+            # an aware "now" from it, which silently failed every paper
+            # order for a persisted authority (never surfaced by tests
+            # because none previously ran a synthetic order all the way
+            # through the real paper engine with a real persisted decision).
+            signal_time = persisted.generated_at
+            if signal_time is not None and signal_time.tzinfo is None:
+                signal_time = signal_time.replace(tzinfo=timezone.utc)
+            provider_kwargs["signal_time"] = signal_time
             top_sources = (execution_decision.decision_payload or {}).get("top_supporting_sources") or []
             provider_kwargs["decision_engine"] = {"engine": "active_drive_v2", "engine_version": engine_version,
                 "decision_id": execution_decision.decision_id, "horizon_decision_id": kwargs["horizon_decision_id"],

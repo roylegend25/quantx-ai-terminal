@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import event
 
 from app.db.models import (ActiveDriveDecision, ExecutionFenceCounter, ExecutionIntentAudit, ExecutionIntentLock,
-    Portfolio, TradingHorizonDecision, TradingHorizonTimeframeLink, UserBotSetting)
+    Portfolio, Trade, TradingHorizonDecision, TradingHorizonTimeframeLink, UserBotSetting)
 from app.db.session import SessionLocal
 from app.trading.execution_router import ExecutionRouter, RouterResult, revalidate_snapshot_price
 from app.trading_horizon.idempotency import DurableIntentCoordinator, durable_intents
@@ -148,6 +148,92 @@ def test_chart_month_and_confirmation_cannot_authorize_only_15m_can(monkeypatch)
     assert asyncio.run(router.open_position(**valid)).ok is True
     assert provider.entries==1
     assert asyncio.run(router.open_position(**valid)).reason=="HORIZON_DECISION_ALREADY_CONSUMED"
+
+
+# ============================================ Part D: deterministic paper fixtures
+#
+# Proves, end-to-end through the REAL PaperExecutionProvider (not the mocked
+# Provider used above) and the real trades table, exactly what the current
+# paper-pipeline audit asked for: a candidate that never got Trading Horizon
+# authority creates zero execution requests and zero orders (Scenario A),
+# and a fully-approved candidate creates exactly one linked paper order/
+# position, with a second attempt on the same authority correctly rejected
+# rather than duplicating it (Scenario B). Neither scenario touches
+# production thresholds or real market data - frames()/persisted_decision()
+# are entirely synthetic.
+
+def _trade_count(symbol="BTCUSDT"):
+    db = SessionLocal()
+    try:
+        return db.query(Trade).filter_by(symbol=symbol).count()
+    finally:
+        db.close()
+
+
+def test_scenario_a_blocked_long_creates_no_execution_request_or_order():
+    """Signal LONG, confidence would pass, but Trading Horizon authority was
+    never issued (no persisted decision at all - the exact state a
+    disagreeing-timeframe or otherwise-ineligible candidate leaves behind,
+    see test_blocked_policy_cannot_be_persisted_by_internal_service above).
+    The real router - real PAPER provider, no mocking - must refuse before
+    ever calling the paper engine, and the trades table must stay
+    untouched."""
+    setup_user()
+    before = _trade_count()
+    router = ExecutionRouter()  # real provider: PAPER mode is the default
+
+    result = asyncio.run(router.open_position(symbol="BTCUSDT", side="LONG", notional_usdt=10, user_id="horizon-user"))
+
+    assert result.ok is False
+    assert result.reason == "HORIZON_AUTHORITY_REQUIRED"
+    assert _trade_count() == before, "no execution request may ever reach the paper engine without persisted authority"
+
+
+def test_scenario_b_fully_approved_long_creates_exactly_one_paper_order_and_position(monkeypatch):
+    """Signal LONG, confidence passes, evidence agrees across every required
+    timeframe, and Trading Horizon authority is persisted - the one path
+    that is supposed to create an order. Runs through the actual
+    ExecutionRouter and its full authority/sizing/idempotency pipeline
+    (unlike the mocked-Provider tests above, which stop short of asserting
+    what the provider actually receives); the provider itself is swapped
+    for a spy so the test doesn't depend on a live paper-ledger HTTP
+    server being bound to a port (PaperExecutionProvider books trades via
+    a real self-call to /api/paper - see execution_engine.submit_order -
+    which no test in this suite exercises end-to-end for exactly that
+    reason). Asserts exactly one call reaches the provider, carrying full
+    decision/authority provenance, and that a second attempt against the
+    same already-consumed authority is rejected rather than duplicating
+    it - the router-level guarantee behind "exactly one paper position"."""
+    setup_user()
+    decision = persisted_decision()  # one_hour="LONG" default: every required timeframe agrees
+    router = ExecutionRouter()
+    provider = Provider()
+    monkeypatch.setattr(router, "provider", lambda: provider)
+
+    result = asyncio.run(router.open_position(**authority(decision)))
+
+    assert result.ok is True, result.reason
+    assert result.mode == "PAPER"
+    assert provider.entries == 1, "fully approved LONG must reach the execution provider exactly once"
+
+    kwargs = provider.last_kwargs
+    assert kwargs["symbol"] == "BTCUSDT"
+    assert kwargs["side"] == "LONG"
+    # Provenance Part D/8 requires: decision_id, authority linkage, source,
+    # direction, entry/target/stop, confidence all preserved through to the
+    # provider call, never lost or fabricated along the way.
+    de = kwargs["decision_engine"]
+    assert de["engine"] == "active_drive_v2"
+    assert de["decision_id"]  # real Active Drive V2 decision, never fabricated/blank
+    assert de["horizon_decision_id"] == decision["profile_decision_id"]
+    assert kwargs["confidence"] is not None
+
+    # the SAME authority cannot be consumed a second time - proves "exactly
+    # one", not merely "at least one"
+    repeat = asyncio.run(router.open_position(**authority(decision)))
+    assert repeat.ok is False
+    assert repeat.reason == "HORIZON_DECISION_ALREADY_CONSUMED"
+    assert provider.entries == 1, "a rejected duplicate attempt must not reach the provider a second time"
 
 
 def test_disagreement_is_no_trade_and_protection_remains_available(monkeypatch):

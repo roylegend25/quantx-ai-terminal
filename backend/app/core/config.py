@@ -108,11 +108,27 @@ class Settings(BaseSettings):
     # by any endpoint.
     binance_api_key: str = ""
     binance_api_secret: str = ""
+    # Phase 31: credentials for a REAL, write-capable production client are
+    # deliberately a separate pair from binance_api_key/secret above (which
+    # remain the read-only-monitoring + testnet-trading credential). A live
+    # write client (testnet=False, read_only=False) loads ONLY this pair -
+    # so normal paper/testnet operation never has live-capable credentials
+    # loaded into a process at all, by construction, not merely by a flag.
+    # Leave unset until deliberately provisioning live trading.
+    binance_live_api_key: str = ""
+    binance_live_api_secret: str = ""
     # When true, the trading client targets https://testnet.binancefuture.com
     binance_futures_testnet: bool = True
     # Master server-side lock. While false, BINANCE_LIVE mode can never be
     # unlocked from the UI - requests are refused with a clear reason.
     binance_live_enabled: bool = False
+    # Phase 31: short-lived live-order authorization lease (see
+    # app/trading/modes.py create_live_lease). This is independent of, and
+    # in addition to, binance_live_enabled and TradingControl.mode - no
+    # single one of the three can authorize a real order alone. Clamped in
+    # code to a sane maximum regardless of what's configured here.
+    live_lease_ttl_seconds: int = 300
+    live_lease_max_actions: int = 1
     binance_default_leverage: float = 1.0
     binance_max_leverage: float = 3.0
     binance_max_notional_per_trade: float = 25.0

@@ -76,6 +76,11 @@ async def startup_event():
     except SchemaCompatibilityError:
         maintenance.enable("TRADING_HORIZON_MIGRATION_REQUIRED")
         return
+    # Phase 31: unconditionally force PAPER + wipe every live-authorization
+    # lease on every startup, after the schema is confirmed compatible - a
+    # live unlock must never survive a backend restart, redeploy, or reboot.
+    from app.trading import modes as _modes
+    _modes.startup_safety_reset()
     instrument_db_engine(db_engine)
     asyncio.create_task(delayed_background_start())
 

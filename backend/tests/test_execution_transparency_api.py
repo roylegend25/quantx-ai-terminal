@@ -56,7 +56,7 @@ def go_fully_ready(monkeypatch):
 
 
 def fake_prediction(direction="SHORT", confidence=90.0, required_confidence=70.0):
-    async def fn(symbol, interval="5m", timeframe=None, limit=220):
+    async def fn(symbol, interval="5m", timeframe=None, limit=220, current_user=None):
         decision_engine = {
             "active_model": {"model_type": "lightgbm-v34"},
             "model_votes": [{"name": "Champion ML", "direction": direction, "available": True}],
@@ -169,7 +169,7 @@ def test_pipeline_ignores_test_orders_for_the_live_signal_view(monkeypatch):
 # last_decision_at.
 
 def fake_prediction_at(computed_at_ms, direction="SHORT", confidence=90.0, required_confidence=70.0):
-    async def fn(symbol, interval="5m", timeframe=None, limit=220):
+    async def fn(symbol, interval="5m", timeframe=None, limit=220, current_user=None):
         decision_engine = {
             "active_model": {"model_type": "lightgbm-v34"},
             "model_votes": [{"name": "Champion ML", "direction": direction, "available": True}],

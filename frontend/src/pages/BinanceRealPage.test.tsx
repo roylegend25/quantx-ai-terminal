@@ -11,8 +11,12 @@ const baseStatus = {
   binance_configured: true,
   binance_connected: true,
   binance_live_enabled_by_server: false,
+  binance_live_credentials_configured: true,
   binance_live_unlocked_by_user: false,
   can_trade_binance_live: false,
+  live_authorization_lease: null,
+  final_order_routing_eligible: false,
+  automatic_execution_mode: "PAPER" as const,
   reason: "",
   kill_switch_active: false,
   allowed_symbols: ["BTCUSDT"],
@@ -86,6 +90,9 @@ describe("BinanceRealPage", () => {
   });
 
   it("refreshes the live readiness checklist after completing user live confirmation", async () => {
+    // The Phase 31 ceremony types into five separate fields plus checkboxes
+    // and a select - realistic per-character userEvent.type() timing
+    // across all of them comfortably exceeds vitest's default 5s.
     (api.tradingMode as ReturnType<typeof vi.fn>).mockResolvedValue({ ...baseStatus, binance_live_enabled_by_server: true });
     (api.liveReadiness as ReturnType<typeof vi.fn>)
       .mockResolvedValueOnce(readinessLocked)
@@ -96,15 +103,23 @@ describe("BinanceRealPage", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Complete Live Risk Confirmation" }));
     await userEvent.type(screen.getByPlaceholderText("I UNDERSTAND LIVE TRADING RISK"), "I UNDERSTAND LIVE TRADING RISK");
+    await userEvent.type(screen.getByPlaceholderText("CONFIRM LIVE EXECUTION NOW"), "CONFIRM LIVE EXECUTION NOW");
+    const [passwordInput, accountInput] = [
+      document.querySelector('input[type="password"]') as HTMLInputElement,
+      screen.getByRole("textbox", { name: "Type your account username to confirm which account this is for" }),
+    ];
+    await userEvent.type(passwordInput, "hunter2");
+    await userEvent.type(accountInput, "admin");
+    await userEvent.selectOptions(screen.getByRole("combobox"), "BTCUSDT");
     for (const box of screen.getAllByRole("checkbox")) {
       await userEvent.click(box);
     }
-    await userEvent.click(screen.getByRole("button", { name: "Unlock REAL Trading" }));
+    await userEvent.click(screen.getByRole("button", { name: "Authorize One Live Order" }));
 
     expect(api.unlockBinanceLive).toHaveBeenCalled();
     await waitFor(() => expect(api.liveReadiness).toHaveBeenCalledTimes(2));
     await screen.findByText("Live-risk ceremony completed");
-  });
+  }, 15000);
 
   it("shows the exact blocked reason on the execution mode switch", async () => {
     render(<BinanceRealPage {...({ showToast } as any)} />);

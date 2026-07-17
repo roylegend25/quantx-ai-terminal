@@ -131,6 +131,27 @@ async def evaluate_real_order(
         return blocked("live_enabled", "Live trading is disabled by server configuration")
     passed("live_enabled")
 
+    # Phase 31: a real order into LIVE additionally requires an active,
+    # unexpired, human-granted authorization lease - independent of and in
+    # addition to the env lock and TradingControl.mode above. This is what
+    # actually replaced the old persistent live_unlocked boolean as the
+    # thing that expires; testnet orders (not real money) never need one.
+    if mode == modes.MODE_LIVE:
+        if not modes.binance_live_configured():
+            return blocked("live_credentials", "Live-write credentials are not configured on the server")
+        lease = modes.get_active_lease(db)
+        if lease is None:
+            return blocked(
+                "live_authorization_lease",
+                "No active live-authorization lease - re-confirm live trading before this order can proceed",
+            )
+        if lease["symbol_scope"] not in (None, "ALL", symbol):
+            return blocked(
+                "live_authorization_lease",
+                f"Active lease is scoped to {lease['symbol_scope']}, not {symbol}",
+            )
+    passed("live_authorization_lease")
+
     # ---- static limits ----
     if symbol not in settings.binance_allowed_symbols:
         return blocked("symbol_allowed", f"{symbol} is not in BINANCE_ALLOWED_SYMBOLS")

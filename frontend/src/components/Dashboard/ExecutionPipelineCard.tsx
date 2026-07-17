@@ -53,11 +53,18 @@ type Props = {
   errored?: boolean;
   onRefresh: () => void | Promise<void>;
   showToast: (message: string, tone?: "success" | "error") => void;
+  /** Active trading mode ("PAPER" | "BINANCE_LIVE_LOCKED" | "BINANCE_LIVE").
+   *  Phase 31: the real Test Order button stays hidden/disabled while
+   *  automatic strategy execution is in PAPER mode - the server already
+   *  refuses this request unconditionally (HORIZON_AUTHORITY_REQUIRED), but
+   *  the button must never even suggest a live action is available. */
+  activeMode?: string;
 };
 
 export default function ExecutionPipelineCard({
-  symbol, pipeline, simulation, statusChecklist, loading, errored, onRefresh, showToast,
+  symbol, pipeline, simulation, statusChecklist, loading, errored, onRefresh, showToast, activeMode,
 }: Props) {
+  const isPaperMode = activeMode !== "BINANCE_LIVE";
   const [logsOpen, setLogsOpen] = useState(false);
   const [logs, setLogs] = useState<any>(null);
   const [logsLoading, setLogsLoading] = useState(false);
@@ -263,6 +270,11 @@ export default function ExecutionPipelineCard({
                   </span>
                 )}
               </span>
+              {pipeline.is_historical_attempt && (
+                <span className="regime-desc" style={{ fontSize: 12, opacity: 0.75 }}>
+                  No execution request created for the current decision.
+                </span>
+              )}
               {pipeline.is_historical_attempt && !executionOk && expandedHistoricalAt !== pipeline.last_attempt_at ? (
                 <>
                   <span className="regime-desc" style={{ fontSize: 12, opacity: 0.75 }}>
@@ -354,9 +366,11 @@ export default function ExecutionPipelineCard({
         <button className="mini-btn" onClick={toggleLogs}>
           {logsOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />} Execution Logs (last 100)
         </button>
-        <button className="mini-btn" disabled={testBusy} onClick={handleTestOrder}>
-          <FlaskConical size={13} /> {testBusy ? "Testing…" : "Test Order"}
-        </button>
+        {!isPaperMode && (
+          <button className="mini-btn" disabled={testBusy} onClick={handleTestOrder}>
+            <FlaskConical size={13} /> {testBusy ? "Testing…" : "Test Order"}
+          </button>
+        )}
       </div>
 
       {testResult && (

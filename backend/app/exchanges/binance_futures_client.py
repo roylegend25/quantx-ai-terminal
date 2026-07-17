@@ -85,8 +85,18 @@ class BinanceFuturesClient:
             raise LiveTradingLocked(
                 "BINANCE_LIVE_ENABLED is false - refusing to construct a production trading client"
             )
-        self._api_key = api_key if api_key is not None else settings.binance_api_key
-        self._api_secret = api_secret if api_secret is not None else settings.binance_api_secret
+        # Phase 31: a real, write-capable production client (testnet=False,
+        # read_only=False) loads ONLY the separate live-credential pair -
+        # never the shared read-only-monitoring/testnet pair. This means
+        # normal paper/testnet operation never has live-write-capable
+        # credentials loaded into the process at all, by construction, even
+        # if binance_api_key/secret happen to be populated with something
+        # that would otherwise also work against the live endpoint.
+        write_capable_live = not testnet and not read_only
+        default_key = settings.binance_live_api_key if write_capable_live else settings.binance_api_key
+        default_secret = settings.binance_live_api_secret if write_capable_live else settings.binance_api_secret
+        self._api_key = api_key if api_key is not None else default_key
+        self._api_secret = api_secret if api_secret is not None else default_secret
         self.testnet = testnet
         self.read_only = read_only
         self.base_url = TESTNET_BASE if testnet else PROD_BASE

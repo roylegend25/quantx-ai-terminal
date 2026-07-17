@@ -84,7 +84,7 @@ def fake_prediction(direction="SHORT", confidence=62.4, required_confidence=70.0
     mirrored at both levels, but computed_at lives only in the nested dict
     (see app.api.prediction.prediction)."""
 
-    async def fn(symbol, interval="5m", timeframe=None, limit=220):
+    async def fn(symbol, interval="5m", timeframe=None, limit=220, current_user=None):
         decision_engine = {
             "active_model": {"model_type": "lightgbm-v34", "name": "lightgbm-v34"},
             "model_votes": [
@@ -111,10 +111,50 @@ def fake_prediction(direction="SHORT", confidence=62.4, required_confidence=70.0
 
 
 def fake_no_data_prediction():
-    async def fn(symbol, interval="5m", timeframe=None, limit=220):
+    async def fn(symbol, interval="5m", timeframe=None, limit=220, current_user=None):
         return None
 
     return fn
+
+
+# ------------------------------------------------- regression: real subject
+
+def test_decision_status_resolves_a_real_prediction_subject_not_a_depends_object(monkeypatch):
+    """Root-cause regression for a real bug: binance_decision_status calls
+    app.api.prediction.prediction(...) directly, bypassing FastAPI's
+    dependency injection entirely. prediction()'s current_user parameter
+    defaults to Depends(_prediction_subject) - a plain function call never
+    resolves that, so without an explicit value it silently stayed the raw
+    Depends(...) sentinel object. That object then failed deep inside a
+    SQLAlchemy query (binding it as a bind parameter raised
+    sqlite3.ProgrammingError), which the bare except around the call turned
+    into "no prediction available" - permanently, for every symbol. Because
+    every OTHER test in this file (and in test_execution_transparency_api.py
+    / test_margin_calculator_api.py) replaces prediction() wholesale with a
+    fake that has no current_user parameter at all, none of them could ever
+    have caught this - this test spies on the real call signature instead."""
+    received = {}
+
+    async def spy(symbol, interval="5m", timeframe=None, limit=220, current_user=None):
+        received["current_user"] = current_user
+        return {
+            "direction": "SHORT", "confidence": 62.4, "target": 63100.0, "stop": 64600.0,
+            "decision_engine": {"required_confidence": 70.0, "active_model": {}, "model_votes": []},
+            "prediction": {"computed_at": 1750000000000},
+        }
+
+    monkeypatch.setattr(prediction_module, "prediction", spy)
+    client = make_client()
+
+    r = client.get("/api/trading/binance/decision-status")
+    assert r.status_code == 200
+    body = r.json()
+
+    assert isinstance(received["current_user"], str) and received["current_user"], (
+        "current_user must be a resolved string subject, never left as an unresolved FastAPI dependency object"
+    )
+    assert body.get("status") != "NO_DATA"
+    assert body["strategy_direction"] == "SHORT"
 
 
 # ------------------------------------------------------------ risk-status

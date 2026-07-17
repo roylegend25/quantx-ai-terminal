@@ -236,8 +236,11 @@ def test_portfolio_positions_and_risk_gate_agree_on_algo_protected_position(monk
     # ids under MODE_LIVE regardless of the active bot mode - matching the
     # real reported incident, which was on the live account.
     monkeypatch.setattr(settings, "binance_live_enabled", True)
+    monkeypatch.setattr(settings, "binance_live_api_key", "AKIALIVEKEY1234567890")
+    monkeypatch.setattr(settings, "binance_live_api_secret", "livesecretvalue0987654321")
     modes.unlock_live()
     modes.set_mode(modes.MODE_LIVE)
+    modes.create_live_lease(user=settings.admin_username)
     seed_tracked_row(modes.MODE_LIVE, "ETHUSDT", tp_algo_id=201, sl_algo_id=202)
     client = AlgoAwareClient(
         positions=[eth_short_position()], open_orders=[],
@@ -410,7 +413,7 @@ def test_historical_execution_failure_does_not_change_current_protection_check(m
     finally:
         db.close()
 
-    async def fake_prediction(symbol, interval="5m"):
+    async def fake_prediction(symbol, interval="5m", current_user=None):
         return {
             "direction": "SHORT", "confidence": 30.0, "target": 1700.0, "stop": 1900.0,
             "decision_engine": {"required_confidence": 45.0, "active_model": {}, "model_votes": []},
