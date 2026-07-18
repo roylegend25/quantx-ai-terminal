@@ -134,14 +134,17 @@ def _compute_catchup_progress(db: Session) -> dict:
     oldest_age_seconds = (now - oldest_dt).total_seconds() if oldest_dt else None
 
     # Recent-resolution provider mix, live from the DB rather than in-memory
-    # per-cycle counters - survives restarts and doesn't need scheduler.STATUS changes.
+    # per-cycle counters - survives restarts and doesn't need scheduler.STATUS
+    # changes. A direct join on the resolved_at-indexed row set, not an IN
+    # subquery over the whole ledger - the subquery form measured
+    # dramatically slower against the real 150k+ row table.
     since = now.replace(microsecond=0) - __import__("datetime").timedelta(hours=1)
     recent = (
         db.query(func.sum(case((PredictionResolution.fallback_used.is_(True), 1), else_=0)),
                   func.sum(case((PredictionResolution.fallback_used.is_(False), 1), else_=0)))
-        .filter(PredictionResolution.resolved_at >= since, PredictionResolution.prediction_id.in_(
-            db.query(PredictionLedger.prediction_id).filter(PredictionLedger.symbol.in_(CANONICAL_SYMBOLS))
-        )).one()
+        .join(PredictionLedger, PredictionLedger.prediction_id == PredictionResolution.prediction_id)
+        .filter(PredictionResolution.resolved_at >= since, PredictionLedger.symbol.in_(CANONICAL_SYMBOLS))
+        .one()
     )
     fallback_count, primary_count = (recent[0] or 0), (recent[1] or 0)
 
