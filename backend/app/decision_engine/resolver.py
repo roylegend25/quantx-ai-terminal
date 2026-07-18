@@ -77,10 +77,71 @@ def _due_unresolved_query(db, now: datetime):
     )
 
 
+_FALLBACK_ORDER = ["bybit", "okx", "hyperliquid"]
+
+
+async def _try_multi_exchange_fallback(db, row: PredictionLedger, at_ms: int) -> tuple[bool, str | None]:
+    """Only reached once the primary provider (Binance) has a verified gap
+    for this exact row. Scoped to symbol_map.CANONICAL_SYMBOLS (BTCUSDT/
+    ETHUSDT today) - every other symbol never makes a fallback network call,
+    so this never changes behavior for anything outside this feature's
+    stated scope. Requires 2 independent providers to agree within
+    settings.resolver_price_disagreement_bps before storing anything; a
+    lone reachable provider is accepted at a discounted confidence rather
+    than leaving a real gap unresolved forever."""
+    from app.data_sources import resolution_providers as providers
+    from app.data_sources import symbol_map
+    from app.data_sources.downloader import store_candles
+    from app.core.config import settings
+
+    if not symbol_map.supported(row.symbol) or row.timeframe == "1M":
+        return False, None  # no fallback available - caller keeps its own primary-failure reason
+
+    fallback_names = list(_FALLBACK_ORDER)
+    if settings.resolver_allow_spot_fallback:
+        fallback_names.append("binance_spot")
+
+    observations = []
+    for name in fallback_names:
+        obs = await providers.PROVIDER_FETCHERS[name](row.symbol, row.timeframe, at_ms)
+        if obs.ok:
+            observations.append(obs)
+        if len(observations) >= 2:
+            break
+
+    if not observations:
+        return False, None
+
+    if len(observations) == 1:
+        obs = observations[0]
+        confidence = obs.confidence * 0.7  # single independent source - discounted
+    else:
+        a, b = observations[0], observations[1]
+        mid = (a.price + b.price) / 2
+        spread_bps = abs(a.price - b.price) / mid * 10_000 if mid else None
+        if spread_bps is not None and spread_bps > settings.resolver_price_disagreement_bps:
+            log_event(logger, message="prediction_resolver_provider_disagreement", category="prediction",
+                      prediction_id=row.prediction_id, symbol=row.symbol, providers=[a.provider, b.provider], spread_bps=spread_bps)
+            return False, "provider_disagreement"
+        obs = providers.ResolutionPriceObservation(
+            provider=f"{a.provider}+{b.provider}", exchange=f"{a.exchange}+{b.exchange}", market_type=a.market_type,
+            symbol=row.symbol, requested_timestamp=at_ms, actual_market_timestamp=a.actual_market_timestamp,
+            price=mid, confidence=min(a.confidence, b.confidence))
+        confidence = obs.confidence
+
+    store_candles(db, row.symbol, row.timeframe, observations[0].provider,
+                  [{"time": obs.actual_market_timestamp, "open": obs.price, "high": obs.price,
+                    "low": obs.price, "close": obs.price, "volume": 0.0}], quality=confidence * 100.0)
+    return True, None
+
+
 async def _fetch_and_store_backfill(db, row: PredictionLedger) -> tuple[bool, str | None]:
     """One bounded fetch from the approved primary provider for the exact
     window the resolution needs. Never a current-price substitute - this
-    only ever requests historical candles at/around resolution_deadline."""
+    only ever requests historical candles at/around resolution_deadline.
+    Falls back to a small multi-exchange chain only once the primary
+    provider has a verified gap for this exact row (see
+    _try_multi_exchange_fallback)."""
     from app.data_sources.binance_futures import fetch_klines
     from app.data_sources.downloader import store_candles
     from app.data_sources.normalizer import normalize_klines
@@ -101,21 +162,28 @@ async def _fetch_and_store_backfill(db, row: PredictionLedger) -> tuple[bool, st
     try:
         raw = await fetch_klines(row.symbol, provider_interval, start_ms=start_ms, end_ms=end_ms, limit=12)
     except Exception as e:
-        return False, f"{type(e).__name__}: could not reach provider"
+        raw = None
+        primary_error = f"{type(e).__name__}: could not reach provider"
+    else:
+        primary_error = None if raw else "provider returned no candles for the requested window"
 
-    if not raw:
-        return False, "provider returned no candles for the requested window"
+    if raw:
+        try:
+            rows = normalize_klines(raw)
+            store_candles(db, row.symbol, row.timeframe, "binance_futures", rows, quality=100.0)
+        except Exception as e:
+            return False, f"{type(e).__name__}: failed to store fetched candles"
+        return True, None
 
-    try:
-        rows = normalize_klines(raw)
-        store_candles(db, row.symbol, row.timeframe, "binance_futures", rows, quality=100.0)
-    except Exception as e:
-        return False, f"{type(e).__name__}: failed to store fetched candles"
-
-    return True, None
+    fallback_ok, fallback_error = await _try_multi_exchange_fallback(db, row, start_ms)
+    if fallback_ok:
+        return True, None
+    return False, fallback_error or primary_error
 
 
 def _classify_missing_candle_reason(error: str | None) -> str:
+    if error == "provider_disagreement":
+        return "exchange_price_disagreement"
     if error and "provider returned no candles" in error:
         return "market_data_gap"
     if error and "unsupported_timeframe" in error:
@@ -263,11 +331,16 @@ def resolve_due(db, limit: int = 200, scan_limit: int | None = None) -> int:
         actual_direction = "NEUTRAL" if abs(actual_return) <= band else "LONG" if actual_return > 0 else "SHORT"
         correct = None if row.direction not in ("LONG", "SHORT") or actual_direction == "NEUTRAL" else row.direction == actual_direction
 
+        fallback_used = candle.provider != "binance_futures"
         db.add(PredictionResolution(
             prediction_id=row.prediction_id, actual_return=actual_return, resolved_direction=actual_direction,
             correct=correct, neutral_result=actual_direction == "NEUTRAL", target_hit=target_hit, stop_hit=stop_hit,
             maximum_favorable_excursion=mfe, maximum_adverse_excursion=mae,
             resolution_reason="fixed_horizon_close", resolved_at=now,
+            resolution_provider=candle.provider, resolution_exchange="binance" if not fallback_used else candle.provider.split("+")[0],
+            resolution_market_type="usdt_perp", resolved_market_timestamp=candle.timestamp, resolved_price=candle.close,
+            fallback_used=fallback_used, provider_count_checked=1,
+            resolution_confidence=1.0 if not fallback_used else (candle.quality_score or 0) / 100.0,
         ))
         row.unresolved_reason = None
         row.next_retry_at = None

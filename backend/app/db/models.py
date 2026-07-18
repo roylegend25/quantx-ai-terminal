@@ -289,6 +289,20 @@ class PredictionResolution(Base):
     resolution_reason = Column(String, nullable=False)
     resolved_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
+    # Multi-exchange resolution provenance (additive, nullable - pre-existing
+    # resolved rows were single-source Binance and remain valid without these;
+    # see app/data_sources/resolution_providers.py).
+    resolution_provider = Column(String, nullable=True)
+    resolution_exchange = Column(String, nullable=True)
+    resolution_market_type = Column(String, nullable=True)
+    resolved_market_timestamp = Column(BigInteger, nullable=True)
+    resolved_price = Column(Float, nullable=True)
+    fallback_used = Column(Boolean, default=False)
+    fallback_reason = Column(String, nullable=True)
+    provider_count_checked = Column(Integer, nullable=True)
+    provider_price_spread_bps = Column(Float, nullable=True)
+    resolution_confidence = Column(Float, nullable=True)
+
 class StrategyPerformance(Base):
     __tablename__ = "strategy_performance"
 

@@ -57,6 +57,10 @@ LEGACY_ADDITIVE_COLUMNS = {
     "prediction_resolutions": {
         "target_hit": "BOOLEAN", "stop_hit": "BOOLEAN", "maximum_favorable_excursion": "FLOAT",
         "maximum_adverse_excursion": "FLOAT",
+        "resolution_provider": "VARCHAR", "resolution_exchange": "VARCHAR", "resolution_market_type": "VARCHAR",
+        "resolved_market_timestamp": "BIGINT", "resolved_price": "FLOAT", "fallback_used": "BOOLEAN DEFAULT 0",
+        "fallback_reason": "VARCHAR", "provider_count_checked": "INTEGER", "provider_price_spread_bps": "FLOAT",
+        "resolution_confidence": "FLOAT",
     },
     "active_drive_decisions": {
         "gross_expected_edge": "FLOAT", "net_expected_edge": "FLOAT", "edge_supported": "BOOLEAN",

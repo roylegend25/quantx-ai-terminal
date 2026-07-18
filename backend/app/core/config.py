@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     # accuracy denominator (correct stays NULL, neutral_result=True).
     resolution_neutral_band: float = 0.0005
 
+    # Multi-exchange resolver catch-up fallback (app/data_sources/resolution_providers.py,
+    # used only from app/decision_engine/resolver.py's _fetch_and_store_backfill).
+    # Read-only, no order path.
+    resolver_price_disagreement_bps: float = 15.0
+    resolver_allow_spot_fallback: bool = False
+
     deployment_maintenance_mode: bool = False
     deployment_maintenance_file: str = "/app/data/deployment-maintenance"
     scheduler_startup_grace_seconds: int = 15

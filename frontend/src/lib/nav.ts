@@ -20,6 +20,7 @@ import {
   History,
   Stethoscope,
   Waves,
+  Target,
 } from "lucide-react";
 
 export type NavKey =
@@ -29,6 +30,7 @@ export type NavKey =
   | "binance-real"
   | "bot-trades"
   | "predictions"
+  | "prediction-results"
   | "positions"
   | "performance"
   | "market"
@@ -51,6 +53,7 @@ export const NAV_ITEMS: { key: NavKey; label: string }[] = [
   { key: "binance-real", label: "Binance Real" },
   { key: "bot-trades", label: "Bot Trades" },
   { key: "predictions", label: "Predictions" },
+  { key: "prediction-results", label: "Prediction Results" },
   { key: "positions", label: "Positions" },
   { key: "performance", label: "Performance" },
   { key: "market", label: "Market Analysis" },
@@ -70,7 +73,7 @@ export const NAV_ITEMS: { key: NavKey; label: string }[] = [
 /** Purely a sidebar rendering grouping - NAV_ITEMS above stays the flat
  * source of truth (labels, icon lookups) for anything else that needs it. */
 export const NAV_SECTIONS: { label: string; keys: NavKey[] }[] = [
-  { label: "Main", keys: ["dashboard", "portfolio", "predictions", "positions", "performance"] },
+  { label: "Main", keys: ["dashboard", "portfolio", "predictions", "prediction-results", "positions", "performance"] },
   { label: "Trading", keys: ["paper-trading", "binance-real", "bot-trades", "market", "bot-settings", "risk", "execution", "trading-diagnostics"] },
   { label: "Analysis", keys: ["backtesting", "model-center", "research-lab", "stress-test", "hyperliquid"] },
   { label: "System", keys: ["logs", "system-status"] },
@@ -88,6 +91,7 @@ export const NAV_ICONS: Record<NavKey, ComponentType<{ size?: number }>> = {
   "binance-real": CircleDollarSign,
   "bot-trades": History,
   predictions: Brain,
+  "prediction-results": Target,
   positions: Rows3,
   performance: ChartLine,
   market: Radio,
