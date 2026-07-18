@@ -14,10 +14,20 @@ from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.data_sources import symbol_map
+from app.data_sources.cache import TTLCache
 from app.db.models import PredictionLedger, PredictionResolution
 from app.decision_engine import scheduler as resolver_scheduler
 
 MIN_SAMPLE_FOR_ACCURACY = 20
+
+# accuracy_summary() runs 7 separate symbol-scoped join+aggregate passes over
+# prediction_ledger (150k+ BTC/ETH rows and growing) - each is properly
+# indexed (see EXPLAIN QUERY PLAN) but SQLite's per-row nested-loop LEFT JOIN
+# still adds up to several real seconds combined at this scale. The result
+# doesn't need to be per-request-fresh, so it's cached briefly instead of
+# recomputed on every dashboard poll.
+_ACCURACY_CACHE_TTL_SECONDS = 60.0
+_accuracy_cache = TTLCache(default_ttl_seconds=_ACCURACY_CACHE_TTL_SECONDS)
 CANONICAL_SYMBOLS = ("BTCUSDT", "ETHUSDT")
 
 # Every reason app.decision_engine.resolver actually persists onto
@@ -31,7 +41,23 @@ UNRESOLVED_REASONS = (
 )
 
 
+_STATUS_CACHE_TTL_SECONDS = 30.0
+_status_cache = TTLCache(default_ttl_seconds=_STATUS_CACHE_TTL_SECONDS)
+
+
 def unresolved_reason_summary(db: Session, symbol: str | None = None) -> dict:
+    """Cached for _STATUS_CACHE_TTL_SECONDS - see accuracy_summary's
+    docstring for why (same join-cost-at-150k-rows story)."""
+    cache_key = f"unresolved_reason_summary:{symbol or ''}"
+    cached = _status_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    result = _compute_unresolved_reason_summary(db, symbol)
+    _status_cache.set(cache_key, result)
+    return result
+
+
+def _compute_unresolved_reason_summary(db: Session, symbol: str | None = None) -> dict:
     now = datetime.now(timezone.utc)
     q = (
         db.query(PredictionLedger.symbol, PredictionLedger.unresolved_reason, func.count(PredictionLedger.prediction_id))
@@ -72,6 +98,17 @@ def unresolved_reason_summary(db: Session, symbol: str | None = None) -> dict:
 
 
 def catchup_progress(db: Session) -> dict:
+    """Cached for _STATUS_CACHE_TTL_SECONDS - see accuracy_summary's
+    docstring for why (same join-cost-at-150k-rows story)."""
+    cached = _status_cache.get("catchup_progress")
+    if cached is not None:
+        return cached
+    result = _compute_catchup_progress(db)
+    _status_cache.set("catchup_progress", result)
+    return result
+
+
+def _compute_catchup_progress(db: Session) -> dict:
     now = datetime.now(timezone.utc)
     base = db.query(PredictionLedger).outerjoin(PredictionResolution, PredictionResolution.prediction_id == PredictionLedger.prediction_id).filter(PredictionResolution.id.is_(None))
     total_due = base.filter(PredictionLedger.resolution_deadline <= now).count()
@@ -284,7 +321,17 @@ def _accuracy_row(db: Session, group_col, filters: list, combined_key: str | Non
 
 def accuracy_summary(db: Session) -> dict:
     """BTC/ETH/combined + per-timeframe/model/strategy/provider accuracy,
-    resolved-eligible-only, SQL-aggregated (no full-table hydration)."""
+    resolved-eligible-only, SQL-aggregated (no full-table hydration).
+    Cached for _ACCURACY_CACHE_TTL_SECONDS - see module docstring."""
+    cached = _accuracy_cache.get("accuracy_summary")
+    if cached is not None:
+        return cached
+    result = _compute_accuracy_summary(db)
+    _accuracy_cache.set("accuracy_summary", result)
+    return result
+
+
+def _compute_accuracy_summary(db: Session) -> dict:
     btc_eth_filter = PredictionLedger.symbol.in_(CANONICAL_SYMBOLS)
     combined = _accuracy_row(db, None, [btc_eth_filter], combined_key="combined")
     by_symbol = _accuracy_row(db, PredictionLedger.symbol, [btc_eth_filter])

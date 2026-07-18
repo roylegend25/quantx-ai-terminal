@@ -234,7 +234,8 @@ class PredictionCycle(Base):
 
 class PredictionLedger(Base):
     __tablename__ = "prediction_ledger"
-    __table_args__ = (Index("ix_prediction_ledger_scope", "source_name", "source_version", "symbol", "timeframe", "generated_at"), UniqueConstraint("candidate_id", name="uq_prediction_ledger_candidate"))
+    __table_args__ = (Index("ix_prediction_ledger_scope", "source_name", "source_version", "symbol", "timeframe", "generated_at"), UniqueConstraint("candidate_id", name="uq_prediction_ledger_candidate"),
+                       Index("ix_prediction_ledger_symbol_generated", "symbol", "generated_at"))
     prediction_id = Column(String, primary_key=True)
     cycle_id = Column(String, nullable=True, index=True)
     candidate_id = Column(String, nullable=False)

@@ -171,6 +171,23 @@ def _migrate_active_drive_edge_columns(bind=engine):
     return _add_missing_columns(bind, "active_drive_decisions", LEGACY_ADDITIVE_COLUMNS["active_drive_decisions"])
 
 
+def _migrate_prediction_ledger_symbol_generated_index(bind=engine):
+    """Composite index backing the Prediction Results dashboard's "latest N
+    for symbol" query. Without it, SQLite applies the single-column symbol
+    index then sorts the entire per-symbol result set to satisfy ORDER BY
+    generated_at DESC LIMIT N - measured at ~5s per call against the real
+    150k+ row table during rollout verification, entirely fixed by this
+    index (SQLite can then walk it back-to-front and stop at N rows)."""
+    inspector = inspect(bind)
+    if "prediction_ledger" not in inspector.get_table_names():
+        return
+    with bind.begin() as connection:
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_prediction_ledger_symbol_generated "
+            "ON prediction_ledger (symbol, generated_at)"
+        ))
+
+
 def initialize_schema(bind=engine):
     """Explicit administrative schema upgrade; never called implicitly by startup."""
     # Base tables (including active_drive_decisions) must exist before the
@@ -192,6 +209,7 @@ def initialize_schema(bind=engine):
         _migrate_risk_settings_columns,
         _migrate_active_drive_ledger_columns,
         _migrate_active_drive_edge_columns,
+        _migrate_prediction_ledger_symbol_generated_index,
     )
     for migrate in legacy_stages:
         migrate(bind)
