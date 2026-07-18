@@ -105,10 +105,19 @@ def provider_health():
 
 
 @router.post("/resolver/catchup")
-async def trigger_catchup(request: Request, limit: int = Query(default=200, ge=1, le=2000), admin: str = Depends(_admin)):
+async def trigger_catchup(request: Request, limit: int = Query(default=100, ge=1, le=200), admin: str = Depends(_admin)):
     """Bounded, idempotent, admin-only, rate-limited manual catch-up trigger.
     Runs the existing backfill_overdue_candles + resolve_due cycle (the same
-    two calls the scheduler makes every 60s) - cannot create a trade."""
+    two calls the scheduler makes every 60s) - cannot create a trade.
+
+    Capped well below the scheduler's own pace deliberately: each backfilled
+    row can make a real (up to resolver_provider_timeout-bounded) network
+    call inside one long-lived DB session, so a large limit here holds a
+    single SQLite write transaction open long enough to visibly stall other
+    read traffic. Observed directly during rollout verification: a limit=500
+    manual trigger blocked the dashboard's read endpoints for several
+    minutes. Prefer letting the 60s scheduled cycle (smaller default limits)
+    catch up gradually over forcing a huge one-shot batch here."""
     global _last_manual_catchup_at, _catchup_running
 
     if _catchup_running:
