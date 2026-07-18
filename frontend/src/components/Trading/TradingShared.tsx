@@ -231,9 +231,9 @@ export function LiveUnlockModal({ status, onClose, onChanged, showToast }: Unloc
         ) : credentialsMissing ? (
           <>
             <p className="risk-modal-error">
-              <AlertTriangle size={14} /> Live-write credentials are not configured on the server. Set{" "}
-              <code>BINANCE_LIVE_API_KEY</code> and <code>BINANCE_LIVE_API_SECRET</code> in the backend .env - these
-              are deliberately separate from the read-only/testnet key and are never loaded during paper operation.
+              <AlertTriangle size={14} /> Live-write credentials are not configured. Use the "Binance Real API
+              Credentials" panel above to save them securely - they're encrypted at rest, deliberately separate from
+              the read-only/testnet key, and never loaded during paper operation.
             </p>
             <div className="modal-actions">
               <button className="mini-btn" onClick={onClose} disabled={busy}>

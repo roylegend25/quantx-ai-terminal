@@ -16,6 +16,8 @@ import TradingModeRow from "../components/Trading/TradingModeRow";
 import ServerTradingControlCard from "../components/Trading/ServerTradingControlCard";
 import RiskStatusCard from "../components/Dashboard/RiskStatusCard";
 import OpenPositionsCard from "../components/Dashboard/OpenPositionsCard";
+import CombinedPositionsCard from "../components/Dashboard/CombinedPositionsCard";
+import DecisionRiskEnvelopeCard from "../components/Dashboard/DecisionRiskEnvelopeCard";
 import PerformanceMiniCard from "../components/Dashboard/PerformanceMiniCard";
 import MarketSentimentCard from "../components/Dashboard/MarketSentimentCard";
 import LiquidationHeatmapCard from "../components/Dashboard/LiquidationHeatmapCard";
@@ -23,6 +25,7 @@ import OrderBookCard from "../components/Dashboard/OrderBookCard";
 import RecentTradesCard from "../components/Dashboard/RecentTradesCard";
 import { useExecutionPipeline } from "../hooks/useExecutionPipeline";
 import { useMarginCalculator } from "../hooks/useMarginCalculator";
+import { useBinanceAccount } from "../hooks/useBinanceAccount";
 import { AutomaticExecutionBanner, useTradingStatus } from "../components/Trading/TradingShared";
 import type { AppData } from "../hooks/useAppData";
 import type { NavKey } from "../lib/nav";
@@ -40,6 +43,7 @@ export default function DashboardPage(props: Props) {
     useExecutionPipeline(symbol);
   const { data: marginData, loading: marginLoading, errored: marginErrored, reload: reloadMargin } =
     useMarginCalculator(symbol, liveActive);
+  const { positions: binancePositions, positionRows: binancePositionRows } = useBinanceAccount(props.showToast);
   const executionOutcome = pipeline
     ? {
         attempted: !!pipeline.execution_attempted,
@@ -103,8 +107,12 @@ export default function DashboardPage(props: Props) {
           <DecisionReasoningCard decision={decisionEngine} regime={prediction?.regime} executionOutcome={executionOutcome} />
         </Card>
 
-        <Card title="Model & Strategy Votes">
-          <ModelVotesPanel candidates={decisionEngine?.candidates} finalDirection={decisionEngine?.final_signal} />
+        <Card title="Current Decision Contributors">
+          <ModelVotesPanel
+            candidates={decisionEngine?.candidates}
+            finalDirection={decisionEngine?.final_signal}
+            enginePoints={{ long: decisionEngine?.long_points, short: decisionEngine?.short_points }}
+          />
         </Card>
       </div>
 
@@ -134,6 +142,25 @@ export default function DashboardPage(props: Props) {
 
       <TradingRecommendationsCard symbol={symbol} marginData={marginData} liveActive={liveActive} />
 
+      <Card title="Decision Risk Envelope">
+        <DecisionRiskEnvelopeCard
+          prediction={prediction}
+          paperAvailableMargin={props.portfolio?.available_margin}
+          marginData={marginData}
+          marginErrored={marginErrored}
+        />
+      </Card>
+
+      <Card title="Combined Positions Overview">
+        <CombinedPositionsCard
+          paperPositions={props.positions}
+          binancePositionRows={binancePositionRows}
+          binanceUnavailable={binancePositions?.available === false}
+          binanceUnavailableReason={binancePositions?.reason}
+          binanceStale={binancePositions?.stale}
+        />
+      </Card>
+
       <div className="dash-row-2">
         <Card title="Open Positions">
           <OpenPositionsCard
@@ -161,7 +188,7 @@ export default function DashboardPage(props: Props) {
         </Card>
 
         <Card title={`Order Book (${symbol})`}>
-          <OrderBookCard orderbook={props.orderbook} />
+          <OrderBookCard orderbook={props.orderbook} updatedAt={props.orderbookUpdatedAt} />
         </Card>
 
         <Card title="Recent Trades">

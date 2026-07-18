@@ -74,6 +74,8 @@ export const api = {
   trades: (symbol: string, limit = 20) => getJson(`/api/trades/${symbol}?limit=${limit}`),
   marketContext: (symbol: string) => getJson(`/api/market/context?symbol=${symbol}`),
   liquidationHeatmap: (symbol: string) => getJson(`/api/market/${symbol}/liquidation-heatmap`),
+  hyperliquidLargeTrades: (coins = "BTC,ETH", minNotional = 50000) =>
+    getJson(`/api/market/hyperliquid/large-trades?coins=${encodeURIComponent(coins)}&min_notional=${minNotional}`),
   timeframes: (symbol: string) => getJson(`/api/timeframes/${symbol}`),
   tradingHorizon: (symbol: string, chartTimeframe?: string) =>
     getJson(`/api/timeframes/${encodeURIComponent(symbol)}/horizon${chartTimeframe ? `?chart_timeframe=${encodeURIComponent(chartTimeframe)}` : ""}`),
@@ -347,6 +349,33 @@ export const api = {
       body: JSON.stringify(body),
     }),
   lockBinanceLive: () => postJson("/api/trading/binance/lock-live"),
+  binanceCredentialStatus: () => getJson("/api/admin/binance-credentials"),
+  saveBinanceCredential: (body: {
+    password: string;
+    api_key: string;
+    api_secret: string;
+    label?: string;
+    environment: "live" | "testnet";
+  }) =>
+    postJson("/api/admin/binance-credentials", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  testBinanceCredential: (body: { api_key?: string; api_secret?: string } = {}) =>
+    postJson("/api/admin/binance-credentials/test", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  deleteBinanceCredential: (password: string) =>
+    authFetch(`${API}/api/admin/binance-credentials`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    }).then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || data?.message || `Request failed (${res.status})`);
+      return data;
+    }),
   liveLeaseStatus: () => getJson("/api/trading/binance/live-lease-status"),
   binanceClosePosition: (body: Record<string, unknown>) =>
     postJson("/api/trading/binance/close-position", {
@@ -410,6 +439,10 @@ export const api = {
   adminUpdateRiskLimits: (limits: Record<string, unknown>) =>
     patchJson("/api/admin/server-config/risk-limits", limits),
   adminReloadConfig: () => postJson("/api/admin/server-config/reload"),
+  adminPreviewConfidenceThreshold: (proposed: number) =>
+    getJson(`/api/admin/server-config/confidence-threshold/preview?proposed=${proposed}`),
+  adminUpdateConfidenceThreshold: (minConfidence: number) =>
+    patchJson("/api/admin/server-config/confidence-threshold", { min_confidence: minConfidence }),
   killSwitch: (active: boolean, reason?: string, cancelOrders = true) =>
     postJson("/api/trading/kill-switch", {
       headers: { "Content-Type": "application/json" },

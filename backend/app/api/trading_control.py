@@ -487,9 +487,9 @@ async def live_readiness(db: Session = Depends(get_db)):
         },
         {
             "key": "live_credentials_configured", "label": "Live-write credentials configured",
-            "passed": modes.binance_live_configured(),
-            "detail": "BINANCE_LIVE_API_KEY / BINANCE_LIVE_API_SECRET present" if modes.binance_live_configured()
-            else "BINANCE_LIVE_API_KEY / BINANCE_LIVE_API_SECRET not set",
+            "passed": modes.binance_live_configured(db),
+            "detail": "Credential present (env or saved securely)" if modes.binance_live_configured(db)
+            else "No live-write credential - save one from the Binance Real Credentials panel",
         },
         {
             "key": "live_authorization_lease", "label": "Live-authorization lease active",

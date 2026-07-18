@@ -7,6 +7,7 @@ import { fmtUsd } from "../../lib/format";
 import { useAdminServerConfig } from "../../hooks/useAdminServerConfig";
 import { UNLOCK_PHRASE } from "./TradingShared";
 import RiskLimitsModal from "./RiskLimitsModal";
+import ConfidenceThresholdModal from "./ConfidenceThresholdModal";
 
 const POLL_MS = 15000;
 
@@ -31,7 +32,7 @@ type Props = {
 export default function ServerTradingControlCard({ showToast }: Props) {
   const { config, forbidden, reload: load } = useAdminServerConfig(POLL_MS);
   const [busy, setBusy] = useState(false);
-  const [modal, setModal] = useState<null | "enable" | "disable" | "limits">(null);
+  const [modal, setModal] = useState<null | "enable" | "disable" | "limits" | "confidence">(null);
 
   if (forbidden || !config) return null;
 
@@ -117,6 +118,15 @@ export default function ServerTradingControlCard({ showToast }: Props) {
             <span className="tile-label">Max Leverage</span>
             <b className="tile-value">{config.max_leverage != null ? `${config.max_leverage}x` : "—"}</b>
           </div>
+          <div>
+            <span className="tile-label">Confidence Gate</span>
+            <b className="tile-value">
+              {config.active_drive_min_confidence != null ? config.active_drive_min_confidence : "—"}
+              <span style={{ marginLeft: 6, fontWeight: 400, opacity: 0.7 }}>
+                (floor {config.active_drive_min_confidence_floor ?? "—"})
+              </span>
+            </b>
+          </div>
         </div>
 
         <p className="regime-desc">
@@ -137,6 +147,9 @@ export default function ServerTradingControlCard({ showToast }: Props) {
           )}
           <button className="mini-btn" disabled={busy} onClick={() => setModal("limits")}>
             <SlidersHorizontal size={13} /> Edit Risk Limits
+          </button>
+          <button className="mini-btn" disabled={busy} onClick={() => setModal("confidence")}>
+            <SlidersHorizontal size={13} /> Edit Confidence Gate
           </button>
           <button
             className="mini-btn"
@@ -186,6 +199,14 @@ export default function ServerTradingControlCard({ showToast }: Props) {
           busy={busy}
           onClose={() => setModal(null)}
           onSave={(limits) => run(() => api.adminUpdateRiskLimits(limits), "Risk limits updated")}
+        />
+      )}
+      {modal === "confidence" && (
+        <ConfidenceThresholdModal
+          config={config}
+          busy={busy}
+          onClose={() => setModal(null)}
+          onSave={(minConfidence) => run(() => api.adminUpdateConfidenceThreshold(minConfidence), "Confidence gate updated")}
         />
       )}
     </Card>

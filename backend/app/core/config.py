@@ -178,6 +178,21 @@ class Settings(BaseSettings):
     admin_username: str = "admin"
     admin_password_hash: str = ""
 
+    # Phase 32: server-only master key for encrypting Binance Real API
+    # credentials at rest (Fernet, from the `cryptography` package already
+    # in requirements.txt). Never logged, never returned by any endpoint.
+    # Empty means the credential-store endpoints refuse to save (fail
+    # closed - never a silent plaintext fallback, see
+    # app/security/credential_store.py).
+    credential_encryption_key: str = ""
+
+    # Phase 34: CoinGlass official liquidation-data entitlement. Empty (the
+    # default - no subscription exists in this deployment) means the
+    # liquidation heatmap stays on its existing Binance-derived ESTIMATED
+    # model and reports that honestly; it must never be silently presented
+    # as official CoinGlass data. See app/intelligence/liquidation_heatmap.py.
+    coinglass_api_key: str = ""
+
     # --- ML lifecycle platform (app/mlops/) ---
     auto_retrain: bool = True
     mlops_retrain_schedule: str = "daily"  # daily | weekly | monthly

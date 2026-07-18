@@ -26,8 +26,29 @@ import time
 import httpx
 import pandas as pd
 
+from app.core.config import settings
 from app.intelligence import funding, liquidations, open_interest
 from app.quant.indicators import atr as _atr
+
+
+def _provider_status() -> dict:
+    """Phase 34: honest entitlement check, never a hardcoded claim. A
+    configured CoinGlass key flips `coinglass_entitled` so the UI can show
+    that an official-provider upgrade is possible; the actual CoinGlass
+    HTTP client is intentionally not implemented here (no verified API
+    contract/credentials exist in this deployment to build and test
+    against) - wiring it in is the next step once a real subscription is
+    available. Until then every response stays on the existing
+    Binance-derived estimate and reports itself as such."""
+    entitled = bool(settings.coinglass_api_key)
+    return {
+        "provider": "estimated",
+        "coinglass_entitled": entitled,
+        "provider_note": (
+            "CoinGlass key detected but the official-provider client is not yet wired in - "
+            "still serving the Binance-derived estimate."
+        ) if entitled else "No CoinGlass subscription configured - serving a Binance-derived estimate.",
+    }
 
 BINANCE_FAPI = "https://fapi.binance.com"
 
@@ -122,6 +143,7 @@ def compute(
     oi_data: dict,
     funding_data: dict,
     liquidation_data: dict,
+    latency_ms: float | None = None,
 ) -> dict:
     current_price = float(funding_data.get("mark_price") or 0.0) or float(klines[-1][4])
     atr_value = _atr_from_klines(klines)
@@ -295,6 +317,13 @@ def compute(
             "pressure": liq_pressure,
         },
         "data_source": "binance_estimated",
+        "source": "binance_estimated",
+        "source_type": "derived_estimate",
+        "market_timestamp": time.time(),
+        "latency_ms": round(latency_ms, 1) if latency_ms is not None else None,
+        "stale": False,
+        "fallback_source": None,
+        **_provider_status(),
     }
 
 
@@ -324,12 +353,21 @@ def degraded(symbol: str, error: str) -> dict:
         "open_interest_notional": None,
         "recent_liquidations": {"count": 0, "notional": 0.0, "pressure": "NEUTRAL"},
         "data_source": "unavailable",
+        "source": None,
+        "source_type": None,
+        "latency_ms": None,
+        "stale": False,
+        "fallback_source": None,
         "error": error,
+        "provider": None,
+        "coinglass_entitled": bool(settings.coinglass_api_key),
+        "provider_note": "No data source is currently reachable.",
     }
 
 
 async def build(symbol: str) -> dict:
     symbol = symbol.upper()
+    started = time.monotonic()
     async with httpx.AsyncClient(timeout=10) as client:
         klines, depth, oi_data, funding_data, liquidation_data = await asyncio.gather(
             _fetch_klines(client, symbol),
@@ -338,4 +376,5 @@ async def build(symbol: str) -> dict:
             funding.fetch(symbol),
             liquidations.fetch(symbol, listen_seconds=LIQUIDATION_LISTEN_SECONDS),
         )
-    return compute(symbol, klines, depth, oi_data, funding_data, liquidation_data)
+    latency_ms = (time.monotonic() - started) * 1000
+    return compute(symbol, klines, depth, oi_data, funding_data, liquidation_data, latency_ms=latency_ms)

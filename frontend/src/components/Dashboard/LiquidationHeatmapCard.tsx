@@ -44,6 +44,13 @@ type Heatmap = {
   risk_score: number | null;
   recent_liquidations: { count: number; notional: number; pressure: string };
   data_source: string;
+  /** Phase 34: "estimated" (Binance-derived, current default) or null when
+   *  no source is reachable at all. There is no "coinglass" value yet - no
+   *  verified official-provider client exists in this deployment, so the
+   *  UI must never claim one is live. */
+  provider?: "estimated" | null;
+  coinglass_entitled?: boolean;
+  provider_note?: string;
   error?: string;
 };
 
@@ -411,7 +418,8 @@ function LiquidationHeatmapCard({ symbol }: Props) {
     []
   );
 
-  const sourceLabel = snapshot?.data_source === "unavailable" ? "Reconnecting…" : "Estimated · Live Binance Data";
+  const sourceLabel = snapshot?.data_source === "unavailable" ? "Reconnecting…" : "ESTIMATED · Binance-Derived";
+  const providerNote = snapshot?.provider_note;
   const tooltipMaxLeft = (canvasRef.current?.clientWidth || 300) - 168;
 
   return (
@@ -422,6 +430,7 @@ function LiquidationHeatmapCard({ symbol }: Props) {
         </span>
         {snapshot?.symbol && <span className="liq-heatmap-symbol">{snapshot.symbol}</span>}
       </div>
+      {providerNote && <p className="liq-heatmap-provider-note">{providerNote}</p>}
 
       <div className="liq-heatmap-stats-row">
         <div className="liq-stat">

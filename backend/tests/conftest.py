@@ -11,7 +11,7 @@ os.environ["DEPLOYMENT_MAINTENANCE_FILE"] = f"{_tmp_db_path}.maintenance"
 import pytest  # noqa: E402
 
 from app.db.session import SessionLocal, engine  # noqa: E402
-from app.db.models import Portfolio, StrategyPerformance, StrategyRollingMetrics, Trade  # noqa: E402
+from app.db.models import BinanceCredential, Portfolio, StrategyPerformance, StrategyRollingMetrics, Trade  # noqa: E402
 from app.db.init_db import initialize_schema  # noqa: E402
 
 initialize_schema(engine)
@@ -34,6 +34,13 @@ def clean_tables():
         db.query(StrategyRollingMetrics).delete()
         db.query(Trade).delete()
         db.query(Portfolio).delete()
+        # Phase 34: test_binance_credentials.py's own fixture only cleans
+        # this table BEFORE its tests, not after its last one - without
+        # this, a saved-credential row leaks into every later test file for
+        # the rest of the session and makes binance_live_configured() (which
+        # checks this table by default) silently return True in unrelated
+        # tests that assume no live credential is configured.
+        db.query(BinanceCredential).delete()
         db.commit()
     finally:
         db.close()

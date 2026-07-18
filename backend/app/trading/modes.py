@@ -434,11 +434,19 @@ def status_warnings(permission_check: dict | None = None) -> list[str]:
     return warnings
 
 
-def binance_live_configured() -> bool:
-    """Whether a SEPARATE live-write credential pair has been provisioned.
-    Deliberately distinct from binance_configured() (the read-only-
-    monitoring + testnet pair) - see Settings.binance_live_api_key."""
-    return bool(settings.binance_live_api_key and settings.binance_live_api_secret)
+def binance_live_configured(db=None) -> bool:
+    """Whether a SEPARATE live-write credential pair has been provisioned -
+    either via .env (settings.binance_live_api_key/secret) or the Phase 32
+    admin-saved encrypted BinanceCredential row. Deliberately distinct from
+    binance_configured() (the read-only-monitoring + testnet pair)."""
+    if settings.binance_live_api_key and settings.binance_live_api_secret:
+        return True
+
+    def read(session):
+        from app.db.models import BinanceCredential
+        return session.get(BinanceCredential, 1) is not None
+
+    return read(db) if db is not None else _with_session(read)
 
 
 def exchange_safe_status(db=None) -> dict:
@@ -463,7 +471,7 @@ def exchange_safe_status(db=None) -> dict:
         "binance_live_available": binance_configured(),
         "binance_configured": binance_configured(),
         "binance_live_enabled_by_server": settings.binance_live_enabled,
-        "binance_live_credentials_configured": binance_live_configured(),
+        "binance_live_credentials_configured": binance_live_configured(db),
         "binance_live_unlocked_by_user": control["live_unlocked"],
         "can_trade_binance_live": allowed and mode == MODE_LIVE,
         "live_authorization_lease": lease,

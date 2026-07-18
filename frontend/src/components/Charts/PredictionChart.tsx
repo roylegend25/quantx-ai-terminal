@@ -23,6 +23,7 @@ import {
 import type { Candle } from "../../hooks/useAppData";
 import { api } from "../../services/api";
 import { validateForecastChartData } from "../../lib/forecastChartData";
+import { selectLatestEligiblePredictions } from "../../lib/latestPredictions";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import ProChartCanvas, {
   type HistoryPoint,
@@ -281,6 +282,17 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
     };
   }, [symbol, interval]);
 
+  // Phase 34: the main chart draws only the latest 10 ELIGIBLE predictions
+  // (a real predicted_price and timestamp) as one continuous line, in
+  // chronological order - the full fetched set (up to 500 points) stays
+  // available in historyData.points for an expandable analytics view, it
+  // just never all renders on the price chart itself, which is what made
+  // the overlay read as visual clutter / "stale duplicate forecast lines".
+  const latestTenPredictions = useMemo(
+    () => selectLatestEligiblePredictions(historyData.points, 10),
+    [historyData.points]
+  );
+
   // ---- liquidity heatmap (only fetched while the overlay is on)
   const liquidityOn = prefs.indicators.includes("liquidity");
   useEffect(() => {
@@ -378,6 +390,11 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
   const change = Number(ticker?.priceChangePercent || 0);
   const changeAbs = Number(ticker?.priceChange || 0);
 
+  // Phase 34: desktop/MacBook heights use clamp() instead of one fixed
+  // number for every width from 1280px to 4K - a fixed 460px reads as
+  // "compressed" on a 1512-1728px MacBook that actually has the vertical
+  // room for a taller chart. Mobile/tablet buckets are unchanged (already
+  // viewport-appropriate, not part of the MacBook compression complaint).
   const chartHeight = fullscreen
     ? undefined
     : isMobile
@@ -386,7 +403,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
     ? 360
     : isTabletLandscape
     ? 420
-    : 460;
+    : "clamp(440px, 46vh, 640px)";
 
   const forecast = prediction?.forecast;
   const chartCandles=flowCandles.length?flowCandles:displayCandles;
@@ -734,7 +751,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
           candles={chartCandles}
           timeframeMs={tfConfig.ms}
           prediction={prediction}
-          history={historyData.points}
+          history={latestTenPredictions}
           trades={trades ?? []}
           liquidityClusters={liquidity}
           indicators={prefs.indicators}

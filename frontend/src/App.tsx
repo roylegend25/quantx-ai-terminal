@@ -46,6 +46,7 @@ const ExecutionPage = lazy(() => import("./pages/ExecutionPage"));
 const ModelCenterPage = lazy(() => import("./pages/ModelCenterPage"));
 const ResearchLabPage = lazy(() => import("./pages/ResearchLabPage"));
 const TradingDiagnosticsPage = lazy(() => import("./pages/TradingDiagnosticsPage"));
+const HyperliquidPage = lazy(() => import("./pages/HyperliquidPage"));
 
 function PageFallback() {
   return <div className="page-fallback" aria-hidden="true" />;
@@ -112,6 +113,8 @@ function App() {
         return <ResearchLabPage {...data} />;
       case "trading-diagnostics":
         return <TradingDiagnosticsPage {...data} />;
+      case "hyperliquid":
+        return <HyperliquidPage {...data} />;
       default:
         return <DashboardPage {...data} navigate={setActive} />;
     }

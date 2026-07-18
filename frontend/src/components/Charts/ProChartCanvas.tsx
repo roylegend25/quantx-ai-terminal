@@ -154,10 +154,15 @@ type Props = {
 const AXIS_W = 68;
 const AXIS_H = 24;
 const FONT = "Inter, ui-sans-serif, system-ui, sans-serif";
-// Past-AI-prediction line color - fixed orange so it stays distinct from the
-// theme-driven cyan forecast line in every theme.
+// Liquidation-price marker line color (app.trades) - unrelated to
+// predictions, kept as its own constant.
 const HISTORY_ORANGE = "#ff9f43";
-const HISTORY_ORANGE_RGB = "255, 159, 67";
+// Phase 34: the latest-10-AI-predictions line is a fixed, bright, highly
+// saturated yellow - deliberately brighter than the theme's --c-yellow
+// (#ffd166, used for warnings/pending states elsewhere) so it reads as the
+// dominant, intentional overlay the task calls for, in every theme.
+const PREDICTION_YELLOW = "#fff200";
+const PREDICTION_YELLOW_RGB = "255, 242, 0";
 
 type View = { end: number; bars: number; lockedY: [number, number] | null };
 
@@ -934,19 +939,22 @@ function ProChartCanvas(props: Props) {
         hLine(pv.s2, "rgba(0, 245, 160, 0.28)", "S2", [2, 3]);
       }
 
-      // ---- historical AI prediction line (real stored predictions)
+      // ---- latest-10-AI-predictions line (real stored predictions only;
+      // the caller already limits p.history to the latest 10 eligible
+      // points, chronologically - see PredictionChart's latestTenPredictions).
+      // One continuous bold bright-yellow line, never connected across a
+      // gap where a point was filtered out as ineligible.
       const t0 = cs[0].time;
       const idxForTime = (t: number) => (t - t0) / p.timeframeMs;
       let hoveredHist: { pt: HistoryPoint; x: number; y: number } | null = null;
       if (p.showHistory && p.history.length) {
         g.save();
-        if (p.neon) {
-          g.shadowColor = `rgba(${HISTORY_ORANGE_RGB}, 0.5)`;
-          g.shadowBlur = 6;
-        }
-        g.strokeStyle = `rgba(${HISTORY_ORANGE_RGB}, 0.85)`;
-        g.lineWidth = 1.5;
-        g.setLineDash([2, 3]);
+        g.shadowColor = `rgba(${PREDICTION_YELLOW_RGB}, 0.55)`;
+        g.shadowBlur = p.neon ? 10 : 5;
+        g.strokeStyle = PREDICTION_YELLOW;
+        g.lineWidth = 3;
+        g.lineJoin = "round";
+        g.lineCap = "round";
         g.beginPath();
         let started = false;
         const drawable: Array<{ pt: HistoryPoint; x: number; y: number }> = [];
@@ -963,13 +971,12 @@ function ProChartCanvas(props: Props) {
           } else g.lineTo(x, y);
         }
         g.stroke();
-        g.setLineDash([]);
         g.restore();
 
-        // dots colored by outcome + hover detection. Unresolved splits into
-        // two shades - NO_TRADE (grey) vs still-PENDING (yellow) - since
-        // those mean different things even though both bucket to
-        // "unresolved" for the stat row.
+        // Visible points at every prediction timestamp: outcome-colored
+        // fill (correct/wrong/unresolved) with a bright-yellow ring so
+        // each point still reads as part of the prediction line, not a
+        // disconnected marker.
         const ptr = pointerRef.current;
         for (const d of drawable) {
           const oc = d.pt.outcome;
@@ -984,12 +991,36 @@ function ProChartCanvas(props: Props) {
               : T.yellow;
           g.fillStyle = color;
           g.beginPath();
-          g.arc(d.x, d.y, 2.5, 0, Math.PI * 2);
+          g.arc(d.x, d.y, 4, 0, Math.PI * 2);
           g.fill();
+          g.strokeStyle = PREDICTION_YELLOW;
+          g.lineWidth = 1.5;
+          g.stroke();
           if (ptr.inside && Math.abs(ptr.x - d.x) < 9 && Math.abs(ptr.y - d.y) < 9) {
             hoveredHist = d;
           }
         }
+
+        // "Latest 10 AI predictions" label, anchored near the most recent
+        // point on the line so it's unambiguous which overlay it names.
+        if (drawable.length) {
+          const last = drawable[drawable.length - 1];
+          g.save();
+          g.font = `700 10px ${FONT}`;
+          const label = "Latest 10 AI predictions";
+          const tw = g.measureText(label).width;
+          const lx = Math.min(Math.max(last.x - tw / 2, plotL + 4), plotR - tw - 4);
+          const ly = Math.max(last.y - 14, 20);
+          g.fillStyle = "rgba(10, 13, 25, 0.82)";
+          g.beginPath();
+          g.roundRect(lx - 6, ly - 12, tw + 12, 16, 6);
+          g.fill();
+          g.fillStyle = PREDICTION_YELLOW;
+          g.textAlign = "left";
+          g.fillText(label, lx, ly);
+          g.restore();
+        }
+
         if (hoveredHist) {
           g.strokeStyle = "#fff";
           g.lineWidth = 1.5;
@@ -1871,7 +1902,7 @@ function drawHistoryTooltip(
   if (pt.timeframe) rows.push(["Timeframe", pt.timeframe, T.text]);
   if (pt.direction) rows.push(["Direction", pt.direction, pt.direction === "LONG" ? T.green : pt.direction === "SHORT" ? T.red : T.textDim]);
   if (pt.confidence != null) rows.push(["Confidence", `${pt.confidence.toFixed(0)}%`, T.text]);
-  rows.push(["Predicted", pt.predicted_price != null ? fmtPrice(pt.predicted_price) : "—", HISTORY_ORANGE]);
+  rows.push(["Predicted", pt.predicted_price != null ? fmtPrice(pt.predicted_price) : "—", PREDICTION_YELLOW]);
   rows.push(["Actual", pt.actual_price != null ? fmtPrice(pt.actual_price) : "pending", T.text]);
   if (errorPct !== null) rows.push(["Error %", `${errorPct.toFixed(2)}%`, errorPct <= 1 ? T.green : errorPct <= 5 ? T.yellow : T.red]);
   if (pt.strategy) rows.push(["Strategy", pt.strategy.replace(/_/g, " "), T.cyan]);
@@ -1892,7 +1923,7 @@ function drawHistoryTooltip(
   cy = Math.max(8, Math.min(cy, mainBottom - cardH - 8));
 
   g.fillStyle = "rgba(13, 16, 33, 0.94)";
-  g.strokeStyle = `rgba(${HISTORY_ORANGE_RGB}, 0.45)`;
+  g.strokeStyle = `rgba(${PREDICTION_YELLOW_RGB}, 0.45)`;
   g.lineWidth = 1;
   g.beginPath();
   g.roundRect(cx, cy, cardW, cardH, 8);

@@ -175,7 +175,7 @@ export default function PremiumDashboardPage(props: Props) {
           </Card>
 
           <Card title={`Order Book (${symbol})`}>
-            <OrderBookCard orderbook={props.orderbook} />
+            <OrderBookCard orderbook={props.orderbook} updatedAt={props.orderbookUpdatedAt} />
           </Card>
         </div>
 

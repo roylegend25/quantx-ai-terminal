@@ -137,7 +137,7 @@ async def evaluate_real_order(
     # actually replaced the old persistent live_unlocked boolean as the
     # thing that expires; testnet orders (not real money) never need one.
     if mode == modes.MODE_LIVE:
-        if not modes.binance_live_configured():
+        if not modes.binance_live_configured(db):
             return blocked("live_credentials", "Live-write credentials are not configured on the server")
         lease = modes.get_active_lease(db)
         if lease is None:

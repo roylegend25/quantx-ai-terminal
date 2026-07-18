@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api } from "../../services/api";
 import { formatMarketRegime } from "../../lib/activeDrive";
@@ -26,6 +27,11 @@ function RequirementTrack({item}:{item:any}){
 export default function LiveDecisionPanel({symbol,timeframe,prediction}:Props){
   const [snapshot,setSnapshot]=useState<any>(null);
   const [now,setNow]=useState(Date.now());
+  // Phase 34: the requirement list + flow chart are technical diagnostics,
+  // not the main decision - collapsed by default so the authoritative
+  // decision above (PredictionChart / DecisionSummaryTiles) stays visible
+  // without scrolling on a MacBook-height viewport.
+  const [diagnosticsOpen,setDiagnosticsOpen]=useState(false);
   const decisionId=prediction?.decision_id??prediction?.decision_engine?.decision_id;
   useEffect(()=>{
     let cancelled=false;
@@ -70,11 +76,21 @@ export default function LiveDecisionPanel({symbol,timeframe,prediction}:Props){
       <span><small>Execution</small><b className={snapshot?.execution_eligible?"green":"yellow"}>{snapshot?.execution_eligible?"Eligible":"Blocked"}</b></span>
     </div>
     {snapshot?.source_family_totals&&<div className="source-family-strip">{Object.entries(snapshot.source_family_totals).map(([name,value]:any)=><span key={name}><b>{name}</b><i className="green">LONG +{value.long.toFixed(2)}</i><i className="red">SHORT -{value.short.toFixed(2)}</i><small>{value.eligible} eligible</small></span>)}</div>}
-    <div className="live-decision-grid">
+    {/* Why blocked stays outside the collapsible section - it is core "why"
+        context, not deep technical detail, and must be visible without a click. */}
+    {!!blockers.length&&<div className="decision-blockers"><b>Why blocked</b>{blockers.map((x:string)=><span key={x}>{x}</span>)}</div>}
+    <button
+      type="button"
+      className="mini-btn diagnostics-toggle"
+      onClick={()=>setDiagnosticsOpen((v)=>!v)}
+      aria-expanded={diagnosticsOpen}
+    >
+      {diagnosticsOpen?<ChevronDown size={13}/>:<ChevronRight size={13}/>} Technical diagnostics (decision requirements &amp; flow)
+    </button>
+    {diagnosticsOpen&&<div className="live-decision-grid">
       <div className="requirements-panel">
         <header><h4>Decision requirements</h4><small>Decision {snapshot?.decision_id??decisionId??"loading"}</small></header>
         <div className="requirement-list">{requirements.length?requirements.map((x:any)=><RequirementTrack item={x} key={x.id}/>):<p>Loading the matching decision requirements…</p>}</div>
-        {!!blockers.length&&<div className="decision-blockers"><b>Why blocked</b>{blockers.map((x:string)=><span key={x}>{x}</span>)}</div>}
       </div>
       <div className="decision-flow-panel">
         <header><div><h4>Decision Flow</h4><small>One point per completed V2 evaluation · last {history.length}/120</small></div><span>{symbol} · {timeframe}</span></header>
@@ -92,6 +108,6 @@ export default function LiveDecisionPanel({symbol,timeframe,prediction}:Props){
         </div>
         <div className="decision-flow-legend"><span className="green">LONG points</span><span className="red">SHORT points</span><span className="cyan">Evidence</span><span className="yellow">Point margin</span></div>
       </div>
-    </div>
+    </div>}
   </section>;
 }

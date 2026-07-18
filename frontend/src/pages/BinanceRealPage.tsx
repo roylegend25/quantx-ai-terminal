@@ -6,6 +6,7 @@ import AutoCardTable from "../components/Responsive/AutoCardTable";
 import BinancePositionsTable from "../components/Trading/BinancePositionsTable";
 import ServerTradingControlCard from "../components/Trading/ServerTradingControlCard";
 import UserLiveConfirmationCard from "../components/Trading/UserLiveConfirmationCard";
+import BinanceCredentialCard from "../components/Trading/BinanceCredentialCard";
 import ExecutionModeCard from "../components/Trading/ExecutionModeCard";
 import { useBinanceLiveGate } from "../components/Trading/BinanceLiveGate";
 import { api } from "../services/api";
@@ -202,6 +203,9 @@ export default function BinanceRealPage(props: AppData) {
           <p className="regime-desc">Loading readiness checklist…</p>
         )}
       </Card>
+
+      {/* ---------------- credential management ---------------- */}
+      <BinanceCredentialCard showToast={showToast} />
 
       {/* ---------------- user live confirmation ---------------- */}
       <UserLiveConfirmationCard status={status} onChanged={onChanged} showToast={showToast} />

@@ -22,6 +22,7 @@ import {
   CircleDollarSign,
   History,
   Stethoscope,
+  Waves,
 } from "lucide-react";
 import { NAV_ITEMS, NAV_SECTIONS, type NavKey } from "../../lib/nav";
 
@@ -45,6 +46,7 @@ const ICONS: Record<NavKey, ComponentType<{ size?: number }>> = {
   "model-center": Boxes,
   "research-lab": Microscope,
   "trading-diagnostics": Stethoscope,
+  hyperliquid: Waves,
 };
 
 type Props = {

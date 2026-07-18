@@ -262,6 +262,17 @@ class PredictionLedger(Base):
     resolution_deadline = Column(DateTime, nullable=False, index=True)
     feature_snapshot_hash = Column(String, nullable=False)
     generated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    # Phase 33: resilient catch-up resolver tracking (app/decision_engine/
+    # resolver.py). resolver_attempts counts backfill attempts since the
+    # prediction became due; next_retry_at implements exponential backoff
+    # so a permanently-gapped row doesn't get hammered every cycle;
+    # unresolved_reason is the last-computed structured reason, persisted
+    # so the dashboard doesn't need to recompute it from scratch per request.
+    resolver_attempts = Column(Integer, default=0)
+    last_resolver_attempt_at = Column(DateTime, nullable=True)
+    last_resolver_error = Column(String, nullable=True)
+    next_retry_at = Column(DateTime, nullable=True)
+    unresolved_reason = Column(String, nullable=True)
 
 class PredictionResolution(Base):
     __tablename__ = "prediction_resolutions"
@@ -927,6 +938,40 @@ class Portfolio(Base):
     total_pnl = Column(Float, default=0.0)
     wins = Column(Integer, default=0)
     losses = Column(Integer, default=0)
+
+
+class BinanceCredential(Base):
+    """Admin-managed Binance Real API credential (Phase 32), singleton row
+    (id=1) matching TradingControl's pattern. The secret is NEVER stored in
+    plaintext - encrypted at rest with a server-only master key
+    (settings.credential_encryption_key, Fernet symmetric encryption; see
+    app/security/credential_store.py). No column here is ever returned by
+    any API response except api_key_fingerprint (a masked display string)
+    and the non-secret metadata fields.
+
+    Saving/rotating a credential here does NOT itself enable live trading -
+    it only makes a write-capable client constructible. BINANCE_LIVE_ENABLED,
+    TradingControl.mode, and an active LiveAuthorizationLease (Phase 31) are
+    still independently required before any real order can be placed."""
+    __tablename__ = "binance_credentials"
+
+    id = Column(Integer, primary_key=True, default=1)
+    label = Column(String, nullable=True)
+    # Expected exchange environment the operator intends this key for -
+    # informational/reminder only, never itself a trading-mode switch.
+    environment = Column(String, default="live")  # "live" | "testnet"
+    encrypted_api_key = Column(Text, nullable=False)
+    encrypted_api_secret = Column(Text, nullable=False)
+    # First 4 + last 4 characters of the real key, safe to return/display.
+    api_key_fingerprint = Column(String, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_by = Column(String, nullable=False)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    last_validated_at = Column(DateTime, nullable=True)
+    last_validation_status = Column(String, nullable=True)  # "ok" | "failed" | None (never tested)
+    last_validation_detail = Column(String, nullable=True)  # safe, non-secret text
+    write_permission_detected = Column(Boolean, nullable=True)  # None = unknown/undetectable
+    withdraw_enabled_detected = Column(Boolean, nullable=True)  # None = unknown/undetectable
 
 
 class LiveAuthorizationLease(Base):

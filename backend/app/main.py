@@ -37,6 +37,7 @@ from app.api.data import router as data_router
 from app.api.learning import router as learning_router
 from app.api.portfolio import router as portfolio_router
 from app.api.trading_control import router as trading_control_router
+from app.api.binance_credentials import router as binance_credentials_router
 from app.api.bot_trades import router as bot_trades_router
 from app.api.admin_config import router as admin_config_router
 from app.api.binance_snapshot import router as binance_snapshot_router
@@ -122,6 +123,7 @@ app.include_router(data_router, dependencies=protected)
 app.include_router(learning_router, dependencies=protected)
 app.include_router(portfolio_router, dependencies=protected)
 app.include_router(trading_control_router, dependencies=protected)
+app.include_router(binance_credentials_router, dependencies=protected)
 app.include_router(bot_trades_router, dependencies=protected)
 app.include_router(binance_snapshot_router, dependencies=protected)
 app.include_router(analysis_router, dependencies=protected)
