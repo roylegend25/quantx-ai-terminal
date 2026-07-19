@@ -832,8 +832,96 @@ class BinanceExecutionProvider:
         finally:
             db.close()
 
+        if self.mode == modes.MODE_LIVE:
+            reconciled = await self._reconcile_verification_closures(positions)
+            if not reconciled.ok:
+                return reconciled
+
         modes.audit("positions_synced", detail={"count": len(positions)})
         return self._result(True, "sync_positions", synced=len(positions))
+
+    async def _reconcile_verification_closures(self, positions) -> RouterResult:
+        """Finalize protective fills from Binance truth, exactly once."""
+        from app.db.models import BinanceBotTrade
+        from app.trading import verification_runs
+
+        live_symbols = {p.symbol for p in positions}
+        db = SessionLocal()
+        try:
+            run = verification_runs.active_run(db)
+            if not run:
+                return self._result(True, "reconcile_verification_closures", reconciled=0)
+            entries = db.query(BinanceBotTrade).filter(
+                BinanceBotTrade.verification_run_id == run.verification_run_id,
+                BinanceBotTrade.mode == modes.MODE_LIVE,
+                BinanceBotTrade.action == "open",
+                BinanceBotTrade.exit_order_id.is_(None),
+            ).order_by(BinanceBotTrade.created_at).all()
+            if not entries:
+                verification_runs.mark_reconciled(db, run.verification_run_id)
+                return self._result(True, "reconcile_verification_closures", reconciled=0)
+
+            income = await self.client.get_income_history(limit=1000)
+            reconciled_count = 0
+            for entry in entries:
+                if entry.symbol in live_symbols:
+                    continue
+                entry_time = entry.created_at
+                if entry_time.tzinfo is None:
+                    entry_time = entry_time.replace(tzinfo=timezone.utc)
+                entry_ms = int(entry_time.timestamp() * 1000) - 5000
+                rows = [r for r in income if r.get("symbol") == entry.symbol and
+                        int(r.get("time") or 0) >= entry_ms and
+                        r.get("income_type") in ("REALIZED_PNL", "COMMISSION", "FUNDING_FEE")]
+                realised = [r for r in rows if r.get("income_type") == "REALIZED_PNL" and r.get("orderId")]
+                if not realised:
+                    continue  # Binance income can lag a confirmed protective fill.
+
+                # A flat position must not retain either protective leg.
+                remaining_orders = await self.client.get_open_orders(entry.symbol)
+                if remaining_orders:
+                    await self.client.cancel_all_orders(entry.symbol)
+                    remaining_orders = await self.client.get_open_orders(entry.symbol)
+                remaining_positions = await self.client.get_positions(entry.symbol)
+                if remaining_positions or remaining_orders:
+                    verification_runs.stop_run(db, run.verification_run_id, "post_close_reconciliation_failed")
+                    return self._result(False, "reconcile_verification_closures",
+                                        reason="Binance remained non-flat after protective fill reconciliation")
+
+                exit_row = max(realised, key=lambda r: int(r.get("time") or 0))
+                exit_order_id = int(exit_row["orderId"])
+                if entry.tp_order_id and exit_order_id == int(entry.tp_order_id):
+                    exit_reason = "TAKE_PROFIT"
+                elif entry.sl_order_id and exit_order_id == int(entry.sl_order_id):
+                    exit_reason = "STOP_LOSS"
+                else:
+                    exit_reason = "BINANCE_PROTECTIVE_FILL"
+                net_pnl = sum(float(r.get("income") or 0.0) for r in rows)
+
+                entry.exit_order_id = exit_order_id
+                entry.exit_reason = exit_reason
+                entry.realized_pnl = net_pnl
+                verification_runs.record_closed_trade(
+                    db, run.verification_run_id, net_realised_pnl=net_pnl,
+                )
+                verification_runs.mark_reconciled(db, run.verification_run_id)
+                modes.audit("verification_protective_fill_reconciled", symbol=entry.symbol, detail={
+                    "verification_run_id": run.verification_run_id,
+                    "entry_order_id": entry.entry_order_id or entry.order_id,
+                    "exit_order_id": exit_order_id,
+                    "exit_reason": exit_reason,
+                    "net_realised_pnl": net_pnl,
+                })
+                reconciled_count += 1
+            return self._result(True, "reconcile_verification_closures", reconciled=reconciled_count)
+        except Exception as exc:
+            db.rollback()
+            run = verification_runs.active_run(db)
+            if run:
+                verification_runs.stop_run(db, run.verification_run_id, "post_close_reconciliation_failed")
+            return self._result(False, "reconcile_verification_closures", reason=_safe_error(exc))
+        finally:
+            db.close()
 
     async def sync_orders(self) -> RouterResult:
         try:

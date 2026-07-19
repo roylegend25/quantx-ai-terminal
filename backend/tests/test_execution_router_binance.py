@@ -3,12 +3,14 @@ order route, real TP/SL placement, cancel-and-replace edits, position sync
 and validation - no network, no keys."""
 
 import asyncio
+from datetime import datetime, timezone
 
 import pytest
 
 from app.db.session import SessionLocal
-from app.db.models import ExchangePositionRow, TradingControl
+from app.db.models import BinanceBotTrade, ExchangePositionRow, LiveVerificationRun, TradingControl
 from app.exchanges.binance_models import BinanceBalance, BinanceOrder, BinancePosition
+from app.exchanges.binance_futures_client import BinanceFuturesClient
 from app.trading import modes, real_risk_gate
 from app.trading.execution_router import BinanceExecutionProvider
 
@@ -36,6 +38,7 @@ class MockBinanceClient:
         self.position = position
         self.open_orders = open_orders or []
         self.hedge_mode = hedge_mode
+        self.income = []
         self._next_order_id = 100
 
     def _order(self, **kw):
@@ -107,7 +110,11 @@ class MockBinanceClient:
 
     async def cancel_all_orders(self, symbol):
         self.calls.append(("cancel_all_orders", symbol))
+        self.open_orders = []
         return {}
+
+    async def get_income_history(self, limit=50, income_type=None):
+        return list(self.income)
 
     def called(self, name):
         return [c for c in self.calls if c[0] == name]
@@ -136,6 +143,7 @@ def testnet_mode():
         db.commit()
     finally:
         db.close()
+
     real_risk_gate.reset_duplicate_guard()
     modes.set_mode(modes.MODE_TESTNET)
     yield
@@ -381,6 +389,70 @@ def test_sync_positions_mirrors_binance_as_source_of_truth():
     finally:
         db.close()
 
+
+def test_live_sync_reconciles_protective_fill_once_from_binance_income():
+    from app.trading import verification_runs
+
+    client = MockBinanceClient(open_orders=[make_order(222, type="STOP_MARKET", reduce_only=True)])
+    provider = BinanceExecutionProvider(testnet=False)
+    provider._client = client
+    db = SessionLocal()
+    try:
+        db.query(BinanceBotTrade).filter(BinanceBotTrade.verification_run_id.isnot(None)).delete()
+        db.query(LiveVerificationRun).delete()
+        db.commit()
+        run = verification_runs.prepare_run(db, starting_balance=1000)
+        verification_runs.set_live_execution(db, run.verification_run_id, True)
+        verification_runs.claim_attempt(db, run.verification_run_id)
+        db.add(BinanceBotTrade(
+            verification_run_id=run.verification_run_id, mode=modes.MODE_LIVE, action="open",
+            order_id=111, entry_order_id=111, client_order_id="entry-111", symbol="BTCUSDT",
+            side="LONG", order_side="BUY", order_type="MARKET", quantity=0.001,
+            avg_fill_price=50000.0, status="FILLED", reduce_only=False, sl_order_id=222,
+            label="BOT_TRADE", created_at=datetime.now(timezone.utc),
+        ))
+        db.commit()
+        client.income = [
+            {"symbol": "BTCUSDT", "income_type": "COMMISSION", "income": -0.01,
+             "time": int(datetime.now(timezone.utc).timestamp() * 1000), "orderId": 111},
+            {"symbol": "BTCUSDT", "income_type": "REALIZED_PNL", "income": 0.10,
+             "time": int(datetime.now(timezone.utc).timestamp() * 1000), "orderId": 222},
+            {"symbol": "BTCUSDT", "income_type": "COMMISSION", "income": -0.01,
+             "time": int(datetime.now(timezone.utc).timestamp() * 1000), "orderId": 222},
+        ]
+    finally:
+        db.close()
+
+    first = asyncio.run(provider.sync_positions())
+    second = asyncio.run(provider.sync_positions())
+    assert first.ok and second.ok
+    assert client.called("cancel_all_orders")
+    db = SessionLocal()
+    try:
+        run = db.query(LiveVerificationRun).one()
+        entry = db.query(BinanceBotTrade).filter_by(verification_run_id=run.verification_run_id).one()
+        assert run.successful_trades_during_this_run == 1
+        assert entry.exit_order_id == 222
+        assert entry.exit_reason == "STOP_LOSS"
+        assert entry.realized_pnl == pytest.approx(0.08)
+    finally:
+        db.query(BinanceBotTrade).filter(BinanceBotTrade.verification_run_id.isnot(None)).delete()
+        db.query(LiveVerificationRun).delete()
+        db.commit()
+        db.close()
+
+
+def test_income_normalization_preserves_safe_reconciliation_ids():
+    client = object.__new__(BinanceFuturesClient)
+
+    async def fake_get(*_args, **_kwargs):
+        return [{"symbol": "BTCUSDT", "incomeType": "REALIZED_PNL", "income": "1.25",
+                 "asset": "USDT", "info": "", "time": 123, "orderId": 456, "tranId": 789}]
+
+    client._get = fake_get
+    row = asyncio.run(client.get_income_history())[0]
+    assert row["orderId"] == 456
+    assert row["tranId"] == 789
 
 def test_cancel_all_orders_covers_allowed_symbols():
     client = MockBinanceClient()

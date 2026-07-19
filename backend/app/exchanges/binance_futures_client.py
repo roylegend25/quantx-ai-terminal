@@ -240,6 +240,10 @@ class BinanceFuturesClient:
                 "asset": row.get("asset"),
                 "info": row.get("info"),
                 "time": row.get("time"),
+                # Safe exchange identifiers used to reconcile an accepted
+                # entry with its real commission/PnL rows. Never credentials.
+                "orderId": row.get("orderId"),
+                "tranId": row.get("tranId"),
             }
             for row in data
         ]
