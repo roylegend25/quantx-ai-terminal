@@ -19,7 +19,7 @@ logger = get_logger("quantx.scheduler")
 async def _renew_execution_lease(stop: asyncio.Event) -> None:
     """Keep the single-executor lease valid for the whole strategy cycle.
 
-    Strategy evaluation can legitimately take longer than the Redis lease TTL.
+    Strategy evaluation can legitimately take longer than the execution lease TTL.
     Renewal is deliberately fail-closed: the router's final ``owns`` check will
     reject an entry if this heartbeat ever loses authority.
     """
