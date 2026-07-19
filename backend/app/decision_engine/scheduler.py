@@ -5,15 +5,18 @@ from app.decision_engine.resolver import resolve_due
 from app.monitoring.logging import get_logger, log_event
 logger = get_logger("quantx.active_drive_resolver")
 RUNNING = False
-STATUS = {"running": False, "last_run": None, "last_success": None, "last_resolved": 0, "last_error": None, "next_run": None}
+STATUS = {"running": False, "last_run": None, "last_success": None, "last_resolved": 0, "last_error": None,
+          "next_run": None, "last_stats": None}
 async def _loop():
     global RUNNING
     while RUNNING:
         db = SessionLocal()
         STATUS["last_run"] = datetime.now(timezone.utc).isoformat()
         try:
-            count = resolve_due(db)
-            STATUS.update(last_success=datetime.now(timezone.utc).isoformat(), last_resolved=count, last_error=None)
+            stats = await resolve_due(db)
+            count = stats["resolved"]
+            STATUS.update(last_success=datetime.now(timezone.utc).isoformat(), last_resolved=count,
+                          last_error=None, last_stats=stats)
             if count: log_event(logger, message="prediction_resolved", category="prediction", count=count)
         except Exception as exc:
             STATUS["last_error"] = repr(exc)

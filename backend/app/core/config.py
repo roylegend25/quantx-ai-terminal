@@ -126,6 +126,15 @@ class Settings(BaseSettings):
     binance_rate_limit_backoff_multiplier: float = 1.5
     binance_enable_stale_cache_on_rate_limit: bool = True
 
+    # Multi-exchange prediction-resolver catch-up (app/decision_engine/resolver.py,
+    # app/data_sources/resolution_providers.py). Read-only, no order path.
+    resolver_provider_timeout: float = 10.0
+    resolver_max_retries: int = 2
+    resolver_batch_size: int = 200
+    resolver_price_disagreement_bps: float = 15.0
+    resolver_allow_spot_fallback: bool = False
+    resolver_max_data_age_seconds: float = 21600.0  # 6h - beyond this a candle is "stale" for resolution purposes
+
     @field_validator("binance_allowed_symbols", mode="before")
     @classmethod
     def _split_allowed_symbols(cls, v):

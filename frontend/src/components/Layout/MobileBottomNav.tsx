@@ -25,6 +25,7 @@ import {
   Menu,
   X,
   Stethoscope,
+  Target,
 } from "lucide-react";
 import { NAV_ITEMS, NAV_SECTIONS, type NavKey } from "../../lib/nav";
 
@@ -44,6 +45,7 @@ const ICONS: Record<NavKey, ComponentType<{ size?: number }>> = {
   "binance-real": CircleDollarSign,
   "bot-trades": History,
   predictions: Brain,
+  "prediction-results": Target,
   positions: Rows3,
   performance: ChartLine,
   market: Radio,

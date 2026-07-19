@@ -3,7 +3,7 @@ from app.api.dashboard import live_decision
 from app.db.session import SessionLocal
 from app.decision_engine.ledger import persist
 from app.decision_engine.v2 import ActiveDriveV2Engine
-from app.decision_engine.resolver import resolve_due
+from app.decision_engine.resolver import resolve_due_sync
 
 
 def legacy():
@@ -64,7 +64,7 @@ def test_resolver_skips_legacy_gaps_without_starving_later_records():
   later=db.query(PredictionLedger).filter(PredictionLedger.prediction_id=="resolver-gap-1").one()
   db.add(MarketCandle(symbol="GAPUSDT",timeframe="5m",timestamp=int(later.resolution_deadline.timestamp()*1000),open=100,high=102,low=99,close=101,volume=1))
   db.commit()
-  assert resolve_due(db,limit=1,scan_limit=10)==1
+  assert resolve_due_sync(db,limit=1,scan_limit=10)["resolved"]==1
   assert db.query(PredictionResolution).filter(PredictionResolution.prediction_id=="resolver-gap-1").count()==1
   assert db.query(PredictionResolution).filter(PredictionResolution.prediction_id=="resolver-gap-0").count()==0
  finally:db.close()

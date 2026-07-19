@@ -3,7 +3,7 @@ from app.api.analysis import source_health
 from app.db.models import MarketCandle, PredictionLedger, PredictionResolution
 from app.db.session import SessionLocal
 from app.decision_engine.ledger import persist
-from app.decision_engine.resolver import resolve_due
+from app.decision_engine.resolver import resolve_due_sync
 from app.decision_engine.v2 import ActiveDriveV2Engine
 
 
@@ -33,8 +33,8 @@ def test_resolver_resolves_once_only_after_real_horizon_candle():
         rows=db.query(PredictionLedger).filter_by(symbol="RESOLVEUSDT").all(); now=datetime.now(timezone.utc)
         for row in rows: row.generated_at=now-timedelta(hours=2); row.resolution_deadline=now-timedelta(hours=1)
         db.add(MarketCandle(symbol="RESOLVEUSDT",timeframe="5m",timestamp=int(now.timestamp()*1000),open=101,high=102,low=99,close=101,volume=10,provider="test",quality_score=100,interpolated=False)); db.commit()
-        assert resolve_due(db,limit=200)==len(rows)
-        assert resolve_due(db,limit=200)==0
+        assert resolve_due_sync(db,limit=200)["resolved"]==len(rows)
+        assert resolve_due_sync(db,limit=200)["resolved"]==0
         assert db.query(PredictionResolution).join(PredictionLedger,PredictionResolution.prediction_id==PredictionLedger.prediction_id).filter(PredictionLedger.symbol=="RESOLVEUSDT").count()==len(rows)
         ids=[row.prediction_id for row in rows]
         db.query(PredictionResolution).filter(PredictionResolution.prediction_id.in_(ids)).delete(synchronize_session=False); db.commit()

@@ -10,3 +10,6 @@ backend/data/ml_lab/
 
 # Local rollback snapshots may contain secrets
 backups/
+
+# Graphify knowledge graph output
+graphify-out/

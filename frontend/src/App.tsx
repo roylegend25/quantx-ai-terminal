@@ -33,6 +33,7 @@ const PaperTradingPage = lazy(() => import("./pages/PaperTradingPage"));
 const BinanceRealPage = lazy(() => import("./pages/BinanceRealPage"));
 const BotTradesPage = lazy(() => import("./pages/BotTradesPage"));
 const PredictionsPage = lazy(() => import("./pages/PredictionsPage"));
+const PredictionResultsPage = lazy(() => import("./pages/PredictionResultsPage"));
 const PositionsPage = lazy(() => import("./pages/PositionsPage"));
 const PerformancePage = lazy(() => import("./pages/PerformancePage"));
 const MarketPage = lazy(() => import("./pages/MarketPage"));
@@ -86,6 +87,8 @@ function App() {
         return <BotTradesPage />;
       case "predictions":
         return <PredictionsPage {...data} />;
+      case "prediction-results":
+        return <PredictionResultsPage />;
       case "positions":
         return <PositionsPage {...data} navigate={setActive} />;
       case "performance":

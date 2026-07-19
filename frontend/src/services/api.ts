@@ -429,4 +429,19 @@ export const api = {
   riskSettingsGet: () => getJson("/api/risk/settings"),
   riskSettingsUpdate: (patch: Record<string, unknown>) => putJson("/api/risk/settings", patch),
   riskSettingsReset: () => postJson("/api/risk/settings/reset"),
+  resolverHealth: () => getJson("/api/predictions/resolver/health"),
+  unresolvedSummary: (symbol?: string) => getJson(`/api/predictions/unresolved-summary${symbol ? `?symbol=${symbol}` : ""}`),
+  catchupProgress: () => getJson("/api/predictions/catchup-progress"),
+  predictionResultsLatest: (params: {
+    limit?: number; symbol?: string; timeframe?: string; model?: string;
+    resolved?: boolean; outcome?: string; source_exchange?: string;
+  } = {}) => {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== "") q.set(k, String(v)); });
+    const qs = q.toString();
+    return getJson(`/api/predictions/results/latest${qs ? `?${qs}` : ""}`);
+  },
+  predictionAccuracySummary: () => getJson("/api/predictions/accuracy-summary"),
+  predictionProviderHealth: () => getJson("/api/predictions/provider-health"),
+  triggerPredictionCatchup: (limit = 200) => postJson(`/api/predictions/resolver/catchup?limit=${limit}`),
 };

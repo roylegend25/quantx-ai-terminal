@@ -174,6 +174,13 @@ class PredictionLedger(Base):
     feature_snapshot_hash = Column(String, nullable=False)
     generated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
+    # Resolver-attempt bookkeeping (additive - see init_db._migrate_prediction_resolution_provider_columns).
+    # NULL/0 on rows written before this existed; the resolver treats that as "never attempted".
+    resolver_attempts = Column(Integer, default=0)
+    last_resolver_attempt_at = Column(DateTime, nullable=True)
+    last_resolver_error = Column(Text, nullable=True)
+    unresolved_status = Column(String, nullable=True, index=True)
+
 class PredictionResolution(Base):
     __tablename__ = "prediction_resolutions"
     id = Column(Integer, primary_key=True, index=True)
@@ -188,6 +195,21 @@ class PredictionResolution(Base):
     maximum_adverse_excursion = Column(Float, nullable=True)
     resolution_reason = Column(String, nullable=False)
     resolved_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+    # Multi-exchange resolution provenance (additive, nullable - pre-existing
+    # resolved rows were single-source and remain valid without these).
+    resolution_provider = Column(String, nullable=True)
+    resolution_exchange = Column(String, nullable=True)
+    resolution_market_type = Column(String, nullable=True)
+    provider_symbol = Column(String, nullable=True)
+    requested_due_at = Column(DateTime, nullable=True)
+    resolved_market_timestamp = Column(BigInteger, nullable=True)
+    resolved_price = Column(Float, nullable=True)
+    fallback_used = Column(Boolean, default=False)
+    fallback_reason = Column(String, nullable=True)
+    provider_count_checked = Column(Integer, nullable=True)
+    provider_price_spread_bps = Column(Float, nullable=True)
+    resolution_confidence = Column(Float, nullable=True)
 
 class StrategyPerformance(Base):
     __tablename__ = "strategy_performance"

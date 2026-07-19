@@ -205,6 +205,56 @@ def _migrate_active_drive_ledger_columns():
                 if name not in existing: conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}"))
 
 
+def _migrate_prediction_resolution_provider_columns():
+    """Multi-exchange resolution provenance (unresolved-pipeline rebuild).
+    Additive only - existing resolved rows keep NULL for these and are still
+    valid (they were resolved single-source, before this column existed)."""
+    inspector = inspect(engine)
+    tables = inspector.get_table_names()
+
+    if "prediction_ledger" in tables:
+        existing = {col["name"] for col in inspector.get_columns("prediction_ledger")}
+        new_columns = {
+            "resolver_attempts": "INTEGER DEFAULT 0",
+            "last_resolver_attempt_at": "DATETIME",
+            "last_resolver_error": "TEXT",
+            "unresolved_status": "VARCHAR",
+        }
+        with engine.begin() as conn:
+            for name, sql_type in new_columns.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE prediction_ledger ADD COLUMN {name} {sql_type}"))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_prediction_ledger_symbol_deadline "
+                "ON prediction_ledger (symbol, resolution_deadline)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_prediction_ledger_unresolved_status "
+                "ON prediction_ledger (unresolved_status)"
+            ))
+
+    if "prediction_resolutions" in tables:
+        existing = {col["name"] for col in inspector.get_columns("prediction_resolutions")}
+        new_columns = {
+            "resolution_provider": "VARCHAR",
+            "resolution_exchange": "VARCHAR",
+            "resolution_market_type": "VARCHAR",
+            "provider_symbol": "VARCHAR",
+            "requested_due_at": "DATETIME",
+            "resolved_market_timestamp": "BIGINT",
+            "resolved_price": "FLOAT",
+            "fallback_used": "BOOLEAN DEFAULT 0",
+            "fallback_reason": "VARCHAR",
+            "provider_count_checked": "INTEGER",
+            "provider_price_spread_bps": "FLOAT",
+            "resolution_confidence": "FLOAT",
+        }
+        with engine.begin() as conn:
+            for name, sql_type in new_columns.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE prediction_resolutions ADD COLUMN {name} {sql_type}"))
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_trade_columns()
@@ -215,6 +265,7 @@ def init_db():
     _migrate_protection_revision_columns()
     _migrate_risk_settings_columns()
     _migrate_active_drive_ledger_columns()
+    _migrate_prediction_resolution_provider_columns()
 
     db: Session = SessionLocal()
     try:
