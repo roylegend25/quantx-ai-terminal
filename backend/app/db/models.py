@@ -1063,12 +1063,18 @@ class LiveVerificationRun(Base):
     baseline_historical_attempt_count = Column(Integer, nullable=False)
     attempts_during_this_run = Column(Integer, nullable=False, default=0)
     successful_trades_during_this_run = Column(Integer, nullable=False, default=0)
+    completed_trades_during_this_run = Column(Integer, nullable=False, default=0)
     consecutive_losses_during_this_run = Column(Integer, nullable=False, default=0)
     realised_loss_during_this_run = Column(Float, nullable=False, default=0.0)
     status = Column(String, nullable=False, default="prepared", index=True)
     stop_reason = Column(Text, nullable=True)
     live_execution_enabled = Column(Boolean, nullable=False, default=False, index=True)
     last_reconciled_at = Column(DateTime, nullable=True)
+    verification_policy = Column(JSON, nullable=True)
+    deployment_revision = Column(String, nullable=True)
+    deployment_image_digest = Column(String, nullable=True)
+    initial_exchange_state = Column(JSON, nullable=True)
+    timestamp_sync_state = Column(JSON, nullable=True)
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))
 

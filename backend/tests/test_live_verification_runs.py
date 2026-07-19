@@ -42,7 +42,7 @@ def test_new_run_snapshots_history_but_starts_at_zero(db):
 def test_attempt_limit_is_run_scoped_and_atomic(db):
     run = verification_runs.prepare_run(db, starting_balance=1000)
     verification_runs.set_live_execution(db, run.verification_run_id, True)
-    for expected in range(1, 7):
+    for expected in range(1, 5):
         assert verification_runs.validate_attempt(db) == run.verification_run_id
         assert verification_runs.claim_attempt(db, run.verification_run_id) == run.verification_run_id
         assert db.get(LiveVerificationRun, run.verification_run_id).attempts_during_this_run == expected
@@ -50,7 +50,7 @@ def test_attempt_limit_is_run_scoped_and_atomic(db):
         verification_runs.validate_attempt(db)
     stopped = db.get(LiveVerificationRun, run.verification_run_id)
     assert stopped.status == "stopped"
-    assert stopped.stop_reason == "maximum_six_attempts_reached"
+    assert stopped.stop_reason == "maximum_four_attempts_reached"
 
 
 def test_unacknowledged_submission_does_not_consume_attempt(db):
@@ -63,7 +63,7 @@ def test_unacknowledged_submission_does_not_consume_attempt(db):
     assert db.get(LiveVerificationRun, run.verification_run_id).attempts_during_this_run == 0
 
 
-def test_second_profitable_closed_trade_stops_run_and_execution(db):
+def test_second_closed_trade_stops_run_and_execution_even_when_not_profitable(db):
     control = db.get(TradingControl, 1) or TradingControl(id=1, mode="PAPER")
     control.execution_enabled = True
     control.execution_state = "running"
@@ -71,17 +71,19 @@ def test_second_profitable_closed_trade_stops_run_and_execution(db):
     db.commit()
     run = verification_runs.prepare_run(db, starting_balance=1000)
     verification_runs.record_closed_trade(db, run.verification_run_id, net_realised_pnl=1.0)
-    final = verification_runs.record_closed_trade(db, run.verification_run_id, net_realised_pnl=0.01)
-    assert final.successful_trades_during_this_run == 2
+    final = verification_runs.record_closed_trade(db, run.verification_run_id, net_realised_pnl=-0.01)
+    assert final.successful_trades_during_this_run == 1
+    assert final.completed_trades_during_this_run == 2
     assert final.status == "stopped"
+    assert final.stop_reason == "TWO_REAL_TRADE_LIFECYCLES_VERIFIED"
     assert final.live_execution_enabled is False
     assert db.get(TradingControl, 1).execution_state == "stopped"
 
 
-def test_loss_limit_is_point_three_percent_of_starting_balance(db):
+def test_combined_realised_loss_limit_is_fifty_cents(db):
     run = verification_runs.prepare_run(db, starting_balance=1000)
-    final = verification_runs.record_closed_trade(db, run.verification_run_id, net_realised_pnl=-3.0)
-    assert final.realised_loss_during_this_run == 3.0
+    final = verification_runs.record_closed_trade(db, run.verification_run_id, net_realised_pnl=-0.50)
+    assert final.realised_loss_during_this_run == 0.50
     assert final.status == "stopped"
     assert final.stop_reason == "maximum_realised_loss_reached"
 

@@ -14,10 +14,14 @@ from sqlalchemy.orm import Session
 
 from app.db.models import BinanceExecutionAttempt, LiveVerificationRun, TradingControl
 
-MAX_ATTEMPTS = 6
-MAX_SUCCESSFUL_TRADES = 2
+MAX_ATTEMPTS = 4
+MAX_COMPLETED_TRADES = 2
 MAX_CONSECUTIVE_LOSSES = 2
-MAX_REALISED_LOSS_PCT = 0.003
+MAX_REALISED_LOSS_USDT = 0.50
+MAX_PLANNED_LOSS_USDT = 0.25
+MAX_LEVERAGE = 2.0
+MAX_MARGIN_ALLOCATION_PCT = 0.90
+MIN_HEADROOM_USDT = 2.50
 MAX_RUN_DURATION = timedelta(hours=24)
 ACTIVE_STATUSES = ("prepared", "running")
 
@@ -34,7 +38,9 @@ def _as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
-def prepare_run(db: Session, *, starting_balance: float) -> LiveVerificationRun:
+def prepare_run(db: Session, *, starting_balance: float, deployment_revision: str | None = None,
+                deployment_image_digest: str | None = None, initial_exchange_state: dict | None = None,
+                timestamp_sync_state: dict | None = None) -> LiveVerificationRun:
     if starting_balance <= 0:
         raise ValueError("starting_balance must be positive")
     active = db.query(LiveVerificationRun).filter(
@@ -49,6 +55,13 @@ def prepare_run(db: Session, *, starting_balance: float) -> LiveVerificationRun:
     row = LiveVerificationRun(
         verification_run_id=str(uuid4()), started_at=_utcnow(), starting_balance=float(starting_balance),
         baseline_historical_attempt_count=int(baseline), status="prepared", live_execution_enabled=False,
+        completed_trades_during_this_run=0,
+        verification_policy={"max_attempts": MAX_ATTEMPTS, "max_completed_trades": MAX_COMPLETED_TRADES,
+            "max_planned_loss_usdt": MAX_PLANNED_LOSS_USDT, "max_combined_realised_loss_usdt": MAX_REALISED_LOSS_USDT,
+            "max_leverage": MAX_LEVERAGE, "max_margin_allocation_pct": MAX_MARGIN_ALLOCATION_PCT,
+            "minimum_headroom_usdt": MIN_HEADROOM_USDT, "margin_mode": "isolated"},
+        deployment_revision=deployment_revision, deployment_image_digest=deployment_image_digest,
+        initial_exchange_state=initial_exchange_state, timestamp_sync_state=timestamp_sync_state,
     )
     db.add(row)
     db.commit()
@@ -81,15 +94,15 @@ def validate_attempt(db: Session) -> str:
     row = active_run(db)
     if not row:
         raise VerificationBlocked("No active verification run")
-    loss_limit = row.starting_balance * MAX_REALISED_LOSS_PCT
+    loss_limit = MAX_REALISED_LOSS_USDT
     if not row.live_execution_enabled or row.status not in ACTIVE_STATUSES:
         raise VerificationBlocked("Verification run is disabled")
     if row.attempts_during_this_run >= MAX_ATTEMPTS:
         stop_if_limited(db, row.verification_run_id)
-        raise VerificationBlocked("Maximum six acknowledged attempts reached")
-    if row.successful_trades_during_this_run >= MAX_SUCCESSFUL_TRADES:
+        raise VerificationBlocked("Maximum four acknowledged attempts reached")
+    if row.completed_trades_during_this_run >= MAX_COMPLETED_TRADES:
         stop_if_limited(db, row.verification_run_id)
-        raise VerificationBlocked("Two successful trades already completed")
+        raise VerificationBlocked("Two trade lifecycles already completed")
     if row.consecutive_losses_during_this_run >= MAX_CONSECUTIVE_LOSSES:
         stop_if_limited(db, row.verification_run_id)
         raise VerificationBlocked("Maximum consecutive losses reached")
@@ -111,7 +124,7 @@ def claim_attempt(db: Session, run_id: str) -> str:
     row = active_run(db)
     if not row or row.verification_run_id != run_id:
         raise VerificationBlocked("No active verification run")
-    loss_limit = row.starting_balance * MAX_REALISED_LOSS_PCT
+    loss_limit = MAX_REALISED_LOSS_USDT
     result = db.execute(
         update(LiveVerificationRun)
         .where(
@@ -119,7 +132,7 @@ def claim_attempt(db: Session, run_id: str) -> str:
             LiveVerificationRun.live_execution_enabled.is_(True),
             LiveVerificationRun.status.in_(ACTIVE_STATUSES),
             LiveVerificationRun.attempts_during_this_run < MAX_ATTEMPTS,
-            LiveVerificationRun.successful_trades_during_this_run < MAX_SUCCESSFUL_TRADES,
+            LiveVerificationRun.completed_trades_during_this_run < MAX_COMPLETED_TRADES,
             LiveVerificationRun.consecutive_losses_during_this_run < MAX_CONSECUTIVE_LOSSES,
             LiveVerificationRun.realised_loss_during_this_run < loss_limit,
             LiveVerificationRun.started_at >= _utcnow() - MAX_RUN_DURATION,
@@ -175,13 +188,13 @@ def stop_if_limited(db: Session, run_id: str) -> LiveVerificationRun:
     if not row:
         raise ValueError("Unknown verification run")
     reason = None
-    if row.successful_trades_during_this_run >= MAX_SUCCESSFUL_TRADES:
-        reason = "two_profitable_closed_trades_completed"
+    if row.completed_trades_during_this_run >= MAX_COMPLETED_TRADES:
+        reason = "TWO_REAL_TRADE_LIFECYCLES_VERIFIED"
     elif row.attempts_during_this_run >= MAX_ATTEMPTS:
-        reason = "maximum_six_attempts_reached"
+        reason = "maximum_four_attempts_reached"
     elif row.consecutive_losses_during_this_run >= MAX_CONSECUTIVE_LOSSES:
         reason = "maximum_two_consecutive_losses_reached"
-    elif row.realised_loss_during_this_run >= row.starting_balance * MAX_REALISED_LOSS_PCT:
+    elif row.realised_loss_during_this_run >= MAX_REALISED_LOSS_USDT:
         reason = "maximum_realised_loss_reached"
     elif _utcnow() - row.started_at.replace(tzinfo=timezone.utc) >= MAX_RUN_DURATION:
         reason = "maximum_24_hour_duration_reached"
@@ -201,6 +214,7 @@ def record_closed_trade(db: Session, run_id: str, *, net_realised_pnl: float) ->
     else:
         row.consecutive_losses_during_this_run += 1
         row.realised_loss_during_this_run += abs(min(net_realised_pnl, 0.0))
+    row.completed_trades_during_this_run += 1
     row.updated_at = _utcnow()
     db.commit()
     return stop_if_limited(db, run_id)

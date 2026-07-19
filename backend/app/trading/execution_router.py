@@ -200,7 +200,7 @@ class BinanceExecutionProvider:
             finally:
                 claim_db.close()
             kwargs["verification_run_id"] = verification_run_id
-            leverage = 1.0
+            leverage = 2.0
 
         # Phase 25 execution transparency: one BinanceExecutionAttempt row
         # per call, stage-by-stage, regardless of outcome - see
@@ -299,12 +299,33 @@ class BinanceExecutionProvider:
                     run_db.close()
                 if sl is None:
                     raise ValueError("Verification entry requires a protective stop")
-                risk_amount = qty * abs(mark - sl)
-                if risk_amount > balance_basis * 0.001:
-                    raise ValueError(
-                        f"Smallest permitted quantity risks ${risk_amount:.4f}, above 0.1% verification cap"
-                    )
+                commission = await self.client.get_commission_rate(symbol)
+                funding_rate = abs(await self.client.get_funding_rate(symbol))
                 notional_usdt = qty * mark
+                taker_rate = float(commission.get("taker_rate") or 0.0005)
+                fees = notional_usdt * taker_rate * 2
+                slippage = notional_usdt * 0.0002 * 2  # conservative 2 bps each side
+                funding_allowance = notional_usdt * max(funding_rate, 0.0001)
+                dynamic_headroom = max(2.50, fees + slippage + funding_allowance + notional_usdt * taker_rate)
+                margin_budget = min(available * 0.90, max(0.0, available - dynamic_headroom))
+                margin_required = notional_usdt / leverage
+                if margin_required > margin_budget:
+                    raise ValueError(
+                        f"Smallest permitted quantity requires ${margin_required:.4f} isolated margin, "
+                        f"above verification budget ${margin_budget:.4f}"
+                    )
+                stop_loss = qty * abs(mark - sl)
+                risk_amount = stop_loss + fees + slippage + funding_allowance
+                if risk_amount > 0.25:
+                    raise ValueError(
+                        f"All-in planned loss ${risk_amount:.4f} exceeds $0.25 verification cap"
+                    )
+                modes.audit("verification_size_validated", symbol=symbol, detail={
+                    "run_id": verification_run_id, "quantity": qty, "notional": notional_usdt,
+                    "margin_required": margin_required, "margin_budget": margin_budget,
+                    "planned_loss": risk_amount, "fees": fees, "slippage": slippage,
+                    "funding_allowance": funding_allowance, "headroom": dynamic_headroom,
+                })
             except Exception as exc:
                 reason = str(exc)
                 recorder.stage(STAGE_QUANTITY_CALCULATION, STATUS_FAILED, "Verification size validation failed")
@@ -725,10 +746,13 @@ class BinanceExecutionProvider:
                         from app.trading import verification_runs
                         verify_db = SessionLocal()
                         try:
-                            verification_runs.record_closed_trade(
+                            closed_run = verification_runs.record_closed_trade(
                                 verify_db, verification_run_id, net_realised_pnl=net_pnl,
                             )
                             verification_runs.mark_reconciled(verify_db, verification_run_id)
+                            if closed_run.status == "stopped":
+                                await execution_lease.release()
+                                maintenance.enable(closed_run.stop_reason or "verification_completed")
                         finally:
                             verify_db.close()
                 except Exception:
@@ -949,10 +973,13 @@ class BinanceExecutionProvider:
                 entry.exit_order_id = exit_order_id
                 entry.exit_reason = exit_reason
                 entry.realized_pnl = net_pnl
-                verification_runs.record_closed_trade(
+                closed_run = verification_runs.record_closed_trade(
                     db, run.verification_run_id, net_realised_pnl=net_pnl,
                 )
                 verification_runs.mark_reconciled(db, run.verification_run_id)
+                if closed_run.status == "stopped":
+                    await execution_lease.release()
+                    maintenance.enable(closed_run.stop_reason or "verification_completed")
                 modes.audit("verification_protective_fill_reconciled", symbol=entry.symbol, detail={
                     "verification_run_id": run.verification_run_id,
                     "entry_order_id": entry.entry_order_id or entry.order_id,

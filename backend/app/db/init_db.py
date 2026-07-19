@@ -268,6 +268,19 @@ def _migrate_verification_run_columns():
     inspector = inspect(engine)
     tables = inspector.get_table_names()
     with engine.begin() as conn:
+        if "live_verification_runs" in tables:
+            existing = {col["name"] for col in inspector.get_columns("live_verification_runs")}
+            additions = {
+                "completed_trades_during_this_run": "INTEGER DEFAULT 0 NOT NULL",
+                "verification_policy": "JSON",
+                "deployment_revision": "VARCHAR",
+                "deployment_image_digest": "VARCHAR",
+                "initial_exchange_state": "JSON",
+                "timestamp_sync_state": "JSON",
+            }
+            for name, sql_type in additions.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE live_verification_runs ADD COLUMN {name} {sql_type}"))
         for table in ("binance_execution_attempts", "binance_bot_trades"):
             if table not in tables:
                 continue

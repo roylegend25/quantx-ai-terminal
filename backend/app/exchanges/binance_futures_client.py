@@ -271,6 +271,10 @@ class BinanceFuturesClient:
         data = await self._get("/fapi/v1/premiumIndex", {"symbol": symbol.upper()}, priority=priority)
         return float(data["markPrice"])
 
+    async def get_funding_rate(self, symbol: str, priority: str = NORMAL) -> float:
+        data = await self._get("/fapi/v1/premiumIndex", {"symbol": symbol.upper()}, priority=priority)
+        return float(data.get("lastFundingRate") or 0.0)
+
     async def get_income_history(self, limit: int = 50, income_type: str | None = None, priority: str = LOW) -> list[dict]:
         """Recent account income rows (realized PnL, commission, funding
         fees...), normalized and safe to return to the UI."""
