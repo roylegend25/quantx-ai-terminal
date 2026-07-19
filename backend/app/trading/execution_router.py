@@ -194,7 +194,7 @@ class BinanceExecutionProvider:
             from app.trading import verification_runs
             claim_db = SessionLocal()
             try:
-                verification_run_id = verification_runs.claim_attempt(claim_db)
+                verification_run_id = verification_runs.validate_attempt(claim_db)
             except verification_runs.VerificationBlocked as exc:
                 return self._result(False, "open_position", reason=f"LIVE_VERIFICATION_BLOCKED: {exc}")
             finally:
@@ -344,11 +344,29 @@ class BinanceExecutionProvider:
             return self._result(False, "open_position", reason=reason)
         recorder.stage(STAGE_BINANCE_VALIDATION, STATUS_SUCCESS)
 
+        if verification_run_id:
+            from app.trading import verification_runs
+            claim_db = SessionLocal()
+            try:
+                verification_runs.claim_attempt(claim_db, verification_run_id)
+            except verification_runs.VerificationBlocked as exc:
+                recorder.stage(STAGE_ENTRY_ORDER_SUBMITTED, STATUS_FAILED, "Verification attempt limit")
+                recorder.finish("failed", reason=str(exc))
+                return self._result(False, "open_position", reason=f"LIVE_VERIFICATION_BLOCKED: {exc}")
+            finally:
+                claim_db.close()
+
         try:
             order = await self.client.place_market_order(
                 symbol=symbol, side="BUY" if side == "LONG" else "SELL", quantity=qty,
             )
         except Exception as e:
+            if verification_run_id:
+                release_db = SessionLocal()
+                try:
+                    verification_runs.release_unacknowledged_attempt(release_db, verification_run_id)
+                finally:
+                    release_db.close()
             reason = _safe_error(e)
             recorder.stage(STAGE_ENTRY_ORDER_SUBMITTED, STATUS_FAILED, classify_binance_error(e))
             recorder.finish("failed", reason=reason)

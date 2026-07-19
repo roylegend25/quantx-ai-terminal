@@ -43,13 +43,24 @@ def test_attempt_limit_is_run_scoped_and_atomic(db):
     run = verification_runs.prepare_run(db, starting_balance=1000)
     verification_runs.set_live_execution(db, run.verification_run_id, True)
     for expected in range(1, 7):
-        assert verification_runs.claim_attempt(db) == run.verification_run_id
+        assert verification_runs.validate_attempt(db) == run.verification_run_id
+        assert verification_runs.claim_attempt(db, run.verification_run_id) == run.verification_run_id
         assert db.get(LiveVerificationRun, run.verification_run_id).attempts_during_this_run == expected
     with pytest.raises(verification_runs.VerificationBlocked):
-        verification_runs.claim_attempt(db)
+        verification_runs.validate_attempt(db)
     stopped = db.get(LiveVerificationRun, run.verification_run_id)
     assert stopped.status == "stopped"
     assert stopped.stop_reason == "maximum_six_attempts_reached"
+
+
+def test_unacknowledged_submission_does_not_consume_attempt(db):
+    run = verification_runs.prepare_run(db, starting_balance=1000)
+    verification_runs.set_live_execution(db, run.verification_run_id, True)
+    verification_runs.validate_attempt(db)
+    verification_runs.claim_attempt(db, run.verification_run_id)
+    verification_runs.release_unacknowledged_attempt(db, run.verification_run_id)
+    db.expire_all()
+    assert db.get(LiveVerificationRun, run.verification_run_id).attempts_during_this_run == 0
 
 
 def test_second_profitable_closed_trade_stops_run_and_execution(db):

@@ -30,6 +30,10 @@ def _utcnow():
     return datetime.now(timezone.utc)
 
 
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
 def prepare_run(db: Session, *, starting_balance: float) -> LiveVerificationRun:
     if starting_balance <= 0:
         raise ValueError("starting_balance must be positive")
@@ -72,10 +76,40 @@ def set_live_execution(db: Session, run_id: str, enabled: bool) -> LiveVerificat
     return row
 
 
-def claim_attempt(db: Session) -> str:
-    """Atomically reserve one attempt before any live exchange order call."""
+def validate_attempt(db: Session) -> str:
+    """Fail closed before pre-submit work without consuming an attempt."""
     row = active_run(db)
     if not row:
+        raise VerificationBlocked("No active verification run")
+    loss_limit = row.starting_balance * MAX_REALISED_LOSS_PCT
+    if not row.live_execution_enabled or row.status not in ACTIVE_STATUSES:
+        raise VerificationBlocked("Verification run is disabled")
+    if row.attempts_during_this_run >= MAX_ATTEMPTS:
+        stop_if_limited(db, row.verification_run_id)
+        raise VerificationBlocked("Maximum six acknowledged attempts reached")
+    if row.successful_trades_during_this_run >= MAX_SUCCESSFUL_TRADES:
+        stop_if_limited(db, row.verification_run_id)
+        raise VerificationBlocked("Two successful trades already completed")
+    if row.consecutive_losses_during_this_run >= MAX_CONSECUTIVE_LOSSES:
+        stop_if_limited(db, row.verification_run_id)
+        raise VerificationBlocked("Maximum consecutive losses reached")
+    if row.realised_loss_during_this_run >= loss_limit:
+        stop_if_limited(db, row.verification_run_id)
+        raise VerificationBlocked("Maximum realised loss reached")
+    if _as_utc(row.started_at) < _utcnow() - MAX_RUN_DURATION:
+        stop_run(db, row.verification_run_id, "maximum_verification_duration_reached")
+        raise VerificationBlocked("Verification duration expired")
+    return row.verification_run_id
+
+
+def claim_attempt(db: Session, run_id: str) -> str:
+    """Atomically count an attempt immediately before real submission.
+
+    Callers must release the claim when Binance rejects or never acknowledges
+    the entry request. A successful Binance order response keeps the count.
+    """
+    row = active_run(db)
+    if not row or row.verification_run_id != run_id:
         raise VerificationBlocked("No active verification run")
     loss_limit = row.starting_balance * MAX_REALISED_LOSS_PCT
     result = db.execute(
@@ -102,6 +136,22 @@ def claim_attempt(db: Session) -> str:
         raise VerificationBlocked("Verification run is disabled or a run safety limit has been reached")
     db.commit()
     return row.verification_run_id
+
+
+def release_unacknowledged_attempt(db: Session, run_id: str) -> None:
+    """Undo a pre-submit reservation when Binance did not acknowledge it."""
+    db.execute(
+        update(LiveVerificationRun)
+        .where(
+            LiveVerificationRun.verification_run_id == run_id,
+            LiveVerificationRun.attempts_during_this_run > 0,
+            LiveVerificationRun.status.in_(ACTIVE_STATUSES),
+        )
+        .values(attempts_during_this_run=LiveVerificationRun.attempts_during_this_run - 1,
+                updated_at=_utcnow())
+        .execution_options(synchronize_session=False)
+    )
+    db.commit()
 
 
 def stop_run(db: Session, run_id: str, reason: str) -> LiveVerificationRun:
