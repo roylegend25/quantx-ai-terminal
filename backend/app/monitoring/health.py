@@ -20,6 +20,7 @@ from app.trading import scheduler as scheduler_module
 from app.deployment import maintenance
 from app.deployment.lease import execution_lease
 from app.core.config import settings
+from app.exchanges.binance_time import BinanceProduct, binance_time
 
 logger = get_logger("quantx.health")
 router = APIRouter(tags=["health"])
@@ -74,6 +75,7 @@ async def ready(response: Response, db: Session = Depends(get_db)):
     """Process is up AND its hard dependency (the database) is reachable."""
     db_ok, db_err = _check_database(db)
     redis_ok, redis_err = _check_redis()
+    futures_time = binance_time.health(BinanceProduct.USD_M_FUTURES)
 
     is_ready = db_ok
     response.status_code = 200 if is_ready else 503
@@ -83,6 +85,7 @@ async def ready(response: Response, db: Session = Depends(get_db)):
         "checks": {
             "database": {"ok": db_ok, "error": db_err},
             "redis": {"ok": redis_ok, "error": redis_err},
+            "binance_time": futures_time,
         },
         "time": datetime.now(timezone.utc).isoformat(),
     }
@@ -104,6 +107,7 @@ async def status(db: Session = Depends(get_db), _user: str = Depends(get_current
 
     db_ok, db_err = _check_database(db)
     redis_ok, redis_err = _check_redis()
+    futures_time = binance_time.health(BinanceProduct.USD_M_FUTURES)
 
     last_prediction = (
         db.query(PredictionFeature.timestamp)
@@ -160,10 +164,17 @@ async def status(db: Session = Depends(get_db), _user: str = Depends(get_current
     if not redis_ok:
         alerts.append({"level": "warning", "message": f"Redis unavailable: {redis_err}"})
 
+    if futures_time["status"] != "synced":
+        alerts.append({
+            "level": "critical",
+            "message": f"Binance timestamp synchronization is {futures_time['status']}",
+        })
+
     return {
         "backend": {"status": "up", "time": now.isoformat()},
         "database": {"ok": db_ok, "error": db_err},
         "redis": {"ok": redis_ok, "error": redis_err},
+        "binance_time": futures_time,
         "scheduler": {"running": scheduler_running, "execution_lease": execution_lease.public_status()},
         "deployment": {
             **maintenance.status(),

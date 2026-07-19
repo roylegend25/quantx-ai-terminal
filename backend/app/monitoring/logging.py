@@ -46,6 +46,18 @@ _STRUCTURED_FIELDS = (
     "reason",
     "price",
     "direction",
+    "product",
+    "measured_offset_ms",
+    "round_trip_ms",
+    "offset_mad_ms",
+    "sample_age_seconds",
+    "refresh_reason",
+    "sync_status",
+    "valid_samples",
+    "rejected_samples",
+    "path_category",
+    "binance_code",
+    "response_message",
 )
 
 

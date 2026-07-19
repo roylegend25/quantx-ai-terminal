@@ -50,11 +50,18 @@ from app.trading.protection_watchdog import start_protection_watchdog
 from app.core.config import settings
 from app.deployment import maintenance
 from app.deployment.lease import execution_lease
+from app.exchanges.binance_time import BinanceProduct, binance_time, start_binance_time_sync
 
 app = FastAPI(title="QuantX AI Terminal API", version="2.0.0")
 
 async def delayed_background_start():
     await asyncio.sleep(max(5, settings.scheduler_startup_grace_seconds))
+    # Establish product-specific clock health before any background task can
+    # attempt a signed account read. Failure remains visible as `unsafe` and
+    # the client-side gate blocks all entry writes.
+    await binance_time.refresh(BinanceProduct.USD_M_FUTURES, reason="application_startup")
+    await binance_time.refresh(BinanceProduct.SPOT, reason="application_startup")
+    start_binance_time_sync()
     start_scheduler()
     start_position_manager()
     start_mlops_scheduler()
@@ -132,6 +139,7 @@ async def health():
         "mode": "paper",
         "deployment_maintenance": maintenance.enabled(),
         "execution_lease_held": execution_lease.held,
+        "binance_time": binance_time.health(BinanceProduct.USD_M_FUTURES),
         "time": datetime.now(timezone.utc).isoformat(),
     }
 

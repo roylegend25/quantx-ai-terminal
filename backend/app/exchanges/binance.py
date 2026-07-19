@@ -7,13 +7,14 @@ this class to call them through.
 import hashlib
 import hmac
 import os
-import time
 from typing import Any
 from urllib.parse import urlencode
 
 import httpx
 
 from app.exchanges.base import ExchangeAdapter, PermissionCheck
+from app.exchanges.binance_errors import BinanceTimestampError, map_binance_error
+from app.exchanges.binance_time import BinanceProduct, binance_time
 
 FUTURES_BASE = "https://fapi.binance.com"
 SPOT_BASE = "https://api.binance.com"  # apiRestrictions only exists on the spot host
@@ -31,20 +32,37 @@ class BinanceAdapter(ExchangeAdapter):
     def configured(self) -> bool:
         return bool(self._api_key and self._api_secret)
 
-    def _sign(self, params: dict) -> dict:
-        signed = {**params, "timestamp": int(time.time() * 1000), "recvWindow": 5000}
+    def _sign(self, params: dict, product: BinanceProduct) -> dict:
+        signed = {
+            **params,
+            "timestamp": binance_time.timestamp_ms(product, require_safe=False),
+            "recvWindow": 5000,
+        }
         query = urlencode(signed)
         signature = hmac.new(self._api_secret.encode(), query.encode(), hashlib.sha256).hexdigest()
         signed["signature"] = signature
         return signed
 
-    async def _signed_get(self, base: str, path: str, params: dict | None = None) -> Any:
+    async def _signed_get(
+        self, base: str, path: str, params: dict | None = None, *, _retried: bool = False
+    ) -> Any:
         self._require_configured()
-        signed = self._sign(params or {})
+        product = BinanceProduct.SPOT if base == SPOT_BASE else BinanceProduct.USD_M_FUTURES
+        await binance_time.ensure_synced(product, reason=f"adapter_read_{path.rsplit('/', 1)[-1]}", require_safe=False)
+        signed = self._sign(params or {}, product)
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.get(f"{base}{path}", params=signed, headers={"X-MBX-APIKEY": self._api_key})
-            r.raise_for_status()
+        if r.status_code // 100 == 2:
             return r.json()
+        try:
+            payload = r.json()
+        except ValueError:
+            payload = None
+        error = map_binance_error(r.status_code, payload)
+        if isinstance(error, BinanceTimestampError) and not _retried:
+            await binance_time.refresh(product, reason="timestamp_rejection")
+            return await self._signed_get(base, path, params, _retried=True)
+        raise error
 
     async def _public_get(self, base: str, path: str, params: dict | None = None) -> Any:
         async with httpx.AsyncClient(timeout=15) as client:

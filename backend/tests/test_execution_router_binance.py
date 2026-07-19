@@ -11,6 +11,7 @@ from app.db.session import SessionLocal
 from app.db.models import BinanceBotTrade, ExchangePositionRow, LiveVerificationRun, TradingControl
 from app.exchanges.binance_models import BinanceBalance, BinanceOrder, BinancePosition
 from app.exchanges.binance_futures_client import BinanceFuturesClient
+from app.exchanges.binance_errors import BinanceNetworkError
 from app.trading import modes, real_risk_gate
 from app.trading.execution_router import BinanceExecutionProvider
 
@@ -134,6 +135,23 @@ def make_provider(mock_client):
     return provider
 
 
+class UncertainSubmissionClient(MockBinanceClient):
+    def __init__(self, *, reconcile_order=None, reconcile_error=None):
+        super().__init__()
+        self.reconcile_order = reconcile_order
+        self.reconcile_error = reconcile_error
+
+    async def place_market_order(self, symbol, side, quantity, reduce_only=False, client_order_id=None):
+        self.calls.append(("place_market_order", symbol, side, quantity, reduce_only, client_order_id))
+        raise BinanceNetworkError("transport status uncertain")
+
+    async def get_order(self, symbol, *, order_id=None, client_order_id=None):
+        self.calls.append(("get_order", symbol, order_id, client_order_id))
+        if self.reconcile_error:
+            raise self.reconcile_error
+        return self.reconcile_order
+
+
 @pytest.fixture(autouse=True)
 def testnet_mode():
     db = SessionLocal()
@@ -171,6 +189,35 @@ def test_testnet_open_places_market_order_with_leverage_and_protective_orders(mo
     assert client.called("place_stop_loss")[0][3] == 48000.0
     assert client.called("place_take_profit")[0][3] == 55000.0
     assert result.detail["sl_order_id"] and result.detail["tp_order_id"]
+
+
+def test_uncertain_entry_is_reconciled_by_client_id_without_duplicate_submission(monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "binance_max_notional_per_trade", 200.0)
+    acknowledged = make_order(order_id=991, client_order_id="qxentry-known")
+    client = UncertainSubmissionClient(reconcile_order=acknowledged)
+    result = asyncio.run(make_provider(client).open_position(
+        symbol="BTCUSDT", side="LONG", notional_usdt=100.0, leverage=1.0,
+        sl=48000.0, tp=55000.0,
+    ))
+    assert result.ok, result.reason
+    assert len(client.called("place_market_order")) == 1
+    assert len(client.called("get_order")) == 1
+    assert client.called("get_order")[0][3].startswith("qxentry-")
+
+
+def test_uncertain_entry_reconciliation_failure_never_resubmits(monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "binance_max_notional_per_trade", 200.0)
+    client = UncertainSubmissionClient(reconcile_error=BinanceNetworkError("query unavailable"))
+    result = asyncio.run(make_provider(client).open_position(
+        symbol="BTCUSDT", side="LONG", notional_usdt=100.0, leverage=1.0,
+        sl=48000.0, tp=55000.0,
+    ))
+    assert result.ok is False
+    assert "status uncertain" in result.reason
+    assert len(client.called("place_market_order")) == 1
+    assert len(client.called("get_order")) == 1
 
 
 def test_open_position_blocked_when_symbol_already_has_a_position(monkeypatch):

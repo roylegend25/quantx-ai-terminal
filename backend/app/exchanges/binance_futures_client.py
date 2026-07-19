@@ -45,6 +45,8 @@ from app.exchanges.binance_models import (
     BinanceUserTrade,
 )
 from app.exchanges.binance_rate_limiter import CRITICAL, HIGH, LOW, NORMAL, limiter
+from app.exchanges.binance_time import BinanceProduct, binance_time
+from app.monitoring.logging import get_logger, log_event
 
 PROD_BASE = "https://fapi.binance.com"
 TESTNET_BASE = "https://testnet.binancefuture.com"
@@ -60,6 +62,7 @@ _commission_rate_cache: dict[str, tuple[float, dict]] = {}
 _leverage_brackets_cache: dict[str, tuple[float, list]] = {}
 _position_mode_cache: dict[str, tuple[float, bool]] = {}
 EXCHANGE_FILTERS_TTL_SECONDS = 3600
+logger = get_logger("quantx.binance_futures")
 
 
 class LiveTradingLocked(RuntimeError):
@@ -91,8 +94,9 @@ class BinanceFuturesClient:
         self.read_only = read_only
         self.base_url = TESTNET_BASE if testnet else PROD_BASE
         self.timeout = timeout
-        # server_time - local_time, learned lazily and re-synced on -1021
-        self._time_offset_ms = 0
+        self.time_product = (
+            BinanceProduct.USD_M_FUTURES_TESTNET if testnet else BinanceProduct.USD_M_FUTURES
+        )
 
     @property
     def configured(self) -> bool:
@@ -100,12 +104,19 @@ class BinanceFuturesClient:
 
     # ------------------------------------------------------------- plumbing
 
-    def _timestamp(self) -> int:
-        return int(time.time() * 1000) + self._time_offset_ms
+    @property
+    def _time_offset_ms(self) -> float:
+        """Compatibility view of the process-wide product clock offset."""
+        return binance_time.state(self.time_product).offset_ms
 
-    def _sign(self, params: dict) -> dict:
+    def _timestamp(self, product: BinanceProduct | None = None, *, require_safe: bool = False) -> int:
+        return binance_time.timestamp_ms(product or self.time_product, require_safe=require_safe)
+
+    def _sign(
+        self, params: dict, *, product: BinanceProduct | None = None, require_safe: bool = False
+    ) -> dict:
         signed = {k: v for k, v in params.items() if v is not None}
-        signed["timestamp"] = self._timestamp()
+        signed["timestamp"] = self._timestamp(product, require_safe=require_safe)
         signed["recvWindow"] = RECV_WINDOW_MS
         query = urlencode(signed)
         signed["signature"] = hmac.new(
@@ -115,12 +126,14 @@ class BinanceFuturesClient:
 
     async def _sync_time(self) -> None:
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                r = await client.get(f"{self.base_url}/fapi/v1/time")
-                r.raise_for_status()
-                server_ms = int(r.json()["serverTime"])
-                self._time_offset_ms = server_ms - int(time.time() * 1000)
+            health = await binance_time.refresh(self.time_product, reason="timestamp_rejection")
+            if health["status"] != "synced":
+                raise BinanceTimestampError(
+                    f"Binance {self.time_product.value} time refresh remained {health['status']}"
+                )
         except Exception as e:  # keep the original -1021 as the real story
+            if isinstance(e, BinanceTimestampError):
+                raise
             raise BinanceNetworkError(f"failed to sync Binance server time: {e!r}") from e
 
     async def _request(
@@ -143,7 +156,16 @@ class BinanceFuturesClient:
         limiter.before_request(path, priority)
 
         params = params or {}
-        query = self._sign(params) if signed else params
+        require_safe_time = bool(signed and method.upper() == "POST")
+        if signed:
+            await binance_time.ensure_synced(
+                self.time_product,
+                reason=f"signed_{method.lower()}_{path.rsplit('/', 1)[-1]}",
+                require_safe=require_safe_time,
+            )
+        # Signing is deliberately after rate-limit and time-health work so
+        # the timestamp is generated immediately before network submission.
+        query = self._sign(params, require_safe=require_safe_time) if signed else params
         headers = {"X-MBX-APIKEY": self._api_key} if signed else {}
 
         try:
@@ -172,7 +194,15 @@ class BinanceFuturesClient:
         # One transparent retry after re-syncing the clock: timestamp drift
         # is an environment problem, not a caller decision.
         if isinstance(error, BinanceTimestampError) and signed and not _retried:
-            await self._sync_time()
+            log_event(
+                logger, message="binance_timestamp_rejected", category="trading",
+                product=self.time_product.value, path_category=path,
+                status_code=error.status, binance_code=error.code,
+                response_message=error.message, refresh_reason="timestamp_rejection",
+            )
+            health = await binance_time.refresh(self.time_product, reason="timestamp_rejection")
+            if method.upper() == "POST" and health["status"] != "synced":
+                raise error
             return await self._request(method, path, params, signed=True, _retried=True, priority=priority)
 
         raise error
@@ -212,6 +242,22 @@ class BinanceFuturesClient:
         params = {"symbol": symbol.upper()} if symbol else {}
         data = await self._get("/fapi/v1/openOrders", params, signed=True, priority=priority)
         return [BinanceOrder.from_api(o) for o in data]
+
+    async def get_order(
+        self, symbol: str, *, order_id: int | None = None, client_order_id: str | None = None,
+        priority: str = CRITICAL,
+    ) -> BinanceOrder:
+        """Reconcile one potentially uncertain submission by stable id."""
+        if order_id is None and not client_order_id:
+            raise ValueError("get_order requires order_id or client_order_id")
+        params: dict = {"symbol": symbol.upper()}
+        if order_id is not None:
+            params["orderId"] = order_id
+        else:
+            params["origClientOrderId"] = client_order_id
+        return BinanceOrder.from_api(
+            await self._get("/fapi/v1/order", params, signed=True, priority=priority)
+        )
 
     async def get_order_history(self, symbol: str, limit: int = 50, priority: str = LOW) -> list[BinanceOrder]:
         data = await self._get("/fapi/v1/allOrders", {"symbol": symbol.upper(), "limit": limit}, signed=True, priority=priority)
@@ -412,7 +458,7 @@ class BinanceFuturesClient:
         data = await self._get("/fapi/v1/multiAssetsMargin", signed=True, priority=priority)
         return bool(data.get("multiAssetsMargin"))
 
-    async def get_api_key_permissions(self) -> dict:
+    async def get_api_key_permissions(self, _retried: bool = False) -> dict:
         """Real API key permission flags - GET /sapi/v1/account/apiRestrictions
         on the SPOT/Margin host (api.binance.com), signed with the same key.
         This is a DIFFERENT permission scope than futures trading itself, so
@@ -420,7 +466,10 @@ class BinanceFuturesClient:
         does not mean the futures key is broken, only that this specific
         read isn't available to it. Diagnostic-only, never used by the
         trading path."""
-        query = self._sign({})
+        await binance_time.ensure_synced(
+            BinanceProduct.SPOT, reason="spot_permission_read", require_safe=False
+        )
+        query = self._sign({}, product=BinanceProduct.SPOT)
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as http_client:
                 r = await http_client.get(
@@ -435,7 +484,11 @@ class BinanceFuturesClient:
             payload = r.json()
         except ValueError:
             payload = None
-        raise map_binance_error(r.status_code, payload)
+        error = map_binance_error(r.status_code, payload)
+        if isinstance(error, BinanceTimestampError) and not _retried:
+            await binance_time.refresh(BinanceProduct.SPOT, reason="timestamp_rejection")
+            return await self.get_api_key_permissions(_retried=True)
+        raise error
 
     async def probe_algo_api_reachable(self) -> dict:
         """Probe GET /fapi/v1/algoOrder (singular) with no algoId/clientAlgoId.

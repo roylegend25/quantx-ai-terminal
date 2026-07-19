@@ -96,3 +96,28 @@ def test_pipeline_row_carries_run_id_without_touching_history(db):
     tagged = db.query(BinanceExecutionAttempt).filter_by(verification_run_id=run.verification_run_id).one()
     assert tagged.symbol == "VERIFYTEST"
     assert db.query(BinanceExecutionAttempt).filter(BinanceExecutionAttempt.verification_run_id.is_(None)).count() == before
+
+
+def test_previous_stopped_run_is_immutable_and_new_run_gets_distinct_id(db):
+    previous = verification_runs.prepare_run(db, starting_balance=24.86306379)
+    previous_id = previous.verification_run_id
+    verification_runs.stop_run(db, previous_id, "binance_reconciliation_timestamp_sync_failed")
+    before = {
+        "status": previous.status,
+        "stop_reason": previous.stop_reason,
+        "attempts": previous.attempts_during_this_run,
+        "successes": previous.successful_trades_during_this_run,
+        "ended_at": previous.ended_at,
+    }
+
+    new = verification_runs.prepare_run(db, starting_balance=24.86306379)
+    db.expire_all()
+    unchanged = db.get(LiveVerificationRun, previous_id)
+    assert new.verification_run_id != previous_id
+    assert {
+        "status": unchanged.status,
+        "stop_reason": unchanged.stop_reason,
+        "attempts": unchanged.attempts_during_this_run,
+        "successes": unchanged.successful_trades_during_this_run,
+        "ended_at": unchanged.ended_at,
+    } == before

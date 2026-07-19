@@ -356,22 +356,51 @@ class BinanceExecutionProvider:
             finally:
                 claim_db.close()
 
+        client_order_id = BinanceFuturesClient._client_order_id("qxentry")
         try:
             order = await self.client.place_market_order(
                 symbol=symbol, side="BUY" if side == "LONG" else "SELL", quantity=qty,
+                client_order_id=client_order_id,
             )
         except Exception as e:
-            if verification_run_id:
-                release_db = SessionLocal()
+            # A transport failure after bytes left this process is not proof
+            # that Binance rejected the entry. Never blindly submit again:
+            # first query the stable client id. If reconciliation itself is
+            # unavailable, preserve the conservative attempt reservation,
+            # disable the run, and require an operator-visible review.
+            from app.exchanges.binance_errors import BinanceNetworkError, BinanceOrderRejected
+            if isinstance(e, BinanceNetworkError):
                 try:
-                    verification_runs.release_unacknowledged_attempt(release_db, verification_run_id)
-                finally:
-                    release_db.close()
-            reason = _safe_error(e)
-            recorder.stage(STAGE_ENTRY_ORDER_SUBMITTED, STATUS_FAILED, classify_binance_error(e))
-            recorder.finish("failed", reason=reason)
-            modes.audit("order_rejected", symbol=symbol, detail={"error": reason})
-            return self._result(False, "open_position", reason=reason)
+                    order = await self.client.get_order(symbol, client_order_id=client_order_id)
+                    modes.audit("uncertain_entry_reconciled", symbol=symbol, detail={
+                        "client_order_id": client_order_id, "order_id": order.order_id,
+                    })
+                except BinanceOrderRejected as reconcile_exc:
+                    if getattr(reconcile_exc, "code", None) != -2013:
+                        return self._halt_uncertain_submission(
+                            verification_run_id, recorder, symbol, client_order_id, reconcile_exc,
+                        )
+                    order = None
+                except Exception as reconcile_exc:
+                    return self._halt_uncertain_submission(
+                        verification_run_id, recorder, symbol, client_order_id, reconcile_exc,
+                    )
+                if order is not None:
+                    e = None
+            if e is None:
+                pass
+            else:
+                if verification_run_id:
+                    release_db = SessionLocal()
+                    try:
+                        verification_runs.release_unacknowledged_attempt(release_db, verification_run_id)
+                    finally:
+                        release_db.close()
+                reason = _safe_error(e)
+                recorder.stage(STAGE_ENTRY_ORDER_SUBMITTED, STATUS_FAILED, classify_binance_error(e))
+                recorder.finish("failed", reason=reason)
+                modes.audit("order_rejected", symbol=symbol, detail={"error": reason})
+                return self._result(False, "open_position", reason=reason)
         recorder.stage(STAGE_ENTRY_ORDER_SUBMITTED, STATUS_SUCCESS)
         recorder.order_id = order.order_id
 
@@ -516,6 +545,25 @@ class BinanceExecutionProvider:
             recorder.finish("PROTECTION_FAILED", reason=f"Order accepted but a post-fill step failed: {reason}",
                             exchange_response=order.to_dict())
             return self._result(False, "open_position", reason=reason)
+
+    def _halt_uncertain_submission(
+        self, verification_run_id: str | None, recorder: PipelineRecorder, symbol: str,
+        client_order_id: str, exc: Exception,
+    ) -> RouterResult:
+        reason = "Entry submission status uncertain; live execution stopped pending client-order-id reconciliation"
+        recorder.stage(STAGE_ENTRY_ORDER_SUBMITTED, STATUS_FAILED, "Uncertain submission")
+        recorder.finish("failed", reason=reason, exchange_response={"client_order_id": client_order_id})
+        if verification_run_id:
+            from app.trading import verification_runs
+            db = SessionLocal()
+            try:
+                verification_runs.stop_run(db, verification_run_id, "uncertain_entry_submission")
+            finally:
+                db.close()
+        modes.audit("uncertain_entry_submission_halted", symbol=symbol, detail={
+            "client_order_id": client_order_id, "error_type": type(exc).__name__,
+        })
+        return self._result(False, "open_position", reason=reason, client_order_id=client_order_id)
 
     def _record_bot_trade(self, action: str, order, side: str, notional: float | None = None,
                           leverage: float | None = None, sl_order_id: int | None = None,

@@ -39,6 +39,10 @@ class BinanceTimestampError(BinanceError):
     """Code -1021: local clock drifted outside recvWindow."""
 
 
+class BinanceTimestampUnsafe(BinanceTimestampError):
+    """Local Binance clock estimate is not safe enough for an entry write."""
+
+
 class BinanceInsufficientBalance(BinanceError):
     """Code -2019/-2018: margin or balance insufficient for the order."""
 

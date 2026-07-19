@@ -215,6 +215,11 @@ def can_trade(db=None) -> tuple[bool, str]:
         return False, "Live trading locked - complete the risk acknowledgement first"
     if not binance_configured():
         return False, "Binance API keys are not configured"
+    if mode == MODE_LIVE:
+        from app.exchanges.binance_time import BinanceProduct, binance_time
+        time_health = binance_time.health(BinanceProduct.USD_M_FUTURES)
+        if time_health["status"] != "synced":
+            return False, f"Binance timestamp synchronization is {time_health['status']}"
     return True, "Trading enabled"
 
 

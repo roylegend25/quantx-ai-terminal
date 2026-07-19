@@ -17,6 +17,8 @@ import logging
 from app.monitoring.logging import get_logger, log_event
 from app.trading import modes
 from app.trading.execution_router import router as execution_router
+from app.exchanges.binance_time import BinanceProduct, binance_time
+from app.trading.safety_halt import halt_active_verification
 
 SYNC_INTERVAL_SECONDS = 30
 RUNNING = False
@@ -37,6 +39,14 @@ async def sync_loop():
                         category="trading",
                         error=result.reason,
                     )
+                    health = binance_time.health(BinanceProduct.USD_M_FUTURES)
+                    if health["status"] == "unsafe" or "timestamp" in (result.reason or "").lower():
+                        run_id = halt_active_verification("binance_timestamp_sync_unsafe")
+                        log_event(
+                            logger, message="live_verification_timestamp_halted",
+                            level=logging.ERROR, category="trading", trade_id=run_id,
+                            sync_status=health["status"], reason=result.reason,
+                        )
         except Exception as e:
             log_event(logger, message="binance_sync_error", level=logging.ERROR, category="trading", error=repr(e))
         await asyncio.sleep(SYNC_INTERVAL_SECONDS)
