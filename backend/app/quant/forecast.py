@@ -7,8 +7,8 @@ and independent source composition exist. This module never executes.
 from __future__ import annotations
 import math
 
-HORIZON_BARS={"1m":24,"3m":16,"5m":12,"15m":8,"30m":6,"1h":6,"4h":4,"1d":4}
-TIMEFRAME_SECONDS={"1m":60,"3m":180,"5m":300,"15m":900,"30m":1800,"1h":3600,"4h":14400,"1d":86400}
+HORIZON_BARS={"1m":24,"3m":16,"5m":12,"15m":8,"30m":6,"1h":6,"4h":4,"1d":4,"1w":4}
+TIMEFRAME_SECONDS={"1m":60,"3m":180,"5m":300,"15m":900,"30m":1800,"1h":3600,"4h":14400,"1d":86400,"1w":604800}
 FALLBACK_BAND_PCT=.006
 
 def _ease_out(t): return 1-(1-t)**2

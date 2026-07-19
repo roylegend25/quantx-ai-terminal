@@ -14,7 +14,7 @@ from app.quant.forecast import HORIZON_BARS, build_forecast, horizon_bars
 
 INTERVAL_MS = {
     "1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
-    "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000,
+    "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000, "1w": 604_800_000,
 }
 
 BASE = dict(
@@ -39,7 +39,7 @@ def _assert_series_valid(points, last_time, interval_ms):
         assert math.isfinite(p["price"]) and p["price"] > 0
 
 
-@pytest.mark.parametrize("interval", ["1m", "3m", "30m", "1h", "4h", "1d"])
+@pytest.mark.parametrize("interval", ["1m", "3m", "30m", "1h", "4h", "1d", "1w"])
 @pytest.mark.parametrize("direction", ["LONG", "SHORT"])
 def test_directional_forecast_produces_full_horizon(interval, direction):
     target = 104.0 if direction == "LONG" else 96.0
@@ -135,7 +135,7 @@ def _make_client():
 
 
 @pytest.mark.parametrize("symbol", ["BTCUSDT", "ETHUSDT"])
-@pytest.mark.parametrize("timeframe", ["1m", "3m", "30m", "1h", "4h", "1d"])
+@pytest.mark.parametrize("timeframe", ["1m", "3m", "30m", "1h", "4h", "1d", "1w"])
 def test_prediction_route_exposes_consistent_forecast_fields(monkeypatch, symbol, timeframe):
     from tests.test_prediction_multi_symbol import (
         _FakeAsyncClient,
