@@ -15,6 +15,29 @@ RUNNING = False
 engine = TradingEngine()
 logger = get_logger("quantx.scheduler")
 
+
+async def _renew_execution_lease(stop: asyncio.Event) -> None:
+    """Keep the single-executor lease valid for the whole strategy cycle.
+
+    Strategy evaluation can legitimately take longer than the Redis lease TTL.
+    Renewal is deliberately fail-closed: the router's final ``owns`` check will
+    reject an entry if this heartbeat ever loses authority.
+    """
+    interval = max(1.0, execution_lease.ttl / 3)
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+            return
+        except asyncio.TimeoutError:
+            if not await execution_lease.renew():
+                log_event(
+                    logger,
+                    message="scheduler_execution_lease_renewal_failed",
+                    level=logging.ERROR,
+                    category="scheduler",
+                )
+                return
+
 async def trading_loop():
     global RUNNING
 
@@ -45,7 +68,13 @@ async def trading_loop():
                 if not owns_lease:
                     log_event(logger, message="scheduler_execution_lease_unavailable", category="scheduler")
                 else:
-                    await engine.run_cycle(execution_lease_owner=execution_lease.owner)
+                    heartbeat_stop = asyncio.Event()
+                    heartbeat = asyncio.create_task(_renew_execution_lease(heartbeat_stop))
+                    try:
+                        await engine.run_cycle(execution_lease_owner=execution_lease.owner)
+                    finally:
+                        heartbeat_stop.set()
+                        await heartbeat
         except Exception as e:
             log_event(logger, message="scheduler_cycle_error", level=logging.ERROR, category="scheduler", error=repr(e))
         finally:

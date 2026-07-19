@@ -4,6 +4,7 @@ from app.core.config import settings
 from app.deployment import maintenance
 from app.deployment.lease import ExecutionLease
 from app.trading.execution_router import ExecutionRouter
+from app.trading import scheduler
 
 
 class FakeRedis:
@@ -86,3 +87,25 @@ def test_expired_lease_is_reacquired_without_bypassing_competing_owner(monkeypat
     store.values[lease.key] = "replacement-owner"
     assert asyncio.run(lease.acquire_or_renew()) is False
     assert store.values[lease.key] == "replacement-owner"
+
+
+def test_scheduler_renews_lease_during_long_cycle(monkeypatch):
+    stop = asyncio.Event()
+    renewals = []
+
+    async def renew():
+        renewals.append(True)
+        stop.set()
+        return True
+
+    async def timeout_immediately(awaitable, *, timeout):
+        del timeout
+        awaitable.close()
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(scheduler.execution_lease, "renew", renew)
+    monkeypatch.setattr(scheduler.asyncio, "wait_for", timeout_immediately)
+
+    asyncio.run(scheduler._renew_execution_lease(stop))
+
+    assert renewals == [True]
