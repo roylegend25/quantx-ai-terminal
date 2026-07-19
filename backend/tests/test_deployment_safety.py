@@ -109,3 +109,39 @@ def test_scheduler_renews_lease_during_long_cycle(monkeypatch):
     asyncio.run(scheduler._renew_execution_lease(stop))
 
     assert renewals == [True]
+
+
+def test_scheduler_refreshes_stale_timestamp_before_live_cycle(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(scheduler.maintenance, "enabled", lambda: False)
+    monkeypatch.setattr(
+        scheduler.modes,
+        "get_control",
+        lambda: {"execution_enabled": True, "execution_state": "running"},
+    )
+    monkeypatch.setattr(scheduler.modes, "effective_mode", lambda: scheduler.modes.MODE_LIVE)
+    monkeypatch.setattr(
+        scheduler.binance_time,
+        "health",
+        lambda _product: {"status": "degraded", "sample_age_seconds": 301.0},
+    )
+
+    async def refresh(_product, *, reason):
+        calls.append(reason)
+        return {"status": "synced", "sample_age_seconds": 0.0}
+
+    async def run_cycle():
+        calls.append("cycle")
+
+    async def stop_after_iteration(_seconds):
+        scheduler.RUNNING = False
+
+    monkeypatch.setattr(scheduler.binance_time, "refresh", refresh)
+    monkeypatch.setattr(scheduler, "_run_engine_cycle", run_cycle)
+    monkeypatch.setattr(scheduler.asyncio, "sleep", stop_after_iteration)
+    scheduler.RUNNING = True
+
+    asyncio.run(scheduler.trading_loop())
+
+    assert calls == ["scheduler_cycle_preflight", "cycle"]
