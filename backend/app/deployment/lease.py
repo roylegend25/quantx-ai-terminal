@@ -56,6 +56,17 @@ class ExecutionLease:
             self.held = False
         return self.held
 
+    async def acquire_or_renew(self) -> bool:
+        """Keep authority when valid, or reacquire after its TTL elapsed.
+
+        A five-minute scheduler interval is intentionally longer than the
+        30-second lease TTL. Redis SET NX still prevents reacquisition when
+        another live executor owns the key.
+        """
+        if self.held and await self.renew():
+            return True
+        return await self.acquire()
+
     async def owns(self) -> bool:
         if not self.held:
             return False

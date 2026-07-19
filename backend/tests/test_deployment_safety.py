@@ -71,3 +71,18 @@ def test_lease_loss_is_detected(monkeypatch):
     store.values[lease.key] = "replacement-owner"
     assert asyncio.run(lease.owns()) is False
     assert lease.held is False
+
+
+def test_expired_lease_is_reacquired_without_bypassing_competing_owner(monkeypatch):
+    store = FakeRedis()
+    lease = ExecutionLease()
+    monkeypatch.setattr(lease, "_redis", lambda: store)
+    assert asyncio.run(lease.acquire_or_renew()) is True
+
+    del store.values[lease.key]  # Redis TTL elapsed between scheduler cycles.
+    assert asyncio.run(lease.acquire_or_renew()) is True
+    assert store.values[lease.key] == lease.owner
+
+    store.values[lease.key] = "replacement-owner"
+    assert asyncio.run(lease.acquire_or_renew()) is False
+    assert store.values[lease.key] == "replacement-owner"

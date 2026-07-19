@@ -27,7 +27,7 @@ async def trading_loop():
                 log_event(logger, message="scheduler_execution_disabled", category="scheduler",
                           reason=modes.get_control()["execution_state"])
             else:
-                owns_lease = await (execution_lease.renew() if execution_lease.held else execution_lease.acquire())
+                owns_lease = await execution_lease.acquire_or_renew()
                 if not owns_lease:
                     log_event(logger, message="scheduler_execution_lease_unavailable", category="scheduler")
                 else:
