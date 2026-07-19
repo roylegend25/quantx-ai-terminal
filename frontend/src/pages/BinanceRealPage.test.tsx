@@ -40,6 +40,8 @@ const readinessUnlocked = {
 vi.mock("../services/api", () => ({
   api: {
     tradingMode: vi.fn(),
+    binanceCredentialStatus: vi.fn().mockResolvedValue({ configured: true, connection_valid: true,
+      permissions_valid: true, environment: "real", account_mode: "PAPER", last_verified_at: null, validation_error: null }),
     liveReadiness: vi.fn(),
     tradingSync: vi.fn().mockResolvedValue({}),
     binanceSummary: vi.fn().mockResolvedValue({ available: false, reason: "test" }),

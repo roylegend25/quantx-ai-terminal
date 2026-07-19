@@ -8,8 +8,26 @@ from app.execution.order_router import OrderType
 from app.monitoring.logging import get_logger, log_event
 from app.trading import risk_manager
 from app.trading.execution_router import router as execution_router
+from app.trading import modes
 
 logger = get_logger("quantx.trading_engine")
+
+
+def _blocked_outcome(reason: str, *, data_reliable: bool | None) -> str:
+    text = (reason or "").lower()
+    if data_reliable is False or any(word in text for word in ("data", "stale", "volume", "spread")):
+        return "BLOCKED_BY_DATA"
+    if any(word in text for word in ("balance", "margin", "notional", "position size")):
+        return "BLOCKED_BY_BALANCE"
+    if any(word in text for word in ("risk", "loss", "position", "confidence", "duplicate")):
+        return "BLOCKED_BY_RISK"
+    return "NO_TRADE"
+
+
+def _record_candidate(symbol: str, outcome: str, reason: str, **detail) -> None:
+    payload = {"outcome": outcome, "reason": reason, **detail}
+    log_event(logger, message="trade_candidate_outcome", category="trading", symbol=symbol, **payload)
+    modes.audit("trade_candidate_outcome", symbol=symbol, detail=payload)
 
 class TradingEngine:
 
@@ -146,8 +164,22 @@ class TradingEngine:
                 mode=result.mode,
                 reason=result.reason if not result.ok else None,
             )
+            if result.ok:
+                _record_candidate(symbol, "TRADE_APPROVED", "Order accepted", direction=prediction["direction"],
+                                  confidence=prediction["confidence"], mode=result.mode)
+            else:
+                reason = result.reason or "Execution failed"
+                lower = reason.lower()
+                outcome = ("BLOCKED_BY_BALANCE" if any(x in lower for x in ("balance", "margin", "notional"))
+                           else "BLOCKED_BY_EXCHANGE" if result.mode != modes.MODE_PAPER
+                           else "EXECUTION_FAILED")
+                _record_candidate(symbol, outcome, reason, direction=prediction["direction"],
+                                  confidence=prediction["confidence"], mode=result.mode)
 
         else:
+            outcome = _blocked_outcome(decision["reason"], data_reliable=data_quality.get("reliable"))
+            _record_candidate(symbol, outcome, decision["reason"], direction=prediction["direction"],
+                              confidence=prediction["confidence"], mode=modes.effective_mode())
             log_event(
                 logger, message="scheduler_no_trade", category="scheduler",
                 symbol=symbol, reason=decision["reason"],

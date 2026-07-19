@@ -94,6 +94,8 @@ def get_control(db=None) -> dict:
             "kill_switch_active": bool(row.kill_switch_active),
             "kill_switch_reason": row.kill_switch_reason,
             "kill_switch_at": row.kill_switch_at.isoformat() if row.kill_switch_at else None,
+            "execution_enabled": bool(row.execution_enabled),
+            "execution_state": row.execution_state or "running",
         }
 
     if db is not None:
@@ -137,6 +139,20 @@ def set_kill_switch(active: bool, reason: str | None = None, db=None) -> dict:
         detail={"reason": reason},
         db=db,
     )
+    return result
+
+
+def set_execution_state(state: str, db=None) -> dict:
+    if state not in ("running", "paused", "stopped"):
+        raise ValueError("Unknown execution state")
+    def write(session):
+        row = _get_or_create(session)
+        row.execution_state = state
+        row.execution_enabled = state == "running"
+        session.commit()
+        return get_control(session)
+    result = write(db) if db is not None else _with_session(write)
+    audit(f"execution_{state}", db=db)
     return result
 
 
@@ -189,6 +205,8 @@ def can_trade(db=None) -> tuple[bool, str]:
 
     if control["kill_switch_active"]:
         return False, "Kill switch active - all trading halted"
+    if not control["execution_enabled"]:
+        return False, f"Execution loop {control['execution_state']}"
     if mode == MODE_PAPER:
         return False, "Paper mode active - real orders are not placed"
     if mode == MODE_LIVE_LOCKED:
@@ -239,6 +257,8 @@ def exchange_safe_status(db=None) -> dict:
         "can_trade_binance_live": allowed and mode == MODE_LIVE,
         "reason": reason,
         "kill_switch_active": control["kill_switch_active"],
+        "execution_enabled": control["execution_enabled"],
+        "execution_state": control["execution_state"],
         "allowed_symbols": settings.binance_allowed_symbols,
         "max_leverage": settings.binance_max_leverage,
         "max_notional_per_trade": settings.binance_max_notional_per_trade,

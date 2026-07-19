@@ -1352,6 +1352,8 @@ button, select, input {
   position: relative;
   width: 100%;
 }
+.chart-data-state{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none;background:rgba(9,11,20,.55);color:var(--muted);font-size:13px;z-index:7}.chart-data-state.error{color:var(--red);background:rgba(45,8,15,.72)}
+.credential-connected{margin:0 0 14px;padding:10px 12px;border:1px solid rgba(var(--c-green-rgb),.35);border-radius:10px;color:var(--green);background:rgba(var(--c-green-rgb),.08);font-weight:700}
 
 .pc-fullscreen-close {
   position: absolute;

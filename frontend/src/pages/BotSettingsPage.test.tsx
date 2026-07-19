@@ -30,6 +30,8 @@ const baseStatus = {
 vi.mock("../services/api", () => ({
   api: {
     tradingMode: vi.fn(),
+    binanceCredentialStatus: vi.fn().mockResolvedValue({ configured: true, connection_valid: true,
+      permissions_valid: true, environment: "real", account_mode: "PAPER", last_verified_at: null, validation_error: null }),
     liveReadiness: vi.fn().mockResolvedValue({ ok: false, blocked_reason: "x", steps: [] }),
     unlockBinanceLive: vi.fn().mockResolvedValue({}),
     lockBinanceLive: vi.fn().mockResolvedValue({}),

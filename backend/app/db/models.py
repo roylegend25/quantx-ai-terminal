@@ -180,6 +180,9 @@ class PredictionLedger(Base):
     last_resolver_attempt_at = Column(DateTime, nullable=True)
     last_resolver_error = Column(Text, nullable=True)
     unresolved_status = Column(String, nullable=True, index=True)
+    resolver_claim_token = Column(String, nullable=True, index=True)
+    resolver_claimed_at = Column(DateTime, nullable=True)
+    resolver_next_attempt_at = Column(DateTime, nullable=True, index=True)
 
 class PredictionResolution(Base):
     __tablename__ = "prediction_resolutions"
@@ -878,6 +881,8 @@ class TradingControl(Base):
     kill_switch_active = Column(Boolean, default=False)
     kill_switch_reason = Column(Text, nullable=True)
     kill_switch_at = Column(DateTime, nullable=True)
+    execution_enabled = Column(Boolean, default=True, nullable=False)
+    execution_state = Column(String, default="running", nullable=False)
     updated_at = Column(
         DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
     )
@@ -942,6 +947,7 @@ class BinanceBotTrade(Base):
     __tablename__ = "binance_bot_trades"
 
     id = Column(Integer, primary_key=True, index=True)
+    verification_run_id = Column(String, nullable=True, index=True)
     mode = Column(String, index=True)  # BINANCE_TESTNET (internal) | BINANCE_LIVE
     action = Column(String, index=True)  # open | close
     order_id = Column(BigInteger, index=True)
@@ -1022,6 +1028,7 @@ class BinanceExecutionAttempt(Base):
     __tablename__ = "binance_execution_attempts"
 
     id = Column(Integer, primary_key=True, index=True)
+    verification_run_id = Column(String, nullable=True, index=True)
     mode = Column(String, index=True)
     symbol = Column(String, index=True)
     side = Column(String, nullable=True)
@@ -1040,6 +1047,30 @@ class BinanceExecutionAttempt(Base):
     order_id = Column(BigInteger, nullable=True)
     latency_ms = Column(Float, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class LiveVerificationRun(Base):
+    """Run-scoped live verification counters. Historical execution rows are
+    immutable audit history; baseline_historical_attempt_count snapshots
+    their count when a new run is prepared, while only rows carrying this
+    run's id contribute to its limits."""
+    __tablename__ = "live_verification_runs"
+
+    verification_run_id = Column(String, primary_key=True)
+    started_at = Column(DateTime, nullable=False, index=True)
+    ended_at = Column(DateTime, nullable=True)
+    starting_balance = Column(Float, nullable=False)
+    baseline_historical_attempt_count = Column(Integer, nullable=False)
+    attempts_during_this_run = Column(Integer, nullable=False, default=0)
+    successful_trades_during_this_run = Column(Integer, nullable=False, default=0)
+    consecutive_losses_during_this_run = Column(Integer, nullable=False, default=0)
+    realised_loss_during_this_run = Column(Float, nullable=False, default=0.0)
+    status = Column(String, nullable=False, default="prepared", index=True)
+    stop_reason = Column(Text, nullable=True)
+    live_execution_enabled = Column(Boolean, nullable=False, default=False, index=True)
+    last_reconciled_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
 
 
 class RiskSettings(Base):

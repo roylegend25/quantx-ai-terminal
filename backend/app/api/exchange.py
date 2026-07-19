@@ -1,4 +1,5 @@
 import time
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 
@@ -133,6 +134,26 @@ async def binance_connectivity(public_connected: bool | None = None) -> dict:
         # back-compat alias - existing consumers of `binance_connected`
         # keep working unchanged.
         "binance_connected": probe["connected"],
+    }
+
+
+@router.get("/binance/credential-status")
+async def binance_credential_status():
+    """Secret-free credential status for settings UIs. A successful signed
+    futures-account read proves the key is valid for the permissions this
+    application needs to inspect. It does not return identifiers because a
+    stable key fingerprint is unnecessary and would add exposure."""
+    connectivity = await binance_connectivity()
+    configured = bool(settings.binance_api_key and settings.binance_api_secret)
+    valid = bool(connectivity["binance_signed_read_ok"])
+    return {
+        "configured": configured,
+        "connection_valid": valid,
+        "permissions_valid": valid,
+        "environment": "testnet" if settings.binance_futures_testnet else "real",
+        "account_mode": modes.effective_mode(),
+        "last_verified_at": datetime.now(timezone.utc).isoformat() if configured else None,
+        "validation_error": connectivity["binance_account_error"],
     }
 
 

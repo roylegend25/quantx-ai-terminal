@@ -28,7 +28,7 @@ import httpx
 
 from app.core.config import settings
 from app.core.security import create_internal_service_token
-from app.db.models import ExchangePositionRow
+from app.db.models import BinanceBotTrade, ExchangePositionRow
 from app.db.session import SessionLocal
 from app.decision_engine.router import decision_engine_router
 from app.decision_engine.repository import owner
@@ -189,6 +189,19 @@ class BinanceExecutionProvider:
         leverage = leverage if leverage and leverage > 0 else settings.binance_default_leverage
         leverage = min(leverage, settings.binance_max_leverage)
 
+        verification_run_id = None
+        if self.mode == modes.MODE_LIVE and not is_test:
+            from app.trading import verification_runs
+            claim_db = SessionLocal()
+            try:
+                verification_run_id = verification_runs.claim_attempt(claim_db)
+            except verification_runs.VerificationBlocked as exc:
+                return self._result(False, "open_position", reason=f"LIVE_VERIFICATION_BLOCKED: {exc}")
+            finally:
+                claim_db.close()
+            kwargs["verification_run_id"] = verification_run_id
+            leverage = 1.0
+
         # Phase 25 execution transparency: one BinanceExecutionAttempt row
         # per call, stage-by-stage, regardless of outcome - see
         # app.trading.execution_pipeline. This is purely additive
@@ -198,6 +211,7 @@ class BinanceExecutionProvider:
         recorder = PipelineRecorder(
             mode=self.mode, symbol=symbol, side=side, is_test=is_test,
             confidence=confidence, requested_notional=notional_usdt, leverage=leverage,
+            verification_run_id=verification_run_id,
         )
         has_model = bool(decision_engine.get("active_model"))
         recorder.stage(
@@ -234,6 +248,12 @@ class BinanceExecutionProvider:
         except Exception:
             pass  # keep the caller-provided count; the gate re-verifies reachability anyway
 
+        if verification_run_id and (open_positions or 0) >= 1:
+            reason = "Live verification allows only one open position"
+            recorder.stage(STAGE_RISK_GATE, STATUS_FAILED, "Existing position")
+            recorder.finish("failed", reason=reason)
+            return self._result(False, "open_position", reason=reason)
+
         gate = await real_risk_gate.evaluate_real_order(
             symbol=symbol, side=side, notional_usdt=notional_usdt, leverage=leverage,
             client=self.client, confidence=confidence, data_reliable=data_reliable,
@@ -258,6 +278,38 @@ class BinanceExecutionProvider:
 
         raw_qty = notional_usdt / mark
         qty = _round_qty(symbol, raw_qty)
+        if verification_run_id:
+            import math
+            from app.db.models import LiveVerificationRun
+            try:
+                filters = await self.client.get_exchange_filters(symbol)
+                balances = await self.client.get_balances()
+                available = next((b.available for b in balances if b.asset == "USDT"), 0.0)
+                step = float(filters.get("step_size") or 0.001)
+                min_qty = float(filters.get("min_qty") or step)
+                min_notional = float(filters.get("min_notional") or 5.0)
+                qty = max(min_qty, math.ceil((min_notional / mark) / step) * step)
+                precision = int(filters.get("quantity_precision") or _QTY_DECIMALS.get(symbol, 3))
+                qty = round(qty, precision)
+                run_db = SessionLocal()
+                try:
+                    run = run_db.get(LiveVerificationRun, verification_run_id)
+                    balance_basis = min(float(run.starting_balance), available) if run else available
+                finally:
+                    run_db.close()
+                if sl is None:
+                    raise ValueError("Verification entry requires a protective stop")
+                risk_amount = qty * abs(mark - sl)
+                if risk_amount > balance_basis * 0.001:
+                    raise ValueError(
+                        f"Smallest permitted quantity risks ${risk_amount:.4f}, above 0.1% verification cap"
+                    )
+                notional_usdt = qty * mark
+            except Exception as exc:
+                reason = str(exc)
+                recorder.stage(STAGE_QUANTITY_CALCULATION, STATUS_FAILED, "Verification size validation failed")
+                recorder.finish("failed", reason=reason)
+                return self._result(False, "open_position", reason=reason)
         recorder.requested_quantity = round(raw_qty, 8)
         recorder.adjusted_quantity = qty
         recorder.margin_required = round(notional_usdt / max(leverage, 1.0), 2)
@@ -472,6 +524,7 @@ class BinanceExecutionProvider:
         db = SessionLocal()
         try:
             db.add(BinanceBotTrade(
+                verification_run_id=kwargs.get("verification_run_id"),
                 mode=self.mode,
                 action=action,
                 order_id=order.order_id,
@@ -535,7 +588,22 @@ class BinanceExecutionProvider:
             )
             modes.audit("position_closed", symbol=symbol,
                         detail={"order_id": order.order_id, "qty": qty, "side": pos.side})
-            self._record_bot_trade(action="close", order=order, side=pos.side, exit_order_id=order.order_id, **kwargs)
+            verification_run_id = kwargs.get("verification_run_id")
+            verification_entry_order_id = None
+            if not verification_run_id:
+                db = SessionLocal()
+                try:
+                    entry = db.query(BinanceBotTrade).filter(
+                        BinanceBotTrade.mode == self.mode, BinanceBotTrade.symbol == symbol,
+                        BinanceBotTrade.action == "open", BinanceBotTrade.verification_run_id.isnot(None),
+                    ).order_by(BinanceBotTrade.created_at.desc()).first()
+                    verification_run_id = entry.verification_run_id if entry else None
+                    verification_entry_order_id = entry.order_id if entry else None
+                finally:
+                    db.close()
+            close_kwargs = {**kwargs, "verification_run_id": verification_run_id}
+            self._record_bot_trade(action="close", order=order, side=pos.side,
+                                   exit_order_id=order.order_id, **close_kwargs)
 
             # No position left to protect - any resting TP/SL for this
             # symbol is now an orphan reduce-only order that would otherwise
@@ -564,6 +632,46 @@ class BinanceExecutionProvider:
                 pass  # best-effort cleanup - the position close itself already succeeded
 
             await self.sync_positions()
+            if verification_run_id:
+                # Binance income is the source of truth. Count success/loss
+                # only when the close order's realised P&L and commissions
+                # are visible; delayed income remains uncounted for later
+                # reconciliation rather than being guessed.
+                try:
+                    remaining_positions = await self.client.get_positions(symbol)
+                    remaining_orders = await self.client.get_open_orders(symbol)
+                    if remaining_positions or remaining_orders:
+                        from app.trading import verification_runs
+                        verify_db = SessionLocal()
+                        try:
+                            verification_runs.stop_run(verify_db, verification_run_id, "post_close_reconciliation_failed")
+                        finally:
+                            verify_db.close()
+                        return self._result(False, "close_position", reason="Verification reconciliation found a remaining position or order")
+                    income = await self.client.get_income_history(limit=100)
+                    run_order_ids = {str(order.order_id)}
+                    if verification_entry_order_id is not None:
+                        run_order_ids.add(str(verification_entry_order_id))
+                    matched = [r for r in income if str(r.get("orderId") or "") in run_order_ids]
+                    pnl_rows = [r for r in matched if r.get("incomeType") in ("REALIZED_PNL", "COMMISSION")]
+                    if matched and pnl_rows:
+                        net_pnl = sum(float(r.get("income") or 0.0) for r in pnl_rows)
+                        from app.trading import verification_runs
+                        verify_db = SessionLocal()
+                        try:
+                            verification_runs.record_closed_trade(
+                                verify_db, verification_run_id, net_realised_pnl=net_pnl,
+                            )
+                            verification_runs.mark_reconciled(verify_db, verification_run_id)
+                        finally:
+                            verify_db.close()
+                except Exception:
+                    from app.trading import verification_runs
+                    verify_db = SessionLocal()
+                    try:
+                        verification_runs.stop_run(verify_db, verification_run_id, "post_close_reconciliation_failed")
+                    finally:
+                        verify_db.close()
             return self._result(True, "close_position", order=order.to_dict(), canceled_orphan_orders=canceled_orphans)
         except Exception as e:
             modes.audit("order_rejected", symbol=symbol, detail={"action": "close", "error": _safe_error(e)})

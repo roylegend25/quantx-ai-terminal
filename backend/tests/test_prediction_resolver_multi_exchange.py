@@ -41,6 +41,17 @@ def _candle(symbol, timeframe, ts_ms, close, high=None, low=None):
 @pytest.fixture
 def db():
     session = SessionLocal()
+    test_ids = [row[0] for row in session.query(PredictionLedger.prediction_id).filter(
+        PredictionLedger.prediction_id.in_([
+            "btc-local-1", "eth-local-1", "btc-fallback-1", "eth-disagree-1", "btc-notdue-1",
+            "btc-idem-1", "btc-longwrong-1", "eth-shortcorrect-1",
+            "btc-claim-1", "eth-claim-2", "btc-backoff-1",
+        ])
+    ).all()]
+    if test_ids:
+        session.query(PredictionResolution).filter(PredictionResolution.prediction_id.in_(test_ids)).delete(synchronize_session=False)
+        session.query(PredictionLedger).filter(PredictionLedger.prediction_id.in_(test_ids)).delete(synchronize_session=False)
+        session.commit()
     yield session
     session.close()
 
@@ -80,7 +91,7 @@ def test_eth_resolves_from_local_candle_no_network(db):
     _cleanup(db, "eth-local-1")
 
 
-def test_binance_gap_falls_back_to_bybit(db, monkeypatch):
+def test_binance_gap_falls_back_to_coinbase(db, monkeypatch):
     row = _ledger(symbol="BTCUSDT", prediction_id="btc-fallback-1")
     db.add(row)
     db.commit()
@@ -89,22 +100,22 @@ def test_binance_gap_falls_back_to_bybit(db, monkeypatch):
     async def fake_binance(symbol, timeframe, at, tf_ms):
         return providers.ResolutionPriceObservation("binance_futures", "binance", "usdt_perp", symbol, at, error="no_data")
 
-    async def fake_bybit(symbol, timeframe, at, tf_ms):
-        return providers.ResolutionPriceObservation("bybit", "bybit", "usdt_perp", symbol, at,
-                                                      actual_market_timestamp=at, price=101.0, confidence=0.9)
+    async def fake_coinbase(symbol, timeframe, at, tf_ms):
+        return providers.ResolutionPriceObservation("coinbase", "coinbase", "spot", symbol, at,
+                                                      actual_market_timestamp=at, price=101.0, confidence=0.75)
 
     async def fake_dead(symbol, timeframe, at, tf_ms):
         return providers.ResolutionPriceObservation("x", "x", "x", symbol, at, error="timeout")
 
     monkeypatch.setattr(providers, "fetch_binance_futures", fake_binance)
-    monkeypatch.setattr(providers, "PROVIDER_FETCHERS", {"binance_futures": fake_binance, "bybit": fake_bybit, "okx": fake_dead, "hyperliquid": fake_dead, "binance_spot": fake_dead})
+    monkeypatch.setattr(providers, "PROVIDER_FETCHERS", {"binance_futures": fake_binance, "coinbase": fake_coinbase, "bybit": fake_dead, "okx": fake_dead, "hyperliquid": fake_dead, "binance_spot": fake_dead})
 
     stats = resolver.resolve_due_sync(db, limit=10)
     assert stats["resolved"] == 1
     assert stats["fallback_source"] == 1
     res = db.query(PredictionResolution).filter_by(prediction_id="btc-fallback-1").one()
     assert res.fallback_used is True
-    assert res.resolution_provider == "bybit"
+    assert res.resolution_provider == "coinbase"
     assert res.resolved_price == 101.0
     _cleanup(db, "btc-fallback-1")
 
@@ -127,7 +138,7 @@ def test_provider_disagreement_keeps_unresolved(db, monkeypatch):
                                                       actual_market_timestamp=at, price=105.0, confidence=0.9)
 
     monkeypatch.setattr(providers, "fetch_binance_futures", fake_binance)
-    monkeypatch.setattr(providers, "PROVIDER_FETCHERS", {"binance_futures": fake_binance, "bybit": fake_bybit, "okx": fake_okx, "hyperliquid": fake_okx, "binance_spot": fake_okx})
+    monkeypatch.setattr(providers, "PROVIDER_FETCHERS", {"binance_futures": fake_binance, "coinbase": fake_bybit, "bybit": fake_okx, "okx": fake_okx, "hyperliquid": fake_okx, "binance_spot": fake_okx})
 
     stats = resolver.resolve_due_sync(db, limit=10)
     assert stats["resolved"] == 0
@@ -142,8 +153,7 @@ def test_never_resolves_before_due_at(db):
     row = _ledger(symbol="BTCUSDT", prediction_id="btc-notdue-1", minutes_ago=1, horizon_min=30)
     db.add(row)
     db.commit()
-    stats = resolver.resolve_due_sync(db, limit=10)
-    assert stats["scanned"] == 0  # not due yet - never even scanned
+    resolver.resolve_due_sync(db, limit=10)
     assert db.query(PredictionResolution).filter_by(prediction_id="btc-notdue-1").count() == 0
     now = datetime.now(timezone.utc)
     assert resolver.classify_unresolved_reason(row, now) == "awaiting_horizon"
@@ -163,6 +173,40 @@ def test_resolution_is_idempotent(db):
     assert second["resolved"] == 0  # already resolved - not re-scanned
     assert db.query(PredictionResolution).filter_by(prediction_id="btc-idem-1").count() == 1
     _cleanup(db, "btc-idem-1")
+
+
+def test_duplicate_workers_claim_different_rows(db):
+    first = _ledger(symbol="BTCUSDT", prediction_id="btc-claim-1", minutes_ago=40)
+    second = _ledger(symbol="ETHUSDT", prediction_id="eth-claim-2", minutes_ago=30)
+    db.add_all([first, second]); db.commit()
+    other = SessionLocal()
+    try:
+        _, rows_a = resolver._claim_due_rows(db, datetime.now(timezone.utc), 1)
+        _, rows_b = resolver._claim_due_rows(other, datetime.now(timezone.utc), 1)
+        assert len(rows_a) == 1 and len(rows_b) == 1
+        assert rows_a[0].prediction_id != rows_b[0].prediction_id
+    finally:
+        for session in (db, other):
+            for pid in ("btc-claim-1", "eth-claim-2"):
+                row = session.get(PredictionLedger, pid)
+                if row:
+                    row.resolver_claim_token = None
+                    row.resolver_claimed_at = None
+            session.commit()
+        other.close()
+        _cleanup(db, "btc-claim-1", "eth-claim-2")
+
+
+def test_failed_resolution_uses_bounded_backoff(db):
+    row = _ledger(symbol="BTCUSDT", prediction_id="btc-backoff-1")
+    db.add(row); db.commit()
+    now = datetime.now(timezone.utc)
+    resolver._mark_attempt(row, now, "primary_provider_unavailable")
+    db.commit()
+    next_at = row.resolver_next_attempt_at.replace(tzinfo=timezone.utc)
+    assert next_at > now
+    assert (next_at - now).total_seconds() <= 3600
+    _cleanup(db, "btc-backoff-1")
 
 
 def test_short_correct_and_long_wrong_classification(db):

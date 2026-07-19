@@ -7,6 +7,7 @@ from app.monitoring.logging import get_logger, log_event
 from app.monitoring.metrics import SCHEDULER_CYCLE_LATENCY
 from app.deployment import maintenance
 from app.deployment.lease import execution_lease
+from app.trading import modes
 
 RUNNING = False
 engine = TradingEngine()
@@ -21,6 +22,10 @@ async def trading_loop():
             if maintenance.enabled():
                 await execution_lease.release()
                 log_event(logger, message="scheduler_deployment_maintenance", category="scheduler")
+            elif not modes.get_control()["execution_enabled"]:
+                await execution_lease.release()
+                log_event(logger, message="scheduler_execution_disabled", category="scheduler",
+                          reason=modes.get_control()["execution_state"])
             else:
                 owns_lease = await (execution_lease.renew() if execution_lease.held else execution_lease.acquire())
                 if not owns_lease:

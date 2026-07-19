@@ -13,7 +13,7 @@ let cachedToken: string | null = null;
 function mintToken(): string {
   if (cachedToken) return cachedToken;
   const out = execSync(
-    `docker exec quantx-backend python -c "from app.core.security import create_access_token; print(create_access_token(subject='admin'))"`,
+    `docker exec quantx-backend python -c "from app.core.config import settings; from app.core.security import create_access_token; print(create_access_token(subject=settings.admin_username))"`,
     { encoding: "utf-8" }
   ).trim();
   if (!out) throw new Error("Failed to mint an auth token from the quantx-backend container.");

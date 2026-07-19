@@ -146,7 +146,7 @@ class PipelineRecorder:
 
     def __init__(self, *, mode: str, symbol: str, side: str | None, is_test: bool = False,
                 confidence: float | None = None, requested_notional: float | None = None,
-                leverage: float | None = None):
+                leverage: float | None = None, verification_run_id: str | None = None):
         self._start = time.perf_counter()
         self.mode = mode
         self.symbol = symbol
@@ -157,6 +157,7 @@ class PipelineRecorder:
         self.requested_quantity: float | None = None
         self.adjusted_quantity: float | None = None
         self.leverage = leverage
+        self.verification_run_id = verification_run_id
         self.margin_required: float | None = None
         self.order_id: int | None = None
         self.stages: list[dict] = []
@@ -175,6 +176,7 @@ class PipelineRecorder:
         db = SessionLocal()
         try:
             db.add(BinanceExecutionAttempt(
+                verification_run_id=self.verification_run_id,
                 mode=self.mode,
                 symbol=self.symbol,
                 side=self.side,

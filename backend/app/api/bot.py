@@ -9,6 +9,7 @@ from app.decision_engine.cache import invalidate_user
 from app.decision_engine.repository import get_setting, is_available, set_engine
 from app.decision_engine.router import decision_engine_router
 from app.decision_engine.types import DecisionEngineType
+from app.trading import modes
 
 router = APIRouter(prefix="/api/bot", tags=["bot"])
 
@@ -25,29 +26,35 @@ def update_state(action: str):
     BOT_STATE["updated_at"] = datetime.now(timezone.utc).isoformat()
 
 @router.get("/status")
-async def bot_status():
-    return BOT_STATE
+async def bot_status(db: Session = Depends(get_db)):
+    control = modes.get_control(db)
+    return {**BOT_STATE, "status": control["execution_state"], "mode": modes.effective_mode(db).lower(),
+            "live_trading_enabled": modes.effective_mode(db) == modes.MODE_LIVE}
 
 @router.post("/start")
-async def start_bot():
+async def start_bot(db: Session = Depends(get_db)):
+    modes.set_execution_state("running", db=db)
     BOT_STATE["status"] = "running"
     update_state("start")
     return {"ok": True, "message": "Bot started", "state": BOT_STATE}
 
 @router.post("/pause")
-async def pause_bot():
+async def pause_bot(db: Session = Depends(get_db)):
+    modes.set_execution_state("paused", db=db)
     BOT_STATE["status"] = "paused"
     update_state("pause")
     return {"ok": True, "message": "Bot paused", "state": BOT_STATE}
 
 @router.post("/stop")
-async def stop_bot():
+async def stop_bot(db: Session = Depends(get_db)):
+    modes.set_execution_state("stopped", db=db)
     BOT_STATE["status"] = "stopped"
     update_state("stop")
     return {"ok": True, "message": "Bot stopped", "state": BOT_STATE}
 
 @router.post("/paper")
-async def paper_mode():
+async def paper_mode(db: Session = Depends(get_db)):
+    modes.set_mode(modes.MODE_PAPER, db=db)
     BOT_STATE["mode"] = "paper"
     update_state("paper")
     return {"ok": True, "message": "Paper mode enabled", "state": BOT_STATE}

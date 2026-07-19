@@ -62,6 +62,17 @@ def catchup_progress(db: Session) -> dict:
     base = db.query(PredictionLedger).outerjoin(PredictionResolution, PredictionResolution.prediction_id == PredictionLedger.prediction_id).filter(PredictionResolution.id.is_(None))
     total_due = base.filter(PredictionLedger.resolution_deadline <= now).count()
     total_overdue = base.filter(PredictionLedger.resolution_deadline <= now, PredictionLedger.resolver_attempts > 0).count()
+    processed = db.query(func.count(PredictionLedger.prediction_id)).filter(
+        PredictionLedger.symbol.in_(("BTCUSDT", "ETHUSDT")), PredictionLedger.resolver_attempts > 0
+    ).scalar() or 0
+    resolved_total = db.query(func.count(PredictionResolution.id)).join(
+        PredictionLedger, PredictionResolution.prediction_id == PredictionLedger.prediction_id
+    ).filter(PredictionLedger.symbol.in_(("BTCUSDT", "ETHUSDT"))).scalar() or 0
+    delayed = base.filter(PredictionLedger.symbol.in_(("BTCUSDT", "ETHUSDT")),
+                          PredictionLedger.unresolved_status.in_(("resolver_delayed", "secondary_provider_pending",
+                                                                  "primary_provider_unavailable", "primary_market_data_gap"))).count()
+    permanently_failed = base.filter(PredictionLedger.symbol.in_(("BTCUSDT", "ETHUSDT")),
+                                     PredictionLedger.unresolved_status == "permanent_data_gap").count()
 
     per_symbol = {}
     for sym in ("BTCUSDT", "ETHUSDT"):
@@ -89,6 +100,10 @@ def catchup_progress(db: Session) -> dict:
         "resolved_this_run": last_stats.get("resolved", 0),
         "failed_this_run": last_stats.get("failed", 0),
         "remaining": total_due,
+        "processed_total": processed,
+        "resolved_total": resolved_total,
+        "delayed_total": delayed,
+        "permanently_failed_total": permanently_failed,
         "primary_source_resolutions": last_stats.get("primary_source", 0),
         "fallback_resolutions": last_stats.get("fallback_source", 0),
         "provider_disagreement_count": last_stats.get("provider_disagreement", 0),
@@ -107,6 +122,7 @@ def provider_health() -> dict:
     return {
         "providers": [
             {"provider": "binance_futures", "role": "primary", "market_type": "usdt_perp", "enabled": True},
+            {"provider": "coinbase", "role": "fallback", "market_type": "spot", "enabled": True},
             {"provider": "bybit", "role": "fallback", "market_type": "usdt_perp", "enabled": True},
             {"provider": "okx", "role": "fallback", "market_type": "usdt_swap", "enabled": True},
             {"provider": "hyperliquid", "role": "fallback", "market_type": "usdt_perp", "enabled": True},

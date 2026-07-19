@@ -444,4 +444,5 @@ export const api = {
   predictionAccuracySummary: () => getJson("/api/predictions/accuracy-summary"),
   predictionProviderHealth: () => getJson("/api/predictions/provider-health"),
   triggerPredictionCatchup: (limit = 200) => postJson(`/api/predictions/resolver/catchup?limit=${limit}`),
+  binanceCredentialStatus: () => getJson("/api/exchange/binance/credential-status"),
 };

@@ -32,6 +32,11 @@ export type TradingStatus = {
   max_leverage: number;
   max_notional_per_trade: number;
   max_daily_loss_usdt: number;
+  credential_status?: {
+    configured: boolean; connection_valid: boolean; permissions_valid: boolean;
+    environment: "paper" | "testnet" | "real" | string; account_mode: string;
+    last_verified_at: string | null; validation_error: string | null;
+  };
 };
 
 export const UNLOCK_PHRASE = "I UNDERSTAND LIVE TRADING RISK";
@@ -48,8 +53,11 @@ export const UNLOCK_CHECKS: { key: string; label: string }[] = [
 export function useTradingStatus(pollMs = 10000) {
   const [status, setStatus] = useState<TradingStatus | null>(null);
   const reload = useCallback(async () => {
-    const s = await api.tradingMode().catch(() => null);
-    if (s) setStatus(s);
+    const [s, credentialStatus] = await Promise.all([
+      api.tradingMode().catch(() => null),
+      api.binanceCredentialStatus().catch(() => null),
+    ]);
+    if (s) setStatus({ ...s, credential_status: credentialStatus ?? undefined });
   }, []);
   useEffect(() => {
     reload();

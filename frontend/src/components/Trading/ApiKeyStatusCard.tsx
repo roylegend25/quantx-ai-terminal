@@ -24,6 +24,7 @@ export default function ApiKeyStatusCard({ status, onRefresh }: Props) {
   const signedReadOk = status?.binance_signed_read_ok ?? status?.binance_account_connected ?? status?.binance_connected;
   const accountConnected = status?.binance_account_connected ?? status?.binance_connected;
   const accountError = status?.binance_account_error;
+  const credential = status?.credential_status;
 
   const refresh = async () => {
     setRefreshing(true);
@@ -43,6 +44,9 @@ export default function ApiKeyStatusCard({ status, onRefresh }: Props) {
         </button>
       }
     >
+      {credential?.connection_valid && credential?.permissions_valid && (
+        <p className="credential-connected" role="status">Binance API connected.</p>
+      )}
       <div className="kv-grid">
         <div>
           <span className="tile-label">Binance API Key</span>
@@ -65,9 +69,9 @@ export default function ApiKeyStatusCard({ status, onRefresh }: Props) {
           <b className={`tile-value ${accountConnected ? "green" : "red"}`}>{accountConnected ? "Yes" : "No"}</b>
         </div>
       </div>
-      {!accountConnected && accountError && (
+      {!accountConnected && (credential?.validation_error || accountError) && (
         <p className="regime-desc" style={{ marginTop: 12 }}>
-          <AlertTriangle size={13} /> {accountError}
+          <AlertTriangle size={13} /> {credential?.validation_error || accountError}
         </p>
       )}
       <p className="regime-desc" style={{ marginTop: 12 }}>

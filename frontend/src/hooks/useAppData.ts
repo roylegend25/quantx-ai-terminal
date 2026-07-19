@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../services/api";
+import { isTimeframe, loadTimeframe, TIMEFRAME_STORAGE_KEY } from "../lib/timeframes";
 
 export type Candle = {
   time: number;
@@ -35,11 +36,13 @@ function useDedupedState<T>(initial: T): [T, (next: T) => void] {
 
 export function useAppData(authed: boolean | null) {
   const [symbol, setSymbol] = useState("BTCUSDT");
-  const [interval, setInterval_] = useState("1h");
+  const [interval, setInterval_] = useState(loadTimeframe);
 
   const [dashboard, setDashboard] = useDedupedState<any>(null);
   const [prediction, setPrediction] = useDedupedState<any>(null);
   const [candles, setCandles] = useState<Candle[]>([]);
+  const [candleState, setCandleState] = useState<"loading" | "ready" | "error">("loading");
+  const [candleError, setCandleError] = useState<string | null>(null);
   const [orderbook, setOrderbook] = useDedupedState<any>(null);
   const [trades, setTrades] = useDedupedState<any[]>([]);
   const [portfolio, setPortfolio] = useDedupedState<any>(null);
@@ -108,6 +111,8 @@ export function useAppData(authed: boolean | null) {
     predictionAbort.current = controller;
 
     setLoading(true);
+    setCandleState("loading");
+    setCandleError(null);
     try {
       // Staged, isolated updates: each of these three commits its state the
       // moment its own request resolves (guarded by isStale), instead of a
@@ -140,8 +145,14 @@ export function useAppData(authed: boolean | null) {
               label: new Date(x.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
             }))
           );
+          setCandleState("ready");
         },
-        () => {}
+        (error) => {
+          if (!isStale()) {
+            setCandleState("error");
+            setCandleError(error?.message || `Could not load ${symbol} ${interval} candles`);
+          }
+        }
       );
       await Promise.all([dashP, predP, candleP]);
       if (isStale()) return;
@@ -219,6 +230,10 @@ export function useAppData(authed: boolean | null) {
       if (!isStale()) setLoading(false);
     }
   }, [symbol, interval]);
+
+  useEffect(() => {
+    try { localStorage.setItem(TIMEFRAME_STORAGE_KEY, interval); } catch { /* unavailable storage */ }
+  }, [interval]);
 
   const runBacktest = useCallback(
     async (bt_interval = "5m") => {
@@ -501,10 +516,12 @@ export function useAppData(authed: boolean | null) {
     symbol,
     setSymbol,
     interval,
-    setInterval: setInterval_,
+    setInterval: (value: string) => { if (isTimeframe(value)) setInterval_(value); },
     dashboard,
     prediction,
     candles,
+    candleState,
+    candleError,
     orderbook,
     trades,
     portfolio,

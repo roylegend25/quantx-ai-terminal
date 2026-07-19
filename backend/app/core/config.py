@@ -130,7 +130,9 @@ class Settings(BaseSettings):
     # app/data_sources/resolution_providers.py). Read-only, no order path.
     resolver_provider_timeout: float = 10.0
     resolver_max_retries: int = 2
-    resolver_batch_size: int = 200
+    resolver_batch_size: int = 50
+    resolver_request_interval_seconds: float = 0.20
+    resolver_claim_timeout_seconds: int = 300
     resolver_price_disagreement_bps: float = 15.0
     resolver_allow_spot_fallback: bool = False
     resolver_max_data_age_seconds: float = 21600.0  # 6h - beyond this a candle is "stale" for resolution purposes

@@ -32,7 +32,7 @@ def test_resolver_resolves_once_only_after_real_horizon_candle():
         persist(db,"resolve-user",result,100,_legacy()["features"])
         rows=db.query(PredictionLedger).filter_by(symbol="RESOLVEUSDT").all(); now=datetime.now(timezone.utc)
         for row in rows: row.generated_at=now-timedelta(hours=2); row.resolution_deadline=now-timedelta(hours=1)
-        db.add(MarketCandle(symbol="RESOLVEUSDT",timeframe="5m",timestamp=int(now.timestamp()*1000),open=101,high=102,low=99,close=101,volume=10,provider="test",quality_score=100,interpolated=False)); db.commit()
+        db.add(MarketCandle(symbol="RESOLVEUSDT",timeframe="5m",timestamp=int(rows[0].resolution_deadline.timestamp()*1000),open=101,high=102,low=99,close=101,volume=10,provider="test",quality_score=100,interpolated=False)); db.commit()
         assert resolve_due_sync(db,limit=200)["resolved"]==len(rows)
         assert resolve_due_sync(db,limit=200)["resolved"]==0
         assert db.query(PredictionResolution).join(PredictionLedger,PredictionResolution.prediction_id==PredictionLedger.prediction_id).filter(PredictionLedger.symbol=="RESOLVEUSDT").count()==len(rows)

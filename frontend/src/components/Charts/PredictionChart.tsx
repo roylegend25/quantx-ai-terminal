@@ -29,6 +29,7 @@ import { fmtNum, fmtUsd } from "../../lib/format";
 import { formatCompactLocalDateTime } from "../../utils/dateTime";
 import { validateForecastChartData } from "../../lib/forecastChartData";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { isTimeframe, TIMEFRAME_CONFIG, TIMEFRAME_ORDER } from "../../lib/timeframes";
 import ProChartCanvas, {
   type HistoryPoint,
   type IndicatorId,
@@ -49,20 +50,9 @@ type Props = {
   trades?: any[];
   /** Tap on an open position's entry/TP/SL/liq chart line -> edit risk. */
   onEditPosition?: (tradeId: number) => void;
+  candleState?: "loading" | "ready" | "error";
+  candleError?: string | null;
 };
-
-const TIMEFRAME_CONFIG: Record<string, { label: string; ms: number }> = {
-  "1m": { label: "1m", ms: 60_000 },
-  "3m": { label: "3m", ms: 3 * 60_000 },
-  "5m": { label: "5m", ms: 5 * 60_000 },
-  "15m": { label: "15m", ms: 15 * 60_000 },
-  "30m": { label: "30m", ms: 30 * 60_000 },
-  "1h": { label: "1H", ms: 3_600_000 },
-  "4h": { label: "4H", ms: 4 * 3_600_000 },
-  "1d": { label: "1D", ms: 86_400_000 },
-  "1w": { label: "1W", ms: 7 * 86_400_000 },
-};
-const TIMEFRAME_ORDER = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"];
 
 const FORECAST_BARS = 40;
 
@@ -171,7 +161,7 @@ function candlesMatchTimeframe(candles: Candle[], tfMs: number): boolean {
   return Math.min(d1, d2) === tfMs;
 }
 
-function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, candles, ticker, prediction, trades, onEditPosition }: Props) {
+function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, candles, ticker, prediction, trades, onEditPosition, candleState, candleError }: Props) {
   const isMobile = useMediaQuery("(max-width: 640px)");
   const isTabletPortrait = useMediaQuery("(min-width: 768px) and (max-width: 1024px)");
   const isTabletLandscape = useMediaQuery("(min-width: 1025px) and (max-width: 1366px)");
@@ -199,7 +189,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
   const candleCacheRef = useRef<Map<string, Candle[]>>(new Map());
   const [cacheVersion, setCacheVersion] = useState(0);
 
-  const tfConfig = TIMEFRAME_CONFIG[interval] || TIMEFRAME_CONFIG["1h"];
+  const tfConfig = isTimeframe(interval) ? TIMEFRAME_CONFIG[interval] : TIMEFRAME_CONFIG["1h"];
   const cacheKey = `${symbol}:${interval}`;
 
   useEffect(() => {
@@ -399,10 +389,10 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
     : isMobile
     ? 400
     : isTabletPortrait
-    ? 360
+    ? 480
     : isTabletLandscape
-    ? 420
-    : 460;
+    ? 520
+    : 580;
 
   const direction = prediction?.direction;
   const isNoTrade = !prediction || direction === "NO_TRADE" || !direction;
@@ -828,6 +818,8 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
           onExportRef={handleExportRef}
           onEditPosition={onEditPosition}
         />
+        {candleState === "loading" && !chartCandles.length && <div className="chart-data-state">Loading {interval} candles…</div>}
+        {candleState === "error" && <div className="chart-data-state error" role="alert">{candleError || "Candle data unavailable"}</div>}
         {prediction ? <ChartDecisionChip prediction={prediction} onOpen={() => setDetailsOpen(true)} /> : <div className="forecast-loading">Calculating {symbol} {interval} forecast…</div>}
       </div>
       <div className="pc-desktop-decision">{prediction ? <DecisionDetailsPanel prediction={prediction} /> : <div className="forecast-loading-panel">Calculating Active Drive V2 decision…</div>}</div>

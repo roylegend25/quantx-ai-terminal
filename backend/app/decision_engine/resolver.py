@@ -11,7 +11,10 @@ resolution row.
 """
 import asyncio
 from datetime import datetime, timezone
+from datetime import timedelta
+from uuid import uuid4
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -35,7 +38,7 @@ UNRESOLVED_STATUSES = (
 
 # Beyond Binance (the original source for every prediction today), try these
 # in order. Spot is opt-in only (settings.resolver_allow_spot_fallback).
-_FALLBACK_ORDER = ["bybit", "okx", "hyperliquid"]
+_FALLBACK_ORDER = ["coinbase", "bybit", "okx", "hyperliquid"]
 
 _PERMANENT_GAP_ATTEMPTS = 5  # after this many failed attempts, a due prediction is a permanent gap, not a transient delay
 
@@ -83,10 +86,13 @@ def classify_unresolved_reason(row: PredictionLedger, now: datetime) -> str:
     return "resolver_delayed"
 
 
-def _first_local_candle(db: Session, symbol: str, timeframe: str, at_ms: int):
+def _first_local_candle(db: Session, symbol: str, timeframe: str, at_ms: int, timeframe_ms: int):
+    """Select only the target bucket. Never let an arbitrarily later candle
+    resolve a prediction whose target-time market data is missing."""
     return (
         db.query(MarketCandle)
-        .filter(MarketCandle.symbol == symbol, MarketCandle.timeframe == timeframe, MarketCandle.timestamp >= at_ms)
+        .filter(MarketCandle.symbol == symbol, MarketCandle.timeframe == timeframe,
+                MarketCandle.timestamp == at_ms)
         .order_by(MarketCandle.timestamp)
         .first()
     )
@@ -178,6 +184,64 @@ def _mark_attempt(row: PredictionLedger, now: datetime, error: str | None) -> No
     row.last_resolver_attempt_at = now
     row.last_resolver_error = error
     row.unresolved_status = classify_unresolved_reason(row, now) if error else None
+    row.resolver_claim_token = None
+    row.resolver_claimed_at = None
+    if error:
+        delay = min(3600, 60 * (2 ** min(max((row.resolver_attempts or 1) - 1, 0), 6)))
+        row.resolver_next_attempt_at = now + timedelta(seconds=delay)
+    else:
+        row.resolver_next_attempt_at = None
+
+
+def _claim_due_rows(db: Session, now: datetime, batch_size: int) -> tuple[str, list[PredictionLedger]]:
+    """Claim a bounded mixed-priority batch. 75% serves newest/current due
+    predictions promptly; 25% drains the oldest backlog gradually. PostgreSQL
+    uses SKIP LOCKED. SQLite uses conditional token updates for deterministic
+    tests and single-node development."""
+    token = str(uuid4())
+    stale_before = now - timedelta(seconds=settings.resolver_claim_timeout_seconds)
+    base = (
+        db.query(PredictionLedger)
+        .outerjoin(PredictionResolution, PredictionResolution.prediction_id == PredictionLedger.prediction_id)
+        .filter(
+            PredictionResolution.id.is_(None),
+            PredictionLedger.resolution_deadline <= now,
+            PredictionLedger.reference_price.isnot(None),
+            or_(PredictionLedger.resolver_next_attempt_at.is_(None), PredictionLedger.resolver_next_attempt_at <= now),
+            or_(PredictionLedger.resolver_claim_token.is_(None), PredictionLedger.resolver_claimed_at < stale_before),
+            or_(PredictionLedger.unresolved_status.is_(None), PredictionLedger.unresolved_status != "permanent_data_gap"),
+        )
+    )
+    recent_count = max(1, int(batch_size * 0.75))
+    old_count = max(0, batch_size - recent_count)
+    if db.bind.dialect.name == "postgresql":
+        recent = base.order_by(PredictionLedger.resolution_deadline.desc()).with_for_update(skip_locked=True).limit(recent_count).all()
+        recent_ids = {r.prediction_id for r in recent}
+        old_q = base
+        if recent_ids:
+            old_q = old_q.filter(PredictionLedger.prediction_id.notin_(recent_ids))
+        old = old_q.order_by(PredictionLedger.resolution_deadline.asc()).with_for_update(skip_locked=True).limit(old_count).all()
+        rows = recent + old
+        for row in rows:
+            row.resolver_claim_token = token
+            row.resolver_claimed_at = now
+        db.commit()
+    else:
+        recent_ids = [r[0] for r in base.with_entities(PredictionLedger.prediction_id).order_by(
+            PredictionLedger.resolution_deadline.desc()).limit(recent_count).all()]
+        old_q = base.with_entities(PredictionLedger.prediction_id)
+        if recent_ids:
+            old_q = old_q.filter(PredictionLedger.prediction_id.notin_(recent_ids))
+        ids = recent_ids + [r[0] for r in old_q.order_by(PredictionLedger.resolution_deadline.asc()).limit(old_count).all()]
+        if ids:
+            db.query(PredictionLedger).filter(
+                PredictionLedger.prediction_id.in_(ids),
+                or_(PredictionLedger.resolver_claim_token.is_(None), PredictionLedger.resolver_claimed_at < stale_before),
+            ).update({PredictionLedger.resolver_claim_token: token, PredictionLedger.resolver_claimed_at: now}, synchronize_session=False)
+            db.commit()
+        rows = db.query(PredictionLedger).filter(PredictionLedger.resolver_claim_token == token).order_by(
+            PredictionLedger.resolution_deadline.desc()).all()
+    return token, rows
 
 
 def _resolve_one(db: Session, row: PredictionLedger, candle: MarketCandle, now: datetime, provenance: dict) -> None:
@@ -228,25 +292,15 @@ async def resolve_due(db: Session, limit: int = 200, scan_limit: int | None = No
     """Bounded catch-up cycle. Returns run stats (never raises past its own
     bookkeeping - a single row's provider errors never abort the batch)."""
     now = datetime.now(timezone.utc)
-    scan_limit = scan_limit or max(settings.resolver_batch_size * 25, 5000)
-    limit = min(limit, settings.resolver_batch_size)
-
-    rows = (
-        db.query(PredictionLedger)
-        .outerjoin(PredictionResolution, PredictionResolution.prediction_id == PredictionLedger.prediction_id)
-        .filter(PredictionResolution.id.is_(None), PredictionLedger.resolution_deadline <= now,
-                PredictionLedger.reference_price.isnot(None))
-        .order_by(PredictionLedger.resolution_deadline)
-        .limit(scan_limit)
-        .all()
-    )
+    requested = min(limit, settings.resolver_batch_size)
+    if scan_limit is not None:
+        requested = min(requested, scan_limit)
+    claim_token, rows = _claim_due_rows(db, now, requested)
 
     stats = {"scanned": len(rows), "resolved": 0, "primary_source": 0, "fallback_source": 0,
               "provider_disagreement": 0, "failed": 0, "by_reason": {}}
 
     for row in rows:
-        if stats["resolved"] >= limit:
-            break
         at_ms = int(row.resolution_deadline.timestamp() * 1000)
         tf_ms = TIMEFRAMES_MS.get(row.timeframe)
         if tf_ms is None:
@@ -255,7 +309,7 @@ async def resolve_due(db: Session, limit: int = 200, scan_limit: int | None = No
             stats["by_reason"]["unsupported_timeframe"] = stats["by_reason"].get("unsupported_timeframe", 0) + 1
             continue
 
-        candle = _first_local_candle(db, row.symbol, row.timeframe, at_ms)
+        candle = _first_local_candle(db, row.symbol, row.timeframe, at_ms, tf_ms)
         provenance: dict = {}
         if candle is not None:
             provenance = {"resolution_provider": candle.provider, "resolution_exchange": "binance" if "binance" in (candle.provider or "") else candle.provider,
@@ -277,7 +331,7 @@ async def resolve_due(db: Session, limit: int = 200, scan_limit: int | None = No
                     stats["provider_disagreement"] += 1
                 continue
             provenance = detail
-            candle = _first_local_candle(db, row.symbol, row.timeframe, at_ms)
+            candle = _first_local_candle(db, row.symbol, row.timeframe, at_ms, tf_ms)
             if candle is None:
                 _mark_attempt(row, now, "resolver_error")
                 stats["failed"] += 1
@@ -301,6 +355,12 @@ async def resolve_due(db: Session, limit: int = 200, scan_limit: int | None = No
         else:
             stats["primary_source"] += 1
 
+    db.commit()
+    # Defensive release if a row raised before normal attempt bookkeeping.
+    db.query(PredictionLedger).filter(PredictionLedger.resolver_claim_token == claim_token).update(
+        {PredictionLedger.resolver_claim_token: None, PredictionLedger.resolver_claimed_at: None},
+        synchronize_session=False,
+    )
     db.commit()
     log_event(logger, message="resolver_cycle_completed", category="prediction", **{k: v for k, v in stats.items() if k != "by_reason"})
     return stats

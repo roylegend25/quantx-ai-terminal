@@ -219,6 +219,9 @@ def _migrate_prediction_resolution_provider_columns():
             "last_resolver_attempt_at": "DATETIME",
             "last_resolver_error": "TEXT",
             "unresolved_status": "VARCHAR",
+            "resolver_claim_token": "VARCHAR",
+            "resolver_claimed_at": "DATETIME",
+            "resolver_next_attempt_at": "DATETIME",
         }
         with engine.begin() as conn:
             for name, sql_type in new_columns.items():
@@ -231,6 +234,10 @@ def _migrate_prediction_resolution_provider_columns():
             conn.execute(text(
                 "CREATE INDEX IF NOT EXISTS ix_prediction_ledger_unresolved_status "
                 "ON prediction_ledger (unresolved_status)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_prediction_ledger_resolver_due_claim "
+                "ON prediction_ledger (symbol, unresolved_status, resolution_deadline, resolver_next_attempt_at)"
             ))
 
     if "prediction_resolutions" in tables:
@@ -255,6 +262,24 @@ def _migrate_prediction_resolution_provider_columns():
                     conn.execute(text(f"ALTER TABLE prediction_resolutions ADD COLUMN {name} {sql_type}"))
 
 
+def _migrate_verification_run_columns():
+    """Add nullable run associations only. Existing attempt/trade rows stay
+    byte-for-byte historical records and intentionally retain NULL run ids."""
+    inspector = inspect(engine)
+    tables = inspector.get_table_names()
+    with engine.begin() as conn:
+        for table in ("binance_execution_attempts", "binance_bot_trades"):
+            if table not in tables:
+                continue
+            existing = {col["name"] for col in inspector.get_columns(table)}
+            if "verification_run_id" not in existing:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN verification_run_id VARCHAR"))
+            conn.execute(text(
+                f"CREATE INDEX IF NOT EXISTS ix_{table}_verification_run_id "
+                f"ON {table} (verification_run_id)"
+            ))
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_trade_columns()
@@ -266,6 +291,15 @@ def init_db():
     _migrate_risk_settings_columns()
     _migrate_active_drive_ledger_columns()
     _migrate_prediction_resolution_provider_columns()
+    _migrate_verification_run_columns()
+    inspector = inspect(engine)
+    if "trading_control" in inspector.get_table_names():
+        existing = {col["name"] for col in inspector.get_columns("trading_control")}
+        with engine.begin() as conn:
+            if "execution_enabled" not in existing:
+                conn.execute(text("ALTER TABLE trading_control ADD COLUMN execution_enabled BOOLEAN DEFAULT 1 NOT NULL"))
+            if "execution_state" not in existing:
+                conn.execute(text("ALTER TABLE trading_control ADD COLUMN execution_state VARCHAR DEFAULT 'running' NOT NULL"))
 
     db: Session = SessionLocal()
     try:

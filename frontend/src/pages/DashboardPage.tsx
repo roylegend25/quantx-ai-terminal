@@ -69,6 +69,8 @@ export default function DashboardPage(props: Props) {
           interval={props.interval}
           onIntervalChange={props.setInterval}
           candles={props.candles}
+          candleState={props.candleState}
+          candleError={props.candleError}
           ticker={ticker}
           prediction={prediction}
           trades={symbolTrades}

@@ -11,14 +11,13 @@ for resolution purposes.
 
 Provider priority (config RESOLVER_PROVIDER_PRIORITY, see app/core/config.py):
   1. binance_futures (the original source for every prediction today)
-  2. bybit
-  3. okx
-  4. hyperliquid
-  5. binance_spot (only if RESOLVER_ALLOW_SPOT_FALLBACK=true, clearly labelled)
+  2. Coinbase spot (documented USD close fallback)
+  3. already-supported trusted derivatives feeds
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 
@@ -30,6 +29,9 @@ from app.monitoring.logging import get_logger
 logger = get_logger("quantx.resolver.providers")
 
 _TIMEOUT = httpx.Timeout(float(__import__("os").environ.get("RESOLVER_PROVIDER_TIMEOUT", "10")))
+_REQUEST_INTERVAL = float(__import__("os").environ.get("RESOLVER_REQUEST_INTERVAL_SECONDS", "0.20"))
+_request_lock = asyncio.Lock()
+_last_request_at = 0.0
 
 # Interval-string translation from this app's canonical timeframe (see
 # app/data_sources/normalizer.py TIMEFRAMES_MS) to each exchange's own enum.
@@ -40,6 +42,9 @@ _OKX_INTERVAL = {"1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
                   "4h": "4H", "6h": "6H", "12h": "12H", "1d": "1D", "1w": "1W"}
 _HYPERLIQUID_INTERVAL = {"1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m", "1h": "1h",
                           "2h": "2h", "4h": "4h", "12h": "12h", "1d": "1d", "1w": "1w"}  # no 6h on Hyperliquid
+_COINBASE_GRANULARITY = {
+    "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "6h": 21600, "1d": 86400,
+}
 
 
 @dataclass
@@ -63,15 +68,21 @@ class ResolutionPriceObservation:
 
 
 async def _timed_get(url: str, params: dict | None = None, method: str = "GET", json_body: dict | None = None) -> tuple[dict | list | None, float, str | None]:
+    global _last_request_at
     start = time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            if method == "POST":
-                r = await client.post(url, json=json_body)
-            else:
-                r = await client.get(url, params=params)
-            r.raise_for_status()
-            return r.json(), (time.monotonic() - start) * 1000, None
+        async with _request_lock:
+            delay = _REQUEST_INTERVAL - (time.monotonic() - _last_request_at)
+            if delay > 0:
+                await asyncio.sleep(delay)
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                if method == "POST":
+                    r = await client.post(url, json=json_body)
+                else:
+                    r = await client.get(url, params=params)
+                _last_request_at = time.monotonic()
+                r.raise_for_status()
+                return r.json(), (time.monotonic() - start) * 1000, None
     except (httpx.HTTPError, ValueError) as exc:
         return None, (time.monotonic() - start) * 1000, repr(exc)
 
@@ -126,6 +137,40 @@ async def fetch_binance_spot(canonical_symbol: str, timeframe: str, at_ms: int, 
     obs.price = float(k[4])
     obs.confidence = 0.6  # spot != perp basis - always a lower-confidence fallback
     obs.stale = obs.actual_market_timestamp > at_ms + timeframe_ms * 2
+    return obs
+
+
+async def fetch_coinbase(canonical_symbol: str, timeframe: str, at_ms: int, timeframe_ms: int) -> ResolutionPriceObservation:
+    """Return the close of the Coinbase candle whose opening timestamp is
+    exactly the target bucket. Coinbase's public candles endpoint returns
+    newest-first and may include adjacent buckets, so never accept a future
+    candle as a substitute for missing target-time data."""
+    from datetime import datetime, timezone
+
+    es = symbol_map.provider_symbol(canonical_symbol, "coinbase")
+    obs = ResolutionPriceObservation("coinbase", "coinbase", "spot", canonical_symbol, at_ms)
+    granularity = _COINBASE_GRANULARITY.get(timeframe)
+    if not es or not granularity:
+        obs.error = "unsupported_timeframe"
+        return obs
+    start = datetime.fromtimestamp(at_ms / 1000, timezone.utc).isoformat().replace("+00:00", "Z")
+    end = datetime.fromtimestamp((at_ms + timeframe_ms) / 1000, timezone.utc).isoformat().replace("+00:00", "Z")
+    data, latency, err = await _timed_get(
+        f"https://api.exchange.coinbase.com/products/{es.provider_symbol}/candles",
+        {"granularity": granularity, "start": start, "end": end},
+    )
+    obs.latency_ms = latency
+    if err:
+        obs.error = err
+        return obs
+    target_seconds = at_ms // 1000
+    row = next((item for item in (data or []) if int(item[0]) == target_seconds), None)
+    if row is None:
+        obs.error = "no_data"
+        return obs
+    obs.actual_market_timestamp = int(row[0]) * 1000
+    obs.price = float(row[4])
+    obs.confidence = 0.75  # USD spot versus the original USDT perpetual reference
     return obs
 
 
@@ -218,6 +263,7 @@ async def fetch_hyperliquid(canonical_symbol: str, timeframe: str, at_ms: int, t
 
 PROVIDER_FETCHERS = {
     "binance_futures": fetch_binance_futures,
+    "coinbase": fetch_coinbase,
     "bybit": fetch_bybit,
     "okx": fetch_okx,
     "hyperliquid": fetch_hyperliquid,

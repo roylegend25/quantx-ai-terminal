@@ -21,6 +21,7 @@ CANONICAL_SYMBOLS: dict[str, dict[str, ExchangeSymbol]] = {
     "BTCUSDT": {
         "binance_futures": ExchangeSymbol("binance", "usdt_perp", "BTCUSDT"),
         "binance_spot": ExchangeSymbol("binance", "spot", "BTCUSDT"),
+        "coinbase": ExchangeSymbol("coinbase", "spot", "BTC-USD", "USD"),
         "bybit": ExchangeSymbol("bybit", "usdt_perp", "BTCUSDT"),
         "okx": ExchangeSymbol("okx", "usdt_swap", "BTC-USDT-SWAP"),
         "hyperliquid": ExchangeSymbol("hyperliquid", "usdt_perp", "BTC"),
@@ -28,6 +29,7 @@ CANONICAL_SYMBOLS: dict[str, dict[str, ExchangeSymbol]] = {
     "ETHUSDT": {
         "binance_futures": ExchangeSymbol("binance", "usdt_perp", "ETHUSDT"),
         "binance_spot": ExchangeSymbol("binance", "spot", "ETHUSDT"),
+        "coinbase": ExchangeSymbol("coinbase", "spot", "ETH-USD", "USD"),
         "bybit": ExchangeSymbol("bybit", "usdt_perp", "ETHUSDT"),
         "okx": ExchangeSymbol("okx", "usdt_swap", "ETH-USDT-SWAP"),
         "hyperliquid": ExchangeSymbol("hyperliquid", "usdt_perp", "ETH"),
