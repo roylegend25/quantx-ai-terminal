@@ -349,7 +349,7 @@ export const api = {
       body: JSON.stringify(body),
     }),
   lockBinanceLive: () => postJson("/api/trading/binance/lock-live"),
-  binanceCredentialStatus: () => getJson("/api/admin/binance-credentials"),
+  binanceStoredCredentialStatus: () => getJson("/api/admin/binance-credentials"),
   saveBinanceCredential: (body: {
     password: string;
     api_key: string;

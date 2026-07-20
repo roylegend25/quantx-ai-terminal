@@ -51,7 +51,7 @@ export default function BinanceCredentialCard({ showToast }: Props) {
 
   const load = async () => {
     try {
-      const s = await api.binanceCredentialStatus();
+      const s = await api.binanceStoredCredentialStatus();
       setStatus(s);
     } catch (e: any) {
       showToast(e?.message || "Failed to load credential status", "error");

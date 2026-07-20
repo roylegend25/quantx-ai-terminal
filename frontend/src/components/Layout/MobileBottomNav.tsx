@@ -26,6 +26,7 @@ import {
   X,
   Stethoscope,
   Target,
+  Waves,
 } from "lucide-react";
 import { NAV_ITEMS, NAV_SECTIONS, type NavKey } from "../../lib/nav";
 

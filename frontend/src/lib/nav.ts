@@ -20,6 +20,7 @@ import {
   History,
   Stethoscope,
   Target,
+  Waves,
 } from "lucide-react";
 
 export type NavKey =
