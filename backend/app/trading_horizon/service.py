@@ -13,6 +13,18 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterable
 from numbers import Number
 
+from app.core.config import settings
+
+# Soft confirmation penalties (PAPER mode only - see _confirm_higher_timeframes).
+# Bounded well below a value that could ever push a passing primary signal's
+# reported confidence into rejection by itself: the penalty is informational
+# (confirmed_confidence), never a second gate. Strong opposition is the only
+# hard reject in soft mode, gated separately.
+_NEUTRAL_SIBLING_PENALTY = 0.05
+_WEAK_OPPOSE_SIBLING_PENALTY = 0.10
+_NO_AGREEMENT_PENALTY = 0.15
+_MAX_SOFT_PENALTY = 0.25
+
 
 @dataclass(frozen=True)
 class TradingProfile:
@@ -91,6 +103,76 @@ def select_auto_profile(timeframes: dict[str, dict]) -> tuple[TradingProfile, st
     return PROFILES["short_term"], "Auto Adaptive found no threshold-qualified edge; Short-Term is selected for evaluation only."
 
 
+def _confirm_higher_timeframes(higher_timeframes: list[str], timeframes: dict[str, dict], primary_direction: str) -> dict:
+    """Soft multi-timeframe confirmation (PAPER mode only).
+
+    The primary/execution timeframe's own confidence and edge requirements
+    are evaluated independently and unchanged elsewhere - this only scores
+    the OTHER (higher) timeframes against it:
+      - AGREED:   at least one higher timeframe shares the primary direction,
+                  and none strongly oppose it. Small penalty per sibling that
+                  isn't itself agreeing (neutral/stale/weak-oppose).
+      - REJECTED: any higher timeframe opposes with its own confidence at or
+                  above the same bar (active_drive_min_confidence) a primary
+                  signal would need - a "strong" opposing conviction, not a
+                  bare direction flip. This is the only hard reject here.
+      - NEUTRAL:  no higher timeframe agrees and none strongly oppose (all
+                  neutral/stale/weak-oppose). Reduces confidence but does not
+                  reject - the primary signal still stands on its own
+                  evidence per the requirement that neutral higher timeframes
+                  never auto-reject.
+    """
+    directions, confidences, notes = [], [], []
+    classifications = []
+    for tf in higher_timeframes:
+        value = timeframes.get(tf)
+        stale = bool(value) and bool((value.get("data_status") or {}).get("stale"))
+        unavailable = value is None or bool(value.get("error"))
+        direction = _direction(value) if value else "NO_TRADE"
+        confidence = (value.get("decision_confidence", value.get("confidence")) if value else None)
+        directions.append(direction)
+        confidences.append(confidence if isinstance(confidence, Number) else None)
+        if unavailable or stale:
+            classifications.append("STALE")
+            notes.append(f"{tf} data is {'stale' if stale else 'unavailable'} - treated as non-confirming, not opposing")
+        elif direction == primary_direction and direction in {"LONG", "SHORT"}:
+            classifications.append("AGREE")
+            notes.append(f"{tf} agrees with the primary direction ({direction})")
+        elif direction in {"LONG", "SHORT"} and direction != primary_direction:
+            strong = confidence is not None and confidence >= settings.active_drive_min_confidence
+            classifications.append("OPPOSE_STRONG" if strong else "OPPOSE_WEAK")
+            notes.append(f"{tf} shows {'strong' if strong else 'weak'} opposing conviction "
+                         f"({direction}, confidence {confidence:.0%})" if confidence is not None
+                         else f"{tf} shows opposing direction ({direction}) with no confidence reading")
+        else:
+            classifications.append("NEUTRAL")
+            notes.append(f"{tf} is neutral (no directional signal)")
+
+    opposing = [n for c, n in zip(classifications, notes) if c == "OPPOSE_STRONG"]
+    agreeing = [n for c, n in zip(classifications, notes) if c == "AGREE"]
+    if opposing:
+        result, penalty = "REJECTED", 1.0
+        reason = "Higher-timeframe confirmation rejected: " + "; ".join(opposing) + "."
+    elif agreeing:
+        result = "AGREED"
+        sibling_penalty = sum(
+            _WEAK_OPPOSE_SIBLING_PENALTY if c == "OPPOSE_WEAK" else _NEUTRAL_SIBLING_PENALTY if c in {"NEUTRAL", "STALE"} else 0.0
+            for c in classifications
+        )
+        penalty = min(_MAX_SOFT_PENALTY, sibling_penalty)
+        reason = "Higher-timeframe confirmation agreed: " + "; ".join(agreeing) + "."
+    else:
+        result, penalty = "NEUTRAL", _NO_AGREEMENT_PENALTY
+        reason = ("No higher timeframe confirms or opposes the primary direction; "
+                  "proceeding on primary evidence alone with a confidence penalty. "
+                  + "; ".join(notes) + ".")
+    return {
+        "higher_timeframe_direction": directions, "higher_timeframe_confidence": confidences,
+        "confirmation_result": result, "confirmation_penalty": round(penalty, 4),
+        "confirmation_reason": reason, "confirmation_details": notes,
+    }
+
+
 def build_horizon_decision(
     symbol: str,
     timeframes: dict[str, dict],
@@ -104,7 +186,16 @@ def build_horizon_decision(
     engine_id: str = "active_drive_v2",
     engine_version: str = "2.0.0",
     historical_edge_summary: dict | None = None,
+    soft_confirmation: bool = False,
 ) -> dict:
+    """soft_confirmation gates the multi-timeframe confirmation policy:
+    False (default, used for every non-PAPER mode) keeps the original policy
+    unchanged - every required timeframe (including the confirmation ones)
+    must independently be execution-ready and unanimous. True (PAPER mode
+    only, wired at the call site in app.api.timeframes) softens ONLY the
+    confirmation timeframes: the primary/execution timeframe still
+    independently needs its full confidence and edge - see
+    _confirm_higher_timeframes for the confirmation semantics."""
     requested_profile = profile_key.lower().replace("-", "_")
     if requested_profile in {"auto", "auto_adaptive"}:
         profile, selection_reason = select_auto_profile(timeframes)
@@ -117,22 +208,12 @@ def build_horizon_decision(
         selected_mode = profile.key
 
     matrix = []
-    required_directions = []
-    blockers = []
     for timeframe in profile.required_timeframes:
         value = timeframes.get(timeframe)
         direction = _direction(value)
         available = value is not None and not value.get("error")
         eligible = available and bool(value.get("eligible_for_execution", direction != "NO_TRADE"))
         matrix.append({"timeframe": timeframe, "required": True, "direction": direction, "available": available, "eligible": eligible, "confidence": value.get("decision_confidence", value.get("confidence")) if value else None, "expected_edge": _edge(value)})
-        required_directions.append(direction if available and eligible else "NO_TRADE")
-        if not available:
-            blockers.append(f"Required timeframe {timeframe} is unavailable")
-        elif not eligible or direction == "NO_TRADE":
-            blockers.append(f"Required timeframe {timeframe} is not execution-ready")
-        elif value.get("decision_confidence", value.get("confidence")) is None:
-            blockers.append(f"Required timeframe {timeframe} confidence is unavailable")
-
     for timeframe, value in timeframes.items():
         if timeframe in profile.required_timeframes:
             continue
@@ -142,10 +223,60 @@ def build_horizon_decision(
                        "eligible": bool(value.get("eligible_for_execution", direction != "NO_TRADE")),
                        "confidence": value.get("decision_confidence", value.get("confidence")), "expected_edge": _edge(value)})
 
-    unanimous = bool(required_directions) and len(set(required_directions)) == 1 and required_directions[0] in {"LONG", "SHORT"}
-    if not unanimous and not any("not execution-ready" in b or "unavailable" in b for b in blockers):
-        blockers.append("Required timeframes are not unanimous")
-    direction = required_directions[0] if unanimous else "NO_TRADE"
+    blockers = []
+    higher_timeframes = [tf for tf in profile.required_timeframes if tf != profile.execution_timeframe]
+    primary = timeframes.get(profile.execution_timeframe)
+    primary_direction = _direction(primary)
+    primary_available = primary is not None and not primary.get("error")
+    primary_eligible = primary_available and bool(primary.get("eligible_for_execution", primary_direction != "NO_TRADE"))
+    primary_confidence = primary.get("decision_confidence", primary.get("confidence")) if primary else None
+
+    if soft_confirmation:
+        primary_timeframe_pass = bool(
+            primary_available and primary_eligible and primary_direction in {"LONG", "SHORT"}
+            and isinstance(primary_confidence, Number) and primary_confidence >= settings.active_drive_min_confidence
+        )
+        if not primary_available:
+            blockers.append(f"Primary execution timeframe {profile.execution_timeframe} is unavailable")
+        elif not primary_eligible or primary_direction == "NO_TRADE":
+            blockers.append(f"Primary execution timeframe {profile.execution_timeframe} is not execution-ready")
+        elif primary_confidence is None:
+            blockers.append(f"Primary execution timeframe {profile.execution_timeframe} confidence is unavailable")
+        elif primary_confidence < settings.active_drive_min_confidence:
+            blockers.append(f"Primary execution timeframe {profile.execution_timeframe} confidence "
+                             f"{primary_confidence:.0%} is below the required {settings.active_drive_min_confidence:.0%}")
+        confirmation = _confirm_higher_timeframes(higher_timeframes, timeframes, primary_direction)
+        if confirmation["confirmation_result"] == "REJECTED":
+            blockers.append(confirmation["confirmation_reason"])
+        direction = primary_direction if primary_timeframe_pass else "NO_TRADE"
+        confirmed_confidence = (round(primary_confidence * (1 - confirmation["confirmation_penalty"]), 4)
+                                 if isinstance(primary_confidence, Number) else None)
+        unanimous = primary_timeframe_pass and confirmation["confirmation_result"] != "REJECTED"
+    else:
+        primary_timeframe_pass = None  # not evaluated under the strict policy - primary is just one of several unanimous votes
+        required_directions = []
+        for timeframe in profile.required_timeframes:
+            value = timeframes.get(timeframe)
+            tf_direction = _direction(value)
+            available = value is not None and not value.get("error")
+            eligible = available and bool(value.get("eligible_for_execution", tf_direction != "NO_TRADE"))
+            required_directions.append(tf_direction if available and eligible else "NO_TRADE")
+            if not available:
+                blockers.append(f"Required timeframe {timeframe} is unavailable")
+            elif not eligible or tf_direction == "NO_TRADE":
+                blockers.append(f"Required timeframe {timeframe} is not execution-ready")
+            elif value.get("decision_confidence", value.get("confidence")) is None:
+                blockers.append(f"Required timeframe {timeframe} confidence is unavailable")
+        unanimous = bool(required_directions) and len(set(required_directions)) == 1 and required_directions[0] in {"LONG", "SHORT"}
+        if not unanimous and not any("not execution-ready" in b or "unavailable" in b for b in blockers):
+            blockers.append("Required timeframes are not unanimous")
+        direction = required_directions[0] if unanimous else "NO_TRADE"
+        confirmation = {"higher_timeframe_direction": [], "higher_timeframe_confidence": [],
+                        "confirmation_result": "STRICT_MODE_NOT_APPLICABLE", "confirmation_penalty": 0.0,
+                        "confirmation_reason": "Strict unanimity policy is active (non-PAPER mode); "
+                                               "soft confirmation is not evaluated.", "confirmation_details": []}
+        confirmed_confidence = primary_confidence if isinstance(primary_confidence, Number) else None
+
     authority = timeframes.get(profile.execution_timeframe) or {}
     expected_edge = _edge(authority)
     current_edge_supported = bool(authority.get("current_edge_supported", authority.get("edge_supported", False)))
@@ -168,11 +299,22 @@ def build_horizon_decision(
     ready = not blockers
     final_direction = direction if ready else "NO_TRADE"
     explanation = (
-        f"Why This Trade: all required timeframes ({', '.join(profile.required_timeframes)}) unanimously support {direction}; "
-        f"{profile.execution_timeframe} is the sole execution authority and expected edge meets the profile threshold."
+        (f"Why This Trade: primary timeframe {profile.execution_timeframe} supports {direction} with confirmation "
+         f"result {confirmation['confirmation_result']}; expected edge meets the profile threshold."
+         if soft_confirmation else
+         f"Why This Trade: all required timeframes ({', '.join(profile.required_timeframes)}) unanimously support {direction}; "
+         f"{profile.execution_timeframe} is the sole execution authority and expected edge meets the profile threshold.")
         if ready else "Why No Trade: " + "; ".join(blockers) + "."
     )
     return {
+        "primary_timeframe_pass": primary_timeframe_pass,
+        "higher_timeframe_direction": confirmation["higher_timeframe_direction"],
+        "higher_timeframe_confidence": confirmation["higher_timeframe_confidence"],
+        "confirmation_result": confirmation["confirmation_result"],
+        "confirmation_penalty": confirmation["confirmation_penalty"],
+        "confirmation_reason": confirmation["confirmation_reason"],
+        "confirmed_confidence": confirmed_confidence,
+        "soft_confirmation_policy_active": soft_confirmation,
         "profile_decision_id": None, "user_id": user_id,
         "engine": engine_id, "engine_version": engine_version,
         "generated_at": now.isoformat(), "expires_at": expires_at.isoformat(),
@@ -180,7 +322,7 @@ def build_horizon_decision(
         "resolved_profile": profile.key, "profile_label": profile.label, "selection_reason": selection_reason,
         "execution_timeframe": profile.execution_timeframe, "chart_timeframe": None,
         "required_timeframes": list(profile.required_timeframes),
-        "strict_unanimity_required": True, "unanimity_passed": unanimous,
+        "strict_unanimity_required": not soft_confirmation, "unanimity_passed": unanimous,
         "confirmation_timeframes": [tf for tf in profile.required_timeframes if tf != profile.execution_timeframe],
         "structural_bias_timeframe": profile.structural_bias_timeframe,
         "direction": final_direction, "ready": ready, "blockers": blockers, "explanation": explanation,

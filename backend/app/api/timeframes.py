@@ -20,6 +20,7 @@ from app.decision_engine.types import DecisionEngineType
 from app.monitoring.logging import get_logger, log_event
 from app.risk import settings_repository
 from app.timeframes.canonical import parse_timeframe
+from app.trading import modes
 
 router = APIRouter(prefix="/api/timeframes", tags=["timeframes"])
 logger = get_logger("quantx.trading_horizon")
@@ -295,8 +296,14 @@ async def _evaluate_horizon(symbol: str, chart_timeframe: str | None = None,
             "expected_edge": None, "error": "ACTIVE_DRIVE_V2_NOT_AUTHORITATIVE",
             "evaluation_id": evaluation_id} for timeframe in evaluation_timeframes}
     try:
+        # Soft multi-timeframe confirmation is a PAPER-mode-only policy
+        # (see app.trading_horizon.service.build_horizon_decision): any
+        # other effective mode (including a locked/kill-switched state)
+        # keeps the original strict-unanimity policy unchanged.
+        soft_confirmation = modes.effective_mode() == modes.MODE_PAPER
         decision = build_horizon_decision(symbol, authoritative_timeframes, requested_profile, price=price, atr=atr,
-                    resolutions=resolutions, user_id=owner_id, engine_id="active_drive_v2", engine_version=engine.version)
+                    resolutions=resolutions, user_id=owner_id, engine_id="active_drive_v2", engine_version=engine.version,
+                    soft_confirmation=soft_confirmation)
         edge_samples = historical_edge_values.get(decision["execution_timeframe"], {})
         decision["historical_edge_summary"] = _historical_metrics(
             edge_samples, owner_id=owner_id, symbol=symbol, timeframe=decision["execution_timeframe"])
