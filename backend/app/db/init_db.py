@@ -386,6 +386,19 @@ def _migrate_trade_reconciliation_columns():
             conn.execute(text("ALTER TABLE binance_trade_reconciliations ADD COLUMN run_counters_applied_at DATETIME"))
 
 
+def _migrate_performance_indexes():
+    """Composite index for repository.performance()'s exact evidence-bucket
+    filter plus the resolver's deadline scan. create_all only creates these
+    on fresh databases; existing production DBs need them added here (a
+    one-time ~4s build at current table size, no-op afterwards)."""
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_prediction_ledger_perf_bucket ON prediction_ledger "
+            "(user_id, engine, source_name, source_version, symbol, timeframe, market_regime)"))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_prediction_ledger_deadline ON prediction_ledger (resolution_deadline)"))
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_trade_columns()
@@ -399,6 +412,7 @@ def init_db():
     _migrate_prediction_resolution_provider_columns()
     _migrate_verification_run_columns()
     _migrate_trade_reconciliation_columns()
+    _migrate_performance_indexes()
     inspector = inspect(engine)
     if "trading_control" in inspector.get_table_names():
         existing = {col["name"] for col in inspector.get_columns("trading_control")}

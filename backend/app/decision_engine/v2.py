@@ -263,7 +263,14 @@ class ActiveDriveV2Engine:
         elif blockers or preliminary_direction not in ("LONG","SHORT"):
             edge_result={"supported":False,"block_reason":EDGE_BLOCK_NO_TRADE_DIRECTION,"gross_edge":None,"net_edge":None,"costs":_edge_costs(),"sample_size":edge_evidence["resolved"]}
         else:
-            edge_result=_current_edge(preliminary_direction,entry,target,stop,raw_up if history_pass else None,edge_evidence)
+            # raw_up is an indicative point-score mapping, not a calibrated
+            # probability: unanimous sources produce exactly 1.0 (or 0.0 for
+            # SHORT), which the edge gate correctly refuses as a certainty
+            # claim - so full agreement used to block the trade outright
+            # (the historical "invalid_probability" abstentions). Clamp to
+            # [0.02, 0.98] before the edge calculation: unanimity may claim
+            # at most 98%, never certainty.
+            edge_result=_current_edge(preliminary_direction,entry,target,stop,min(max(raw_up,.02),.98) if history_pass else None,edge_evidence)
         if not edge_result["supported"] and edge_result["block_reason"]!=EDGE_BLOCK_NO_TRADE_DIRECTION:blockers.append(f"Current edge is not supported: {edge_result['block_reason']}")
         signal="NO_TRADE" if blockers else ("LONG" if signed>0 else "SHORT"); decision_conf=directional if signal in ("LONG","SHORT") else None; now=datetime.now(timezone.utc); eligible=signal!="NO_TRADE"
         confidence_failure=None if history_pass else {"code":"INSUFFICIENT_CALIBRATION_HISTORY","reason":f"Only {relevant_samples} resolved predictions are available for the least-supported eligible source in {context['symbol']} {context['timeframe']} {regime['label']}; {settings.active_drive_min_resolved_samples} are required."}
