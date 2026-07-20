@@ -9,7 +9,14 @@ from app.db.session import SessionLocal
 from app.db.models import MarketCandle, PredictionCycle, PredictionLedger, PredictionResolution
 from app.decision_engine.ledger import HORIZON_SECONDS, resolution_deadline_for
 from app.decision_engine.repository import performance
-from app.decision_engine.resolver import resolve_due
+from app.decision_engine.resolver import resolve_due_sync
+
+
+def resolve_due(db, limit=200):
+    """Adapter for the kept (async, stats-returning) resolver API: these
+    behavioural tests only need the resolved count, and must stay hermetic
+    (no multi-exchange network fallback)."""
+    return resolve_due_sync(db, limit=limit, use_fallback=False)["resolved"]
 from app.decision_engine.sources import quant_votes
 from app.timeframes.canonical import parse_timeframe
 

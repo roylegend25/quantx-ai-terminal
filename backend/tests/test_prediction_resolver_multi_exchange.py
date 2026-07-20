@@ -52,6 +52,14 @@ def db():
         session.query(PredictionResolution).filter(PredictionResolution.prediction_id.in_(test_ids)).delete(synchronize_session=False)
         session.query(PredictionLedger).filter(PredictionLedger.prediction_id.in_(test_ids)).delete(synchronize_session=False)
         session.commit()
+    # Hermetic entry: other modules leave BTC/ETH 5m candles near "now", and
+    # the outcome-candle window is a bucket range - purge anything that could
+    # shadow this module's deliberately seeded candles.
+    recent_ms = int((datetime.now(timezone.utc) - timedelta(hours=2)).timestamp() * 1000)
+    session.query(MarketCandle).filter(MarketCandle.symbol.in_(("BTCUSDT", "ETHUSDT")),
+                                       MarketCandle.timeframe == "5m",
+                                       MarketCandle.timestamp >= recent_ms).delete(synchronize_session=False)
+    session.commit()
     yield session
     session.close()
 
@@ -59,6 +67,11 @@ def db():
 def _cleanup(db, *prediction_ids):
     db.query(PredictionResolution).filter(PredictionResolution.prediction_id.in_(prediction_ids)).delete(synchronize_session=False)
     db.query(PredictionLedger).filter(PredictionLedger.prediction_id.in_(prediction_ids)).delete(synchronize_session=False)
+    # Also remove candles this test seeded (or the resolver backfilled):
+    # the outcome-candle window is a bucket range, not an exact timestamp,
+    # so a leftover candle from one test could resolve the next test's row.
+    db.query(MarketCandle).filter(MarketCandle.symbol.in_(("BTCUSDT", "ETHUSDT")), MarketCandle.timeframe == "5m",
+                                  MarketCandle.volume <= 1.0).delete(synchronize_session=False)
     db.commit()
 
 

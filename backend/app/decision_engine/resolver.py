@@ -87,12 +87,20 @@ def classify_unresolved_reason(row: PredictionLedger, now: datetime) -> str:
 
 
 def _first_local_candle(db: Session, symbol: str, timeframe: str, at_ms: int, timeframe_ms: int):
-    """Select only the target bucket. Never let an arbitrarily later candle
-    resolve a prediction whose target-time market data is missing."""
+    """Select the outcome candle for a deadline: the bucket containing the
+    deadline (its close is the first close at/after it), or - bounded grace -
+    the very next bucket when the deadline's own bucket is missing. Candle
+    timestamps are bucket-aligned while deadlines are generated_at + horizon
+    (arbitrary wall time), so an exact timestamp match can never succeed;
+    the bounded window keeps the original policy of never letting an
+    arbitrarily later candle resolve a prediction whose target-time market
+    data is missing."""
+    bucket_start = (at_ms // timeframe_ms) * timeframe_ms
     return (
         db.query(MarketCandle)
         .filter(MarketCandle.symbol == symbol, MarketCandle.timeframe == timeframe,
-                MarketCandle.timestamp == at_ms)
+                MarketCandle.timestamp >= bucket_start,
+                MarketCandle.timestamp <= at_ms + timeframe_ms)
         .order_by(MarketCandle.timestamp)
         .first()
     )
@@ -268,8 +276,15 @@ def _resolve_one(db: Session, row: PredictionLedger, candle: MarketCandle, now: 
     else:
         mfe = mae = None
         target_hit = stop_hit = None
-    actual_direction = "LONG" if actual_return > 0 else "SHORT" if actual_return < 0 else "NEUTRAL"
-    correct = None if row.direction not in ("LONG", "SHORT") else row.direction == actual_direction
+    # Symmetric neutral band (settings.resolution_neutral_band): a move whose
+    # magnitude never clears the band is NEUTRAL for both LONG and SHORT
+    # predictions, and neutral outcomes stay out of the directional-accuracy
+    # denominator (correct stays NULL) instead of counting a sub-noise move
+    # as a win or a loss.
+    band = abs(settings.resolution_neutral_band)
+    actual_direction = "NEUTRAL" if abs(actual_return) <= band else "LONG" if actual_return > 0 else "SHORT"
+    correct = (None if (row.direction not in ("LONG", "SHORT") or actual_direction == "NEUTRAL")
+               else row.direction == actual_direction)
 
     db.add(PredictionResolution(
         prediction_id=row.prediction_id, actual_return=actual_return, resolved_direction=actual_direction,
