@@ -1,7 +1,7 @@
 import { useState } from "react";
 import Card from "../Layout/Card";
 import { api } from "../../services/api";
-import { LiveUnlockModal, type TradingStatus } from "./TradingShared";
+import { LiveLeaseCountdown, LiveUnlockModal, type TradingStatus } from "./TradingShared";
 
 type Props = {
   status: TradingStatus | null;
@@ -63,15 +63,22 @@ export default function UserLiveConfirmationCard({ status, onChanged, showToast 
         </span>
       </div>
       <p className="regime-desc">
-        {unlocked
-          ? "Live-risk confirmation is complete for this session. Switch the active execution mode to Binance Live to allow real orders."
-          : "Complete the live-risk ceremony (typed phrase and safety acknowledgements) to unlock Binance real-money trading for this session."}
+        {status?.live_authorization_lease?.active
+          ? "A live-order authorization lease is active - see the countdown below. It is consumed after one order or expires on its own, whichever comes first; it does not survive a refresh, logout, or backend restart."
+          : unlocked
+          ? "The live view is selected, but no authorization lease is active - no real order can be placed until you re-confirm below."
+          : "Complete the live-risk ceremony (password, two typed phrases, account + symbol confirmation, and every safety acknowledgement) to authorize exactly one Binance real-money order."}
       </p>
+      {status?.live_authorization_lease?.active && (
+        <p className="regime-desc">
+          <LiveLeaseCountdown lease={status.live_authorization_lease} />
+        </p>
+      )}
       <div className="controls">
         {unlocked ? (
           <>
-            <button className="btn-long" disabled>
-              User Live Unlock: Active
+            <button className="btn-danger" disabled={!!reason || busy} onClick={() => setShowModal(true)}>
+              Re-confirm Live Order Authorization
             </button>
             <button className="mini-btn" disabled={busy} onClick={lock}>
               Lock User Live Access

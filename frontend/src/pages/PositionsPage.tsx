@@ -20,6 +20,8 @@ const ENGINE_LABEL: Record<string, string> = {
   strategy_ensemble: "Strategy Ensemble",
   fallback: "Fallback",
   manual: "Manual",
+  active_drive_v1: "Active Drive V1",
+  active_drive_v2: "Active Drive V2",
 };
 
 type Props = AppData & { navigate: (key: NavKey) => void };
@@ -132,6 +134,14 @@ function JournalDetail({ t }: { t: any }) {
             {fmtUsd(t.realized_pnl ?? (t.status === "CLOSED" ? t.pnl : null))}
           </b>
         </div>
+        <div>
+          <span className="tile-label">Source</span>
+          <b className="tile-value">{t.execution_mode === "automatic" ? "Active Drive V2 (automatic)" : "Manual"}</b>
+        </div>
+        <div>
+          <span className="tile-label">Edge at Entry</span>
+          <b className="tile-value">{t.edge_at_entry != null ? `${(t.edge_at_entry * 100).toFixed(2)}%` : "—"}</b>
+        </div>
       </div>
       <div className="journal-detail-reasons">
         <span className="tile-label">Why Trade Was Opened</span>
@@ -170,6 +180,16 @@ const JOURNAL_COLUMNS: AutoCardColumn<any>[] = [
     ),
   },
   { key: "confidence", label: "Confidence", render: (t) => (typeof t.confidence === "number" ? `${t.confidence.toFixed(0)}%` : "—") },
+  {
+    key: "source",
+    label: "Source",
+    render: (t) => (
+      <span className={t.execution_mode === "automatic" ? "green" : ""}>
+        {t.execution_mode === "automatic" ? "Active Drive V2" : "Manual"}
+      </span>
+    ),
+  },
+  { key: "edge_at_entry", label: "Edge at Entry", render: (t) => (t.edge_at_entry != null ? `${(t.edge_at_entry * 100).toFixed(2)}%` : "—") },
   { key: "opened", label: "Opened Time", render: (t) => fmtLocalDateTime(t.opened_at) },
   { key: "closed", label: "Closed Time", render: (t) => (t.closed_at ? fmtLocalDateTime(t.closed_at) : "Open") },
   { key: "duration", label: "Duration", render: (t) => fmtTradeDuration(t.opened_at, t.closed_at) },

@@ -1,3 +1,4 @@
+from app.core.config import settings
 from app.intelligence import liquidation_heatmap
 
 
@@ -100,3 +101,44 @@ def test_degraded_response_is_structurally_complete_when_upstream_fails():
     assert result["clusters"] == []
     assert result["current_price"] is None
     assert result["error"] == "network unavailable"
+    assert result["provider"] is None
+
+
+def test_reports_provider_estimated_with_no_coinglass_key_configured():
+    original = settings.coinglass_api_key
+    settings.coinglass_api_key = ""
+    try:
+        result = liquidation_heatmap.compute(
+            symbol="BTCUSDT",
+            klines=_synthetic_klines(),
+            depth=_depth(),
+            oi_data={"open_interest": 1000.0, "oi_change_pct": 0.0},
+            funding_data={"funding_rate": 0.0, "mark_price": 100.0, "index_price": 100.0},
+            liquidation_data={"liquidation_count": 0, "liquidation_notional": 0.0, "liquidation_pressure": "NEUTRAL"},
+        )
+        assert result["provider"] == "estimated"
+        assert result["coinglass_entitled"] is False
+    finally:
+        settings.coinglass_api_key = original
+
+
+def test_reports_coinglass_entitled_but_still_serves_the_estimate_until_the_client_is_wired_in():
+    """A configured key flips the entitlement flag honestly, but must never
+    make the response silently claim to BE CoinGlass data - no verified
+    CoinGlass client exists in this deployment yet."""
+    original = settings.coinglass_api_key
+    settings.coinglass_api_key = "fake-test-key-never-used-for-a-real-call"
+    try:
+        result = liquidation_heatmap.compute(
+            symbol="BTCUSDT",
+            klines=_synthetic_klines(),
+            depth=_depth(),
+            oi_data={"open_interest": 1000.0, "oi_change_pct": 0.0},
+            funding_data={"funding_rate": 0.0, "mark_price": 100.0, "index_price": 100.0},
+            liquidation_data={"liquidation_count": 0, "liquidation_notional": 0.0, "liquidation_pressure": "NEUTRAL"},
+        )
+        assert result["provider"] == "estimated"
+        assert result["coinglass_entitled"] is True
+        assert result["data_source"] == "binance_estimated"
+    finally:
+        settings.coinglass_api_key = original

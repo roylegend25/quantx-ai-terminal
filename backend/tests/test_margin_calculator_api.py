@@ -117,7 +117,7 @@ def make_client():
 
 
 def fake_no_data_prediction():
-    async def fn(symbol, interval="5m", timeframe=None, limit=220):
+    async def fn(symbol, interval="5m", timeframe=None, limit=220, current_user=None):
         return None
     return fn
 
@@ -209,7 +209,7 @@ def test_margin_calculator_flags_estimated_maintenance_when_brackets_unavailable
 def test_margin_calculator_includes_simulation_when_a_live_decision_exists(monkeypatch):
     install_client(monkeypatch, wallet=10.0, available=10.0)
 
-    async def fake_pred(symbol, interval="5m", timeframe=None, limit=220):
+    async def fake_pred(symbol, interval="5m", timeframe=None, limit=220, current_user=None):
         decision_engine = {
             "active_model": {"model_type": "xgboost"},
             "model_votes": [{"name": "Champion ML", "direction": "LONG", "available": True}],

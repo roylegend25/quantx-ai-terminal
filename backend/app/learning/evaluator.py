@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from app.data_sources.normalizer import TIMEFRAMES_MS
+from app.timeframes.canonical import next_month_boundary_ms, parse_timeframe, timeframe_capabilities
 from app.db.models import LearningEvaluation, MarketCandle, PredictionFeature
 from app.db.session import SessionLocal
 
@@ -69,10 +69,16 @@ def resolve_predictions(rows: list[PredictionFeature], db: Session) -> list[dict
         if row.outcome in ("WIN", "LOSS") and row.exit_price is not None:
             actual, source = row.exit_price, "paper_trade"
         else:
-            interval_ms = TIMEFRAMES_MS.get((row.timeframe or "").lower())
             ts_ms = _to_ms(row.timestamp)
-            if interval_ms and ts_ms:
-                actual = _close_after(db, row.symbol, row.timeframe, ts_ms + interval_ms)
+            try:
+                canonical = parse_timeframe(row.timeframe).value
+                metadata = timeframe_capabilities(canonical)
+            except ValueError:
+                canonical, metadata = row.timeframe, None
+            resolution_ms = (next_month_boundary_ms(ts_ms) if metadata and metadata.kind == "calendar" and ts_ms
+                             else ts_ms + metadata.fixed_duration_ms if metadata and ts_ms else None)
+            if resolution_ms:
+                actual = _close_after(db, row.symbol, canonical, resolution_ms)
                 if actual is not None:
                     source = "market_candles"
             if actual is None and i + 1 < len(rows) and rows[i + 1].entry_price is not None:

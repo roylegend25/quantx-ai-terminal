@@ -11,6 +11,7 @@ import { useTradingStatus } from "../components/Trading/TradingShared";
 import { api } from "../services/api";
 import { fmtUsd } from "../lib/format";
 import type { AppData } from "../hooks/useAppData";
+import TradingHorizonSettings from "../components/Trading/TradingHorizonSettings";
 
 export default function BotSettingsPage(props: AppData) {
   const { botStatus, dashboard, load, showToast } = props;
@@ -18,7 +19,7 @@ export default function BotSettingsPage(props: AppData) {
   const mode = (botStatus?.mode || dashboard?.mode || "paper").toUpperCase();
   const liveEnabled = botStatus?.live_trading_enabled ?? dashboard?.bot?.live_trading ?? false;
 
-  const [tab, setTab] = useState<PaperLiveTab | "engine">("paper");
+  const [tab, setTab] = useState<PaperLiveTab | "engine" | "horizon">("paper");
   const { status: liveStatus, reload: reloadLiveStatus } = useTradingStatus();
 
   const refreshBinanceStatus = async () => {
@@ -28,9 +29,10 @@ export default function BotSettingsPage(props: AppData) {
 
   return (
     <div className="page-grid">
-      <Card title="Bot Settings" full right={<div className="bot-settings-tabs"><PaperLiveTabs active={tab === "engine" ? "paper" : tab} onChange={setTab} /><button role="tab" aria-selected={tab === "engine"} className={tab === "engine" ? "mode-toggle-btn on paper" : "mode-toggle-btn"} onClick={() => setTab("engine")}>Decision Engine</button></div>}>
+      <Card title="Bot Settings" full right={<div className="bot-settings-tabs"><PaperLiveTabs active={tab === "engine" || tab === "horizon" ? "paper" : tab} onChange={setTab} /><button role="tab" aria-selected={tab === "engine"} className={tab === "engine" ? "mode-toggle-btn on paper" : "mode-toggle-btn"} onClick={() => setTab("engine")}>Decision Engine</button><button role="tab" aria-selected={tab === "horizon"} className={tab === "horizon" ? "mode-toggle-btn on paper" : "mode-toggle-btn"} onClick={() => setTab("horizon")}>Trading Horizon</button></div>}>
         <p className="regime-desc">
-          {tab === "engine"
+          {tab === "horizon" ? "Select a trading profile and inspect its authoritative execution timeframe, strict multi-timeframe readiness, invalidation, and blocker explanations."
+            : tab === "engine"
             ? "Choose the single authoritative server-side decision engine. V2 is the default; V1 remains available for manual rollback."
             : tab === "paper"
             ? "Global bot lifecycle controls (start/pause/stop, mode switch). Confidence threshold, max open positions and strategy settings live on the Risk Management page."
@@ -38,7 +40,9 @@ export default function BotSettingsPage(props: AppData) {
         </p>
       </Card>
 
-      {tab === "engine" ? (
+      {tab === "horizon" ? (
+        <Card title="Trading Horizon Bot Settings" full><TradingHorizonSettings /></Card>
+      ) : tab === "engine" ? (
         <Card title="Decision Engine" full><DecisionEngineSettings showToast={showToast} /></Card>
       ) : tab === "paper" ? (
         <>

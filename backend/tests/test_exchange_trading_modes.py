@@ -107,21 +107,71 @@ def test_trading_mode_endpoint_never_leaks_secrets(monkeypatch):
 
 # ------------------------------------------------------------- live unlock
 
+TEST_PASSWORD = "correct-horse-battery-staple"
+
+
+def _auth_headers():
+    from app.core.security import create_access_token
+    return {"Authorization": f"Bearer {create_access_token(settings.admin_username)}"}
+
+
+def _full_unlock_body(**overrides):
+    body = {
+        "password": TEST_PASSWORD,
+        "confirmation": modes.LIVE_UNLOCK_PHRASE,
+        "second_confirmation": modes.LIVE_LEASE_SECOND_CONFIRMATION_PHRASE,
+        "account_confirmation": settings.admin_username,
+        "symbol_confirmation": "BTCUSDT",
+        "acknowledgements": {k: True for k in modes.LIVE_UNLOCK_ACKNOWLEDGEMENTS},
+    }
+    body.update(overrides)
+    return body
+
+
+@pytest.fixture(autouse=True)
+def _live_credentials(monkeypatch):
+    """Phase 31: unlock now additionally requires a valid password re-check
+    and a separate live-write credential pair - every unlock test in this
+    module needs both configured to reach the checks it's actually testing."""
+    import bcrypt
+    monkeypatch.setattr(settings, "admin_password_hash", bcrypt.hashpw(TEST_PASSWORD.encode(), bcrypt.gensalt()).decode())
+    monkeypatch.setattr(settings, "binance_live_api_key", FAKE_KEY)
+    monkeypatch.setattr(settings, "binance_live_api_secret", FAKE_SECRET)
+    yield
+
+
 def test_live_unlock_refused_when_server_disabled(monkeypatch):
     monkeypatch.setattr(settings, "binance_live_enabled", False)
     monkeypatch.setattr(settings, "binance_api_key", FAKE_KEY)
     monkeypatch.setattr(settings, "binance_api_secret", FAKE_SECRET)
     client = make_trading_client()
-    r = client.post(
-        "/api/trading/binance/unlock-live",
-        json={
-            "confirmation": modes.LIVE_UNLOCK_PHRASE,
-            "acknowledgements": {k: True for k in modes.LIVE_UNLOCK_ACKNOWLEDGEMENTS},
-        },
-    )
+    r = client.post("/api/trading/binance/unlock-live", json=_full_unlock_body(), headers=_auth_headers())
     assert r.status_code == 403
     assert "disabled by server configuration" in r.json()["detail"]
     assert modes.effective_mode() != modes.MODE_LIVE
+
+
+def test_live_unlock_refused_without_live_credentials(monkeypatch):
+    monkeypatch.setattr(settings, "binance_live_enabled", True)
+    monkeypatch.setattr(settings, "binance_api_key", FAKE_KEY)
+    monkeypatch.setattr(settings, "binance_api_secret", FAKE_SECRET)
+    monkeypatch.setattr(settings, "binance_live_api_key", "")
+    monkeypatch.setattr(settings, "binance_live_api_secret", "")
+    client = make_trading_client()
+    r = client.post("/api/trading/binance/unlock-live", json=_full_unlock_body(), headers=_auth_headers())
+    assert r.status_code == 400
+    assert "not configured" in r.json()["detail"]
+    assert modes.effective_mode() != modes.MODE_LIVE
+
+
+def test_live_unlock_refused_without_authentication(monkeypatch):
+    monkeypatch.setattr(settings, "binance_live_enabled", True)
+    monkeypatch.setattr(settings, "binance_api_key", FAKE_KEY)
+    monkeypatch.setattr(settings, "binance_api_secret", FAKE_SECRET)
+    client = make_trading_client()
+    r = client.post("/api/trading/binance/unlock-live", json=_full_unlock_body())
+    assert r.status_code == 401
+    assert modes.get_active_lease() is None
 
 
 def test_live_unlock_requires_exact_phrase_and_all_acknowledgements(monkeypatch):
@@ -129,35 +179,27 @@ def test_live_unlock_requires_exact_phrase_and_all_acknowledgements(monkeypatch)
     monkeypatch.setattr(settings, "binance_api_key", FAKE_KEY)
     monkeypatch.setattr(settings, "binance_api_secret", FAKE_SECRET)
     client = make_trading_client()
+    headers = _auth_headers()
 
     wrong_phrase = client.post(
         "/api/trading/binance/unlock-live",
-        json={
-            "confirmation": "i understand live trading risk",
-            "acknowledgements": {k: True for k in modes.LIVE_UNLOCK_ACKNOWLEDGEMENTS},
-        },
+        json=_full_unlock_body(confirmation="i understand live trading risk"),
+        headers=headers,
     )
     assert wrong_phrase.status_code == 400
 
     missing_ack = client.post(
         "/api/trading/binance/unlock-live",
-        json={
-            "confirmation": modes.LIVE_UNLOCK_PHRASE,
-            "acknowledgements": {k: True for k in modes.LIVE_UNLOCK_ACKNOWLEDGEMENTS[:-1]},
-        },
+        json=_full_unlock_body(acknowledgements={k: True for k in modes.LIVE_UNLOCK_ACKNOWLEDGEMENTS[:-1]}),
+        headers=headers,
     )
     assert missing_ack.status_code == 400
     assert modes.effective_mode() != modes.MODE_LIVE
 
-    complete = client.post(
-        "/api/trading/binance/unlock-live",
-        json={
-            "confirmation": modes.LIVE_UNLOCK_PHRASE,
-            "acknowledgements": {k: True for k in modes.LIVE_UNLOCK_ACKNOWLEDGEMENTS},
-        },
-    )
+    complete = client.post("/api/trading/binance/unlock-live", json=_full_unlock_body(), headers=headers)
     assert complete.status_code == 200
     assert modes.effective_mode() == modes.MODE_LIVE
+    assert modes.get_active_lease() is not None
 
 
 def test_no_live_order_possible_while_env_disabled(monkeypatch):

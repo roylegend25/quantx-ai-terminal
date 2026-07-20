@@ -22,13 +22,11 @@ import OrderBookCard from "../../components/Dashboard/OrderBookCard";
 import RecentTradesCard from "../../components/Dashboard/RecentTradesCard";
 import { useExecutionPipeline } from "../../hooks/useExecutionPipeline";
 import { useMarginCalculator } from "../../hooks/useMarginCalculator";
-import { useTradingStatus } from "../../components/Trading/TradingShared";
-import { fmtPct, fmtUsd } from "../../lib/format";
+import { AutomaticExecutionBanner, useTradingStatus } from "../../components/Trading/TradingShared";
 import type { AppData } from "../../hooks/useAppData";
 import type { NavKey } from "../../lib/nav";
 import PremiumPageShell from "../components/PremiumPageShell";
 import ChartCard from "../components/ChartCard";
-import MetricCard from "../components/MetricCard";
 import MarketAssetIcon from "../components/MarketAssetIcon";
 import PremiumTooltip from "../components/PremiumTooltip";
 
@@ -67,10 +65,6 @@ export default function PremiumDashboardPage(props: Props) {
     ...props.history.filter((t: any) => t.symbol === symbol),
   ];
 
-  const direction = prediction?.direction;
-  const isNoTrade = direction === "NO_TRADE" || !direction;
-  const directionTone = direction === "LONG" ? "positive" : direction === "SHORT" ? "negative" : "warning";
-
   return (
     <PremiumPageShell
       title="Dashboard"
@@ -83,10 +77,13 @@ export default function PremiumDashboardPage(props: Props) {
       right={<MarketAssetIcon symbol={symbol} size="card" />}
     >
       <div className="dash-grid">
+        <AutomaticExecutionBanner status={tradingStatus} />
         <div className="dash-row-1">
           {/* Chrome only - PredictionChart already renders its own rich
-             header (symbol/interval selector, indicators, hit-rate stats),
-             so this wraps it without a second, duplicate title. */}
+             header (symbol/interval selector, indicators, hit-rate stats)
+             AND the single authoritative decision summary
+             (DecisionSummaryTiles), so this wraps it without a second,
+             duplicate title or a second metric row. */}
           <ChartCard>
             <PredictionChart
               symbol={props.symbol}
@@ -99,14 +96,6 @@ export default function PremiumDashboardPage(props: Props) {
               trades={symbolTrades}
               onEditPosition={editPositionById}
             />
-
-            <div className="qp-metric-grid" style={{ marginTop: 16 }}>
-              <MetricCard label="Direction" value={isNoTrade ? "NO TRADE" : direction} tone={directionTone} />
-              <MetricCard label={isNoTrade ? "Evidence" : "Directional Confidence"} value={isNoTrade ? "Insufficient" : fmtPct(prediction?.confidence, 0)} />
-              <MetricCard label="Price Target" value={fmtUsd(prediction?.target)} tone="positive" />
-              <MetricCard label="Stop Loss" value={fmtUsd(prediction?.stop)} tone="negative" />
-              <MetricCard label="Horizon" value={props.interval?.toUpperCase() || "-"} />
-            </div>
           </ChartCard>
 
           <div className="stack-col">
@@ -150,6 +139,7 @@ export default function PremiumDashboardPage(props: Props) {
             errored={pipelineErrored}
             onRefresh={reloadPipeline}
             showToast={props.showToast}
+            activeMode={tradingStatus?.active_mode}
           />
         </Card>
 
@@ -185,7 +175,7 @@ export default function PremiumDashboardPage(props: Props) {
           </Card>
 
           <Card title={`Order Book (${symbol})`}>
-            <OrderBookCard orderbook={props.orderbook} />
+            <OrderBookCard orderbook={props.orderbook} updatedAt={props.orderbookUpdatedAt} />
           </Card>
         </div>
 

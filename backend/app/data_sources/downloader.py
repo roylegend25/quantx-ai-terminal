@@ -33,7 +33,12 @@ from app.data_sources.normalizer import (
     normalize_klines,
     timeframe_ms as tf_ms,
 )
-from app.data_sources.validator import MIN_USABLE_QUALITY, validate_candles
+from app.timeframes.canonical import (
+    parse_timeframe,
+    storage_interval,
+    to_provider_interval,
+)
+from app.data_sources.validator import MIN_USABLE_QUALITY, validate_candle_sequence
 from app.db.models import (
     DataDownloadJob,
     DataQualityReport,
@@ -241,20 +246,26 @@ def _save_quality_report(
 # ---------------------------------------------------------------- handlers
 
 async def _handle_candles(job: dict, db: Session) -> dict:
-    symbol, timeframe, provider = job["symbol"], job["timeframe"], job["provider"]
-    interval_ms = tf_ms(timeframe)
+    symbol, provider = job["symbol"], job["provider"]
+    timeframe = parse_timeframe(job["timeframe"]).value
+    provider_interval = to_provider_interval(timeframe, provider)
+    interval_ms = None if timeframe == "1M" else tf_ms(timeframe)
     fetcher = binance_spot.fetch_klines if provider == "binance_spot" else binance_futures.fetch_klines
 
     raw = await fetcher(
         symbol,
-        timeframe,
+        provider_interval,
         start_ms=job.get("requested_start"),
         end_ms=job.get("requested_end"),
         limit=job.get("limit") or 1000,
     )
     rows = normalize_klines(raw)
-    clean, report = validate_candles(rows, interval_ms)
-    filled, interpolated_count, gap_actions = fill_gaps(clean, interval_ms)
+    clean, report = validate_candle_sequence(rows, timeframe)
+    if timeframe == "1M":
+        filled, interpolated_count = clean, 0
+        gap_actions = [{**gap, "action": "rejected"} for gap in report["gaps"]]
+    else:
+        filled, interpolated_count, gap_actions = fill_gaps(clean, interval_ms)
 
     if clean:
         report["range_start"], report["range_end"] = clean[0]["time"], clean[-1]["time"]
@@ -604,8 +615,16 @@ def create_job(
         symbol = symbol.upper()
         if symbol not in SUPPORTED_SYMBOLS:
             raise ValueError(f"Unsupported symbol '{symbol}'. Supported: {SUPPORTED_SYMBOLS}")
-    if data_type == "candles" and (not timeframe or timeframe.lower() not in TIMEFRAMES_MS):
-        raise ValueError(f"timeframe required for candles; supported: {', '.join(TIMEFRAMES_MS)}")
+    if data_type == "candles":
+        try:
+            canonical_timeframe = parse_timeframe(timeframe).value if timeframe else None
+            storage_timeframe = storage_interval(canonical_timeframe) if canonical_timeframe else None
+        except ValueError as exc:
+            raise ValueError(f"timeframe required for candles; supported: {', '.join(TIMEFRAMES_MS)}") from exc
+        if storage_timeframe != "1M" and storage_timeframe not in TIMEFRAMES_MS:
+            raise ValueError(f"timeframe required for candles; supported: {', '.join(TIMEFRAMES_MS)}")
+    else:
+        storage_timeframe = timeframe
 
     owns = db is None
     db = db or SessionLocal()
@@ -614,7 +633,7 @@ def create_job(
             job_id=uuid.uuid4().hex[:12],
             data_type=data_type,
             symbol=symbol,
-            timeframe=timeframe.lower() if timeframe else None,
+            timeframe=storage_timeframe,
             provider=provider,
             status="queued",
             requested_start=start_ms,

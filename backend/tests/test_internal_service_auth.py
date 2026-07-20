@@ -34,6 +34,6 @@ def test_internal_service_token_is_accepted_by_protected_routes():
     assert authenticated.status_code == 200
 
 
-def test_trading_engine_generates_a_usable_token_on_init():
+def test_trading_engine_no_longer_needs_http_token_for_horizon_evaluation():
     engine = TradingEngine()
-    assert decode_access_token(engine._token) == INTERNAL_SERVICE_SUBJECT
+    assert not hasattr(engine, "_token")

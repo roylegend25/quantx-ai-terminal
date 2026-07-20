@@ -17,7 +17,12 @@ from app.monitoring.logging import get_logger
 
 logger = get_logger("quantx.data.scheduler")
 
-REFRESH_TIMEFRAMES = ["5m", "15m", "1h", "4h", "1d"]
+# Every canonical prediction timeframe: the resolver can only score a
+# prediction when a stored candle at/after its deadline exists, so a
+# timeframe missing here (1m/3m/30m/1w/1M previously) silently strands
+# that timeframe's predictions as unresolved once nobody happens to view
+# it in the UI (the ETHUSDT 1m feed stopped exactly this way).
+REFRESH_TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"]
 _task: asyncio.Task | None = None
 
 

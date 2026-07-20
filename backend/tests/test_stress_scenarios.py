@@ -174,7 +174,8 @@ def _paper_client(monkeypatch, prices):
 
     app = FastAPI()
     app.include_router(paper_module.router)
-    return TestClient(app)
+    from app.core.security import create_internal_service_token
+    return TestClient(app, headers={"Authorization":f"Bearer {create_internal_service_token()}"})
 
 
 def test_open_trade_rejects_past_max_open_positions(monkeypatch):

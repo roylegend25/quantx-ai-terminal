@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 
 import app.api.paper as paper_module
 from app.strategy.performance_repository import DEFAULT_WEIGHT, repository
+from app.core.security import create_internal_service_token
 
 
 def make_client(monkeypatch, prices):
@@ -15,7 +16,7 @@ def make_client(monkeypatch, prices):
 
     app = FastAPI()
     app.include_router(paper_module.router)
-    return TestClient(app)
+    return TestClient(app, headers={"Authorization":f"Bearer {create_internal_service_token()}"})
 
 
 def test_closing_trade_adapts_strategy_weights(monkeypatch):

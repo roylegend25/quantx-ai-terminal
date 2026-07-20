@@ -12,12 +12,14 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from datetime import datetime, timedelta, timezone
+
 import app.api.admin_config as admin_module
 from app.core import env_manager
 from app.core.config import settings
 from app.core.security import create_access_token, create_internal_service_token
 from app.db.session import SessionLocal
-from app.db.models import TradingAuditLog, TradingControl
+from app.db.models import ActiveDriveDecision, TradingAuditLog, TradingControl
 from app.trading import modes
 
 FAKE_KEY = "AKIAFAKEKEY1234567890"
@@ -53,10 +55,12 @@ def restore_settings(monkeypatch):
     monkeypatch.setattr(settings, "binance_allowed_symbols", ["BTCUSDT", "ETHUSDT"])
     monkeypatch.setattr(settings, "binance_api_key", FAKE_KEY)
     monkeypatch.setattr(settings, "binance_api_secret", FAKE_SECRET)
+    monkeypatch.setattr(settings, "active_drive_min_confidence", 0.60)
     db = SessionLocal()
     try:
         db.query(TradingControl).delete()
         db.query(TradingAuditLog).delete()
+        db.query(ActiveDriveDecision).delete()
         db.commit()
     finally:
         db.close()
@@ -292,6 +296,107 @@ def test_api_key_cannot_be_edited_via_any_surface(env_file):
     content = open(env_file).read()
     assert f"BINANCE_API_KEY={FAKE_KEY}" in content  # unchanged
     assert "evil" not in content
+
+
+def _seed_decision(confidence: float, days_ago: float = 1.0, shadow: bool = False, decision_id: str | None = None):
+    db = SessionLocal()
+    try:
+        db.add(ActiveDriveDecision(
+            decision_id=decision_id or f"dec-{confidence}-{days_ago}-{shadow}",
+            user_id="admin", engine="active_drive_v2", engine_version="2.2.0",
+            symbol="BTCUSDT", timeframe="1h", signal="LONG", confidence=confidence,
+            shadow=shadow, created_at=datetime.now(timezone.utc) - timedelta(days=days_ago),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_confidence_threshold_preview_rejects_values_below_the_hard_floor(env_file):
+    client = make_client()
+    r = client.get(
+        "/api/admin/server-config/confidence-threshold/preview",
+        params={"proposed": env_manager.ACTIVE_DRIVE_MIN_CONFIDENCE_FLOOR - 0.01},
+        headers=admin_headers(),
+    )
+    assert r.status_code == 400
+    assert "safety floor" in r.json()["detail"] or "must be between" in r.json()["detail"]
+
+
+def test_confidence_threshold_preview_classifies_risk_and_reports_real_history(env_file):
+    _seed_decision(0.80)
+    _seed_decision(0.55)
+    _seed_decision(0.90, shadow=True)  # shadow decisions must never count
+    _seed_decision(0.70, days_ago=60)  # outside the lookback window
+
+    client = make_client()
+    r = client.get(
+        "/api/admin/server-config/confidence-threshold/preview",
+        params={"proposed": 0.75},
+        headers=admin_headers(),
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["risk_classification"] == "CONSERVATIVE"
+    assert body["history"]["total_decisions"] == 2  # shadow and out-of-window rows excluded
+    assert body["history"]["would_pass_at_proposed_threshold"] == 1  # only the 0.80 decision clears 0.75
+
+
+def test_confidence_threshold_preview_reports_no_history_honestly(env_file):
+    client = make_client()
+    r = client.get(
+        "/api/admin/server-config/confidence-threshold/preview",
+        params={"proposed": 0.70},
+        headers=admin_headers(),
+    )
+    assert r.status_code == 200
+    history = r.json()["history"]
+    assert history["total_decisions"] == 0
+    assert history["would_pass_at_proposed_threshold"] is None
+
+
+def test_confidence_threshold_patch_rejects_below_floor_and_never_writes(env_file):
+    client = make_client()
+    r = client.patch(
+        "/api/admin/server-config/confidence-threshold",
+        json={"min_confidence": 0.1},
+        headers=admin_headers(),
+    )
+    assert r.status_code == 400
+    assert settings.active_drive_min_confidence == 0.60
+    assert "ACTIVE_DRIVE_MIN_CONFIDENCE" not in open(env_file).read()
+
+
+def test_confidence_threshold_patch_updates_settings_env_and_audits(env_file):
+    client = make_client()
+    r = client.patch(
+        "/api/admin/server-config/confidence-threshold",
+        json={"min_confidence": 0.72},
+        headers=admin_headers(),
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["risk_classification"] == "MODERATE"
+    assert settings.active_drive_min_confidence == 0.72
+    assert "ACTIVE_DRIVE_MIN_CONFIDENCE=0.72" in open(env_file).read()
+
+    db = SessionLocal()
+    try:
+        row = db.query(TradingAuditLog).filter(TradingAuditLog.event == "server_confidence_threshold_changed").first()
+        assert row is not None
+        assert row.detail["changes"]["ACTIVE_DRIVE_MIN_CONFIDENCE"] == {"old": None, "new": "0.72"}
+        assert row.detail["risk_classification"] == "MODERATE"
+    finally:
+        db.close()
+
+
+def test_confidence_threshold_never_editable_below_floor_even_via_direct_env_manager_call(env_file):
+    with pytest.raises(env_manager.EnvUpdateError):
+        env_manager.validate_updates({"ACTIVE_DRIVE_MIN_CONFIDENCE": 0.0})
+    with pytest.raises(env_manager.EnvUpdateError):
+        env_manager.validate_updates({"ACTIVE_DRIVE_MIN_CONFIDENCE": env_manager.ACTIVE_DRIVE_MIN_CONFIDENCE_FLOOR - 0.001})
+    ok = env_manager.validate_updates({"ACTIVE_DRIVE_MIN_CONFIDENCE": env_manager.ACTIVE_DRIVE_MIN_CONFIDENCE_FLOOR})
+    assert float(ok["ACTIVE_DRIVE_MIN_CONFIDENCE"]) == env_manager.ACTIVE_DRIVE_MIN_CONFIDENCE_FLOOR
 
 
 def test_reload_endpoint(env_file):

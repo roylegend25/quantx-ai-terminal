@@ -6,11 +6,12 @@ import AutoCardTable from "../components/Responsive/AutoCardTable";
 import BinancePositionsTable from "../components/Trading/BinancePositionsTable";
 import ServerTradingControlCard from "../components/Trading/ServerTradingControlCard";
 import UserLiveConfirmationCard from "../components/Trading/UserLiveConfirmationCard";
+import BinanceCredentialCard from "../components/Trading/BinanceCredentialCard";
 import ExecutionModeCard from "../components/Trading/ExecutionModeCard";
 import { useBinanceLiveGate } from "../components/Trading/BinanceLiveGate";
 import { api } from "../services/api";
 import { fmtLocalDateTime, fmtNum, fmtPct, fmtUsd, toneClass, toneOf } from "../lib/format";
-import { useTradingStatus, type TradingStatus } from "../components/Trading/TradingShared";
+import { AutomaticExecutionBanner, LiveLeaseCountdown, useTradingStatus, type TradingStatus } from "../components/Trading/TradingShared";
 import { useBinanceAccount } from "../hooks/useBinanceAccount";
 import type { AppData } from "../hooks/useAppData";
 
@@ -119,6 +120,7 @@ export default function BinanceRealPage(props: AppData) {
 
   return (
     <div className="page-grid">
+      <AutomaticExecutionBanner status={status} />
       {/* ---------------- header ---------------- */}
       <Card
         full
@@ -126,9 +128,18 @@ export default function BinanceRealPage(props: AppData) {
         className={isLive ? "live-danger-card" : ""}
         right={
           <div className="controls">
-            <span className={`badge ${isLive ? "badge-red" : status?.binance_live_enabled_by_server && status?.binance_live_unlocked_by_user ? "badge-orange" : ""}`}>
-              Binance Real — {isLive ? "Active" : status?.binance_live_enabled_by_server && status?.binance_live_unlocked_by_user ? "Ready" : "Locked"}
+            {/* Phase 31: "Ready" must never be shown from server-lock +
+                user-unlock alone - those are two of several independent
+                gates. final_order_routing_eligible is the one field that
+                actually means an order could be placed right now. */}
+            <span className={`badge ${isLive ? "badge-red" : status?.final_order_routing_eligible ? "badge-orange" : ""}`}>
+              Binance Real — {isLive ? "Active" : status?.final_order_routing_eligible ? "Ready" : "Locked"}
             </span>
+            {status?.live_authorization_lease?.active && (
+              <span className="badge badge-orange">
+                <LiveLeaseCountdown lease={status.live_authorization_lease} />
+              </span>
+            )}
             <span className={`badge ${status?.binance_connected ? "badge-green" : ""}`}>
               {status?.binance_configured
                 ? status?.binance_connected
@@ -192,6 +203,9 @@ export default function BinanceRealPage(props: AppData) {
           <p className="regime-desc">Loading readiness checklist…</p>
         )}
       </Card>
+
+      {/* ---------------- credential management ---------------- */}
+      <BinanceCredentialCard showToast={showToast} />
 
       {/* ---------------- user live confirmation ---------------- */}
       <UserLiveConfirmationCard status={status} onChanged={onChanged} showToast={showToast} />

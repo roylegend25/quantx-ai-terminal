@@ -47,9 +47,15 @@ def test_source_health_is_bound_to_decision_and_quant_missing_inputs_are_explici
 
 def test_resolution_breakdowns_reconcile_global_total():
  summary=prediction_resolution_summary()
- assert summary["resolved"]==sum(x["resolved"] for x in summary["by_timeframe"])
- assert summary["total_predictions"]==sum(x["total_predictions"] for x in summary["by_timeframe"])
- assert {"1m","3m","5m","15m","30m","1h","4h","1d","unknown/legacy"} <= {x["key"] for x in summary["by_timeframe"]}
+ legacy=summary["legacy"]
+ assert summary["resolved"]==sum(x["resolved"] for x in summary["by_timeframe"])+sum(x["resolved"] for x in legacy["rows"])
+ assert summary["total_predictions"]==sum(x["total_predictions"] for x in summary["by_timeframe"])+legacy["total_predictions"]
+ # The primary axis is the full canonical 1m..1M set - 1M is a calendar
+ # month, distinct from 1m - and never contains an unknown/legacy row;
+ # unattributable records live only in the separate legacy section.
+ assert {x["key"] for x in summary["by_timeframe"]}=={"1m","3m","5m","15m","30m","1h","4h","1d","1w","1M"}
+ assert all(x["key"] not in ("unknown/legacy","legacy_unattributed") for x in summary["by_timeframe"])
+ assert "unresolved_reasons" in summary and "neutral_threshold" in summary
 
 def test_resolver_skips_legacy_gaps_without_starving_later_records():
  from datetime import datetime,timedelta,timezone

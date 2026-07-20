@@ -62,11 +62,6 @@ function toneClass(signal: Signal): Tone {
   return "yellow";
 }
 
-function fmtUsd(n?: number | null): string {
-  if (typeof n !== "number") return "—";
-  return `$${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
-}
-
 function fmtNum(n?: number | null, digits = 2): string {
   return typeof n === "number" ? n.toFixed(digits) : "—";
 }
@@ -146,16 +141,8 @@ function AIDecisionCenter({ symbol, prediction, lastUpdated }: Props) {
           <b className="tile-value">{prediction?.feature_regime ?? "—"}</b>
         </div>
 
-        <div className="analytics-tile">
-          <span className="tile-label">Stop</span>
-          <b className="tile-value red">{noTrade ? "Not applicable" : fmtUsd(prediction?.stop)}</b>
-        </div>
-
-        <div className="analytics-tile">
-          <span className="tile-label">Target</span>
-          <b className="tile-value green">{noTrade ? "Not applicable" : fmtUsd(prediction?.target)}</b>
-        </div>
-
+        {/* Target/Stop live only in the authoritative PredictionChart
+            summary - not repeated in this diagnostics card. */}
         <div className="analytics-tile">
           <span className="tile-label">ATR</span>
           <b className="tile-value">{fmtNum(prediction?.features?.atr)}</b>

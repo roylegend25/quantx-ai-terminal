@@ -42,7 +42,8 @@ export type NavKey =
   | "execution"
   | "model-center"
   | "research-lab"
-  | "trading-diagnostics";
+  | "trading-diagnostics"
+  | "hyperliquid";
 
 export const NAV_ITEMS: { key: NavKey; label: string }[] = [
   { key: "dashboard", label: "Dashboard" },
@@ -65,6 +66,7 @@ export const NAV_ITEMS: { key: NavKey; label: string }[] = [
   { key: "model-center", label: "AI Model Center" },
   { key: "research-lab", label: "Research Lab" },
   { key: "trading-diagnostics", label: "Trading Diagnostics" },
+  { key: "hyperliquid", label: "Hyperliquid Large Trades" },
 ];
 
 /** Purely a sidebar rendering grouping - NAV_ITEMS above stays the flat
@@ -72,7 +74,7 @@ export const NAV_ITEMS: { key: NavKey; label: string }[] = [
 export const NAV_SECTIONS: { label: string; keys: NavKey[] }[] = [
   { label: "Main", keys: ["dashboard", "portfolio", "predictions", "prediction-results", "positions", "performance"] },
   { label: "Trading", keys: ["paper-trading", "binance-real", "bot-trades", "market", "bot-settings", "risk", "execution", "trading-diagnostics"] },
-  { label: "Analysis", keys: ["backtesting", "model-center", "research-lab", "stress-test"] },
+  { label: "Analysis", keys: ["backtesting", "model-center", "research-lab", "stress-test", "hyperliquid"] },
   { label: "System", keys: ["logs", "system-status"] },
 ];
 
@@ -102,4 +104,5 @@ export const NAV_ICONS: Record<NavKey, ComponentType<{ size?: number }>> = {
   "model-center": Boxes,
   "research-lab": Microscope,
   "trading-diagnostics": Stethoscope,
+  hyperliquid: Waves,
 };

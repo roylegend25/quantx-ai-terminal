@@ -59,6 +59,7 @@ const ICONS: Record<NavKey, ComponentType<{ size?: number }>> = {
   "model-center": Boxes,
   "research-lab": Microscope,
   "trading-diagnostics": Stethoscope,
+  hyperliquid: Waves,
 };
 
 const PRIMARY_KEYS: NavKey[] = ["dashboard", "portfolio", "paper-trading", "binance-real"];

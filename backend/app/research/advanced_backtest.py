@@ -362,7 +362,8 @@ def run_advanced(req: dict, db=None) -> dict:
         raise ValueError(f"Unknown strategy '{strategy}', expected one of {lab_strategies.STRATEGIES}")
 
     symbols = [s.upper() for s in (req.get("symbols") or ["BTCUSDT"])]
-    timeframes = [tf.lower() for tf in (req.get("timeframes") or ["5m"])]
+    from app.timeframes.canonical import storage_interval
+    timeframes = [storage_interval(tf) for tf in (req.get("timeframes") or ["5m"])]
     for tf in timeframes:
         if tf not in TIMEFRAMES_MS:
             raise ValueError(f"Unsupported timeframe '{tf}'")

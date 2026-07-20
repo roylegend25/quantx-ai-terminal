@@ -70,6 +70,36 @@ class LiveTradingLocked(RuntimeError):
     constructed - or a write is attempted - while it isn't permitted."""
 
 
+def _resolve_live_credential() -> tuple[str, str]:
+    """Phase 32: the live-write credential pair, in priority order:
+      1. settings.binance_live_api_key/secret (.env - infra/back-compat path)
+      2. the admin-saved, encrypted-at-rest BinanceCredential row
+      3. empty (unconfigured - fails closed, same as before Phase 32)
+    Neither source alone enables live trading - BINANCE_LIVE_ENABLED, DB
+    mode, and an active authorization lease are still independently
+    required (Phase 31)."""
+    if settings.binance_live_api_key and settings.binance_live_api_secret:
+        return settings.binance_live_api_key, settings.binance_live_api_secret
+    try:
+        from app.core.credential_store import decrypt
+        from app.db.models import BinanceCredential
+        from app.db.session import SessionLocal
+        db = SessionLocal()
+        try:
+            row = db.get(BinanceCredential, 1)
+            if row is None:
+                return "", ""
+            return decrypt(row.encrypted_api_key), decrypt(row.encrypted_api_secret)
+        finally:
+            db.close()
+    except Exception:
+        # Fail closed to unconfigured - never raise out of __init__ for a
+        # credential-store problem (missing master key, corrupted
+        # ciphertext, DB unavailable); the caller already treats an empty
+        # pair as "not configured" via .configured.
+        return "", ""
+
+
 class BinanceFuturesClient:
     def __init__(
         self,
@@ -88,8 +118,20 @@ class BinanceFuturesClient:
             raise LiveTradingLocked(
                 "BINANCE_LIVE_ENABLED is false - refusing to construct a production trading client"
             )
-        self._api_key = api_key if api_key is not None else settings.binance_api_key
-        self._api_secret = api_secret if api_secret is not None else settings.binance_api_secret
+        # Phase 31: a real, write-capable production client (testnet=False,
+        # read_only=False) loads ONLY the separate live-credential pair -
+        # never the shared read-only-monitoring/testnet pair. This means
+        # normal paper/testnet operation never has live-write-capable
+        # credentials loaded into the process at all, by construction, even
+        # if binance_api_key/secret happen to be populated with something
+        # that would otherwise also work against the live endpoint.
+        write_capable_live = not testnet and not read_only
+        if write_capable_live:
+            default_key, default_secret = _resolve_live_credential()
+        else:
+            default_key, default_secret = settings.binance_api_key, settings.binance_api_secret
+        self._api_key = api_key if api_key is not None else default_key
+        self._api_secret = api_secret if api_secret is not None else default_secret
         self.testnet = testnet
         self.read_only = read_only
         self.base_url = TESTNET_BASE if testnet else PROD_BASE

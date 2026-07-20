@@ -84,6 +84,16 @@ def get_settings(db=None) -> dict:
             db.close()
 
 
+def get_user_settings(user_id: str, db=None) -> dict:
+    """Ownership-aware read boundary for automated sizing.
+
+    Current installations have one configured trading account and therefore
+    one risk row; the returned owner stamp prevents that row from being reused
+    under a different authority identity inside the sizing pipeline.
+    """
+    return {**get_settings(db), "risk_policy_owner": str(user_id)}
+
+
 def validate(patch: dict) -> None:
     for key, value in patch.items():
         if key not in DEFAULTS:

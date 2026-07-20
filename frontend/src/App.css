@@ -445,6 +445,23 @@ button, select, input {
   border-radius: 14px;
 }
 
+.horizon-settings { display: grid; gap: 16px; }
+.horizon-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+.horizon-controls label { display: grid; gap: 6px; min-width: 190px; color: #aeb4c9; font-size: 12px; }
+.horizon-controls select { width: 100%; }
+.horizon-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.horizon-summary div { padding: 12px; border: 1px solid rgba(255,255,255,.1); border-radius: 10px; background: rgba(255,255,255,.025); }
+.horizon-summary span { display: block; color: #9299b2; font-size: 11px; margin-bottom: 5px; }
+.horizon-why { margin: 0; padding: 12px; border-radius: 10px; }
+.horizon-why.ready { background: rgba(0,245,160,.1); }
+.horizon-why.blocked { background: rgba(255,190,60,.1); }
+.horizon-matrix-wrap { overflow-x: auto; }
+.horizon-matrix { width: 100%; border-collapse: collapse; min-width: 520px; }
+.horizon-matrix th, .horizon-matrix td { padding: 9px; border-bottom: 1px solid rgba(255,255,255,.08); text-align: left; }
+.horizon-invalidation { display: flex; flex-wrap: wrap; gap: 20px; }
+@media (max-width: 760px) { .horizon-summary { grid-template-columns: 1fr 1fr; } .horizon-controls label { min-width: 100%; } }
+@media (max-width: 430px) { .horizon-summary { grid-template-columns: 1fr; } }
+
 .design-toggle-compact {
   padding: 3px;
   gap: 6px;
@@ -1418,9 +1435,16 @@ button, select, input {
 
 .pc-summary {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 12px;
   margin-top: 16px;
+}
+
+.pc-summary-note {
+  margin: 10px 2px 0;
+  color: #8b90a8;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .pc-tile {
@@ -1438,6 +1462,21 @@ button, select, input {
   color: #8b90a8;
   font-size: 11px;
   font-weight: 600;
+  /* Phase 34: long blocker/regime reason text (e.g. "Calibrated directional
+     confidence not established: relevant source history 1/20") must wrap
+     within the tile, never overflow its border. */
+  overflow-wrap: anywhere;
+}
+
+/* Phase 34: some tiles render a 56px circular gauge (Confidence) where
+   others render a single text line (Signal, Evidence, Entry Price, ...).
+   Without a shared min-height, whichever tiles land in the same grid row
+   put their "sub" line at different vertical offsets and the row reads as
+   uneven card heights even though the outer .pc-tile boxes are equal. */
+.pc-summary .pc-tile .tile-value {
+  min-height: 56px;
+  display: flex;
+  align-items: center;
 }
 
 .pc-debug-panel {
@@ -1821,13 +1860,15 @@ button, select, input {
   text-transform: uppercase;
   letter-spacing: .04em;
   margin-bottom: 6px;
+  overflow-wrap: anywhere;
 }
 
 .tile-value {
   display: block;
-  font-size: 18px;
+  font-size: clamp(14px, 1.5vw, 18px);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
 .strength-row {
@@ -2039,6 +2080,14 @@ progress.disabled::-webkit-progress-value {
   color: #c8cbe0;
 }
 
+.liq-heatmap-provider-note {
+  margin: 4px 2px 0;
+  color: #8b90a8;
+  font-size: 11px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
 /* auto-fit (not a fixed column count) because this card's actual width
    varies a lot by context - a third of the dashboard row on desktop, up to
    the full card on mobile - and only auto-fit responds to that container
@@ -2222,15 +2271,38 @@ progress.disabled::-webkit-progress-value {
 }
 
 .book-row {
-  display: flex;
-  justify-content: space-between;
-  padding: 5px 0;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+  padding: 5px 4px;
   font-size: 12.5px;
   font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  border-radius: 3px;
 }
 
-.book-row.red span { color: var(--c-red); }
-.book-row.green span { color: var(--c-green); }
+.book-row.red .book-row-price { color: var(--c-red); }
+.book-row.green .book-row-price { color: var(--c-green); }
+.book-row-price { text-align: left; position: relative; z-index: 1; }
+.book-row-qty { text-align: right; position: relative; z-index: 1; }
+
+/* Depth bar: cumulative size from the best price outward, behind the text -
+   never on top of it, never resized/animated in a way that shifts layout. */
+.book-row-depth {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+.book-row.red .book-row-depth { background: rgba(var(--c-red-rgb, 229, 72, 77), 0.14); }
+.book-row.green .book-row-depth { background: rgba(var(--c-green-rgb, 0, 200, 120), 0.14); }
+
+.orderbook-stale {
+  opacity: 0.55;
+  filter: grayscale(0.3);
+}
 
 .ob-mid {
   display: flex;
@@ -5457,6 +5529,99 @@ body.mobilenav-scroll-lock {
   border-color: rgba(var(--c-cyan-rgb), 0.3);
 }
 
+.chip.purple {
+  color: var(--c-purple);
+  border-color: rgba(var(--c-purple-rgb), 0.3);
+  background: rgba(var(--c-purple-rgb), 0.08);
+}
+
+/* Phase 34: Combined Positions Overview - source badges must read as fixed
+   labels (PAPER / BINANCE REAL), never title-cased by the generic .chip
+   text-transform. */
+.source-badge {
+  text-transform: uppercase;
+  letter-spacing: .02em;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.combined-positions-totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.combined-positions-totals > span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.combined-positions-totals small {
+  color: #8b90a8;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.combined-positions-table td, .combined-positions-table th {
+  white-space: nowrap;
+}
+
+.risk-envelope-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+
+@media (max-width: 767px) {
+  .risk-envelope-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.risk-envelope-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel-2);
+  min-width: 0;
+}
+
+.risk-envelope-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.risk-envelope-bounds {
+  display: flex;
+  gap: 16px;
+}
+
+.risk-envelope-bounds span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: right;
+}
+
+.risk-envelope-bounds small {
+  color: #8b90a8;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
 .dec-empty {
   display: flex;
   flex-direction: row;
@@ -6029,6 +6194,41 @@ body.mobilenav-scroll-lock {
   box-shadow: 0 0 0 1px rgba(255, 93, 115, 0.25), 0 0 24px rgba(255, 93, 115, 0.12);
 }
 
+.auto-execution-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin-bottom: 4px;
+}
+
+.auto-execution-banner.paper {
+  color: #8fb3ff;
+  background: rgba(90, 140, 255, 0.12);
+  border: 1px solid rgba(90, 140, 255, 0.3);
+}
+
+.auto-execution-banner.live {
+  color: #ff5d73;
+  background: rgba(255, 93, 115, 0.12);
+  border: 1px solid rgba(255, 93, 115, 0.45);
+}
+
+.live-lease-countdown {
+  font-size: 11.5px;
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+.live-lease-countdown.compact {
+  margin-left: auto;
+}
+
 .portfolio-warnings {
   margin-top: 10px;
   display: flex;
@@ -6242,7 +6442,13 @@ body.mobilenav-scroll-lock {
 
 /* Forecast/decision separation: canvas on the left, readable DOM details
    outside it. The only chart overlay is the compact mobile decision chip. */
-.pc-chart-layout{display:grid;grid-template-columns:minmax(0,2fr) minmax(280px,1fr);gap:14px;align-items:stretch;min-width:0}
+/* Phase 34: the side panel is capped at a fixed max width instead of
+   taking a proportional share (was minmax(0,2fr) minmax(280px,1fr), which
+   let the panel keep growing as a fraction of any extra width - exactly
+   what "consumes excessive width" on a MacBook was). The chart now
+   receives ALL remaining space via minmax(0,1fr) regardless of viewport
+   width, and the panel never exceeds 340px. */
+.pc-chart-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,340px);gap:14px;align-items:stretch;min-width:0}
 .pc-desktop-decision,.pc-tablet-decision{min-width:0}.pc-tablet-decision{display:none}
 .chart-decision-panel{height:100%;min-width:0;padding:16px;border:1px solid var(--border);border-radius:16px;background:var(--panel);overflow:auto}
 .chart-decision-panel header{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;margin-bottom:14px}.chart-decision-panel h4{margin:3px 0 0}.chart-decision-panel small{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.05em}.engine-health-dot{color:var(--cyan);font-size:11px;white-space:nowrap}
@@ -6259,3 +6465,16 @@ body.mobilenav-scroll-lock {
 .live-decision-section{grid-column:1/-1;min-width:0;padding:18px;border:1px solid var(--border);border-radius:18px;background:linear-gradient(145deg,var(--panel),rgba(var(--c-purple-rgb),.035));overflow:hidden}.live-decision-head,.decision-snapshot-strip,.live-decision-grid,.requirements-panel header,.decision-flow-panel header{display:flex;align-items:center;justify-content:space-between;gap:14px}.live-decision-head small,.decision-snapshot-strip small,.requirements-panel small,.decision-flow-panel small{color:var(--muted)}.live-decision-head h3{margin:4px 0 0;font-size:20px}.live-decision-head h3 span{margin-left:8px;color:var(--cyan);font-size:12px}.next-evaluation{text-align:right}.next-evaluation b{display:block;margin-top:4px;font-variant-numeric:tabular-nums}.decision-snapshot-strip{margin:16px 0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));padding:12px;border:1px solid var(--border);border-radius:14px;background:var(--panel-2)}.decision-snapshot-strip>span{min-width:0}.decision-snapshot-strip b,.decision-snapshot-strip small{display:block}.decision-snapshot-strip b{margin-top:5px;overflow-wrap:anywhere}.live-decision-grid{align-items:stretch;display:grid;grid-template-columns:minmax(300px,.9fr) minmax(0,1.4fr)}.requirements-panel,.decision-flow-panel{min-width:0;padding:15px;border:1px solid var(--border);border-radius:15px;background:var(--panel)}.requirements-panel h4,.decision-flow-panel h4{margin:0}.requirement-list{display:grid;gap:10px;margin-top:13px}.decision-requirement{padding:10px;border:1px solid var(--border);border-radius:11px}.decision-requirement>div:first-child{display:flex;justify-content:space-between;gap:10px}.decision-requirement small{display:block;margin-top:7px;line-height:1.35}.requirement-track{height:5px;margin-top:8px;border-radius:10px;background:var(--border);overflow:hidden}.requirement-track i{display:block;height:100%;background:var(--yellow)}.decision-requirement.passed .requirement-track i{background:var(--green)}.decision-requirement.failed .requirement-track i{background:var(--red)}.decision-blockers{display:grid;gap:7px;margin-top:12px;padding:11px;border-left:3px solid var(--yellow);background:rgba(255,190,50,.06)}.decision-blockers span{color:var(--muted);line-height:1.35}.decision-flow-chart{height:250px;margin-top:10px}.decision-flow-legend{display:flex;flex-wrap:wrap;gap:12px;margin-top:8px;font-size:11px;font-weight:700}
 @media(min-width:768px) and (max-width:1199px){.live-decision-grid{grid-template-columns:1fr 1fr}.decision-snapshot-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.decision-snapshot-strip>span:last-child{grid-column:1/-1}}
 @media(max-width:767px){.live-decision-section{padding:13px;padding-bottom:calc(16px + env(safe-area-inset-bottom))}.live-decision-head{align-items:flex-start}.live-decision-head h3{font-size:17px}.live-decision-head h3 span{display:block;margin:4px 0 0}.decision-snapshot-strip{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.decision-snapshot-strip>span:nth-child(3),.decision-snapshot-strip>span:last-child{grid-column:1/-1}.live-decision-grid{grid-template-columns:1fr}.decision-flow-panel{order:-1}.decision-flow-chart{height:230px}.requirements-panel header,.decision-flow-panel header{align-items:flex-start;flex-direction:column}.decision-requirement>div:first-child{align-items:flex-start;flex-direction:column;gap:4px}.pc-price-row{flex-wrap:wrap}.market-connection{order:3}}
+
+/* ============================== timeframe calibration chart ============ */
+.tf-calibration { display: flex; flex-direction: column; gap: 10px; }
+.tf-cal-toolbar { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; align-items: center; }
+.tf-cal-selector { display: flex; gap: 6px; flex-wrap: wrap; }
+.tf-cal-selector .chip { cursor: pointer; background: none; }
+.tf-cal-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.tf-cal-details { align-items: start; }
+.tf-cal-details progress { width: 90px; height: 8px; vertical-align: middle; }
+.tf-cal-legacy summary { cursor: pointer; font-size: 12px; color: var(--c-text-dim, #94a3b8); }
+.chart-tooltip { background: rgba(15,23,42,.95); border: 1px solid rgba(148,163,184,.25); border-radius: 8px; padding: 8px 10px; font-size: 12px; }
+/* chart must never force page-wide horizontal overflow */
+.tf-calibration .recharts-responsive-container { min-width: 0; }
