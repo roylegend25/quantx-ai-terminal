@@ -180,6 +180,15 @@ class Settings(BaseSettings):
     resolver_price_disagreement_bps: float = 15.0
     resolver_allow_spot_fallback: bool = False
     resolver_max_data_age_seconds: float = 21600.0  # 6h - beyond this a candle is "stale" for resolution purposes
+    # Two independent queues (resolve_recent_due / resolve_historical_backfill):
+    # the historical backlog runs its own larger batch on its own loop
+    # interval so it can never delay a freshly-matured prediction, which
+    # only ever contends with other recent rows for the small recent batch.
+    resolver_recent_batch_size: int = 100
+    resolver_recent_window_hours: float = 6.0
+    resolver_backfill_batch_size: int = 300
+    resolver_recent_interval_seconds: float = 20.0
+    resolver_backfill_interval_seconds: float = 15.0
 
     @field_validator("binance_allowed_symbols", mode="before")
     @classmethod

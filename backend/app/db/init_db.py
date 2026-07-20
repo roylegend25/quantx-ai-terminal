@@ -399,6 +399,42 @@ def _migrate_performance_indexes():
             "CREATE INDEX IF NOT EXISTS ix_prediction_ledger_deadline ON prediction_ledger (resolution_deadline)"))
 
 
+def _migrate_lifecycle_status_column():
+    """Explicit prediction lifecycle status (Phase: resolver repair 2026-07-20).
+    Backfilled separately by the one-time repair script, not here - this
+    migration only ensures the column/index exist so the backfill and the
+    resolver have somewhere to write."""
+    inspector = inspect(engine)
+    if "prediction_ledger" not in inspector.get_table_names():
+        return
+    existing = {col["name"] for col in inspector.get_columns("prediction_ledger")}
+    with engine.begin() as conn:
+        if "lifecycle_status" not in existing:
+            conn.execute(text("ALTER TABLE prediction_ledger ADD COLUMN lifecycle_status VARCHAR"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_prediction_ledger_lifecycle_status ON prediction_ledger (lifecycle_status)"))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_prediction_ledger_lifecycle_deadline ON prediction_ledger "
+            "(lifecycle_status, resolution_deadline)"))
+
+
+def _migrate_resolution_formula_columns():
+    """Exact formula/threshold snapshot per resolved row (see
+    app.decision_engine.outcome) - additive, nullable; pre-existing resolved
+    rows simply have no stored snapshot and are left alone, never rewritten."""
+    inspector = inspect(engine)
+    if "prediction_resolutions" not in inspector.get_table_names():
+        return
+    existing = {col["name"] for col in inspector.get_columns("prediction_resolutions")}
+    additions = {
+        "net_direction_adjusted_return": "FLOAT", "estimated_fee": "FLOAT", "estimated_slippage": "FLOAT",
+        "neutral_band_used": "FLOAT", "fee_rate_used": "FLOAT", "slippage_bps_used": "FLOAT",
+    }
+    with engine.begin() as conn:
+        for name, coltype in additions.items():
+            if name not in existing:
+                conn.execute(text(f"ALTER TABLE prediction_resolutions ADD COLUMN {name} {coltype}"))
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_trade_columns()
@@ -413,6 +449,8 @@ def init_db():
     _migrate_verification_run_columns()
     _migrate_trade_reconciliation_columns()
     _migrate_performance_indexes()
+    _migrate_lifecycle_status_column()
+    _migrate_resolution_formula_columns()
     inspector = inspect(engine)
     if "trading_control" in inspector.get_table_names():
         existing = {col["name"] for col in inspector.get_columns("trading_control")}

@@ -240,7 +240,11 @@ class PredictionLedger(Base):
                        # for every candidate on every evaluation - without it each
                        # call table-scans the ledger.
                        Index("ix_prediction_ledger_perf_bucket", "user_id", "engine", "source_name", "source_version", "symbol", "timeframe", "market_regime"),
-                       Index("ix_prediction_ledger_deadline", "resolution_deadline"))
+                       Index("ix_prediction_ledger_deadline", "resolution_deadline"),
+                       # Two-queue claim pattern (app.decision_engine.resolver): the
+                       # recent-priority and historical-backfill queues both filter
+                       # on lifecycle_status + resolution_deadline together.
+                       Index("ix_prediction_ledger_lifecycle_deadline", "lifecycle_status", "resolution_deadline"))
     prediction_id = Column(String, primary_key=True)
     cycle_id = Column(String, nullable=True, index=True)
     candidate_id = Column(String, nullable=False)
@@ -289,6 +293,14 @@ class PredictionLedger(Base):
     resolver_claim_token = Column(String, nullable=True, index=True)
     resolver_claimed_at = Column(DateTime, nullable=True)
     resolver_next_attempt_at = Column(DateTime, nullable=True, index=True)
+    # Explicit lifecycle status (see app.decision_engine.outcome.LIFECYCLE_STATUSES).
+    # Replaces the old single generic "UNRESOLVED" label. PENDING at
+    # creation; a matured-but-not-yet-attempted row still reads PENDING here
+    # (the dashboard derives the PENDING->RESOLVING transition live from
+    # resolution_deadline, which is already indexed, rather than requiring a
+    # write the instant every prediction matures). Terminal states
+    # (RESOLVED_*, VOID_*) are written once and never revised.
+    lifecycle_status = Column(String, nullable=True, index=True, default="PENDING")
 
 class PredictionResolution(Base):
     __tablename__ = "prediction_resolutions"
@@ -320,6 +332,17 @@ class PredictionResolution(Base):
     provider_count_checked = Column(Integer, nullable=True)
     provider_price_spread_bps = Column(Float, nullable=True)
     resolution_confidence = Column(Float, nullable=True)
+
+    # Exact formula/threshold snapshot used to classify THIS row (see
+    # app.decision_engine.outcome.resolve_prediction_outcome) - stored so a
+    # later change to settings.resolution_neutral_band / fee / slippage
+    # config never silently rewrites already-resolved history.
+    net_direction_adjusted_return = Column(Float, nullable=True)
+    estimated_fee = Column(Float, nullable=True)
+    estimated_slippage = Column(Float, nullable=True)
+    neutral_band_used = Column(Float, nullable=True)
+    fee_rate_used = Column(Float, nullable=True)
+    slippage_bps_used = Column(Float, nullable=True)
 
 class StrategyPerformance(Base):
     __tablename__ = "strategy_performance"

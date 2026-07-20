@@ -126,13 +126,39 @@ function loadPrefs(): ChartPrefs {
   }
 }
 
-/** Buckets the backend's specific outcome values down to the three states
- *  the Past AI Prediction UI actually distinguishes visually (green/red/
- *  grey-yellow dots): correct, wrong, or not yet resolved. */
-function outcomeBucket(outcome: string | null | undefined): "correct" | "wrong" | "unresolved" {
+/** Buckets the backend's specific outcome values for the Past AI Prediction
+ *  UI. NO_TRADE is its own bucket, not "unresolved": the source explicitly
+ *  made no directional call that cycle, so there is nothing to resolve -
+ *  counting it as unresolved previously made an inactive series look like
+ *  it had a stuck resolver even when every real (directional) prediction
+ *  had already resolved. */
+export function outcomeBucket(outcome: string | null | undefined): "correct" | "wrong" | "no_trade" | "unresolved" {
   if (outcome === "CORRECT" || outcome === "WIN") return "correct";
   if (outcome === "INCORRECT" || outcome === "LOSS") return "wrong";
-  return "unresolved"; // PENDING, NO_TRADE
+  if (outcome === "NO_TRADE") return "no_trade";
+  return "unresolved"; // PENDING
+}
+
+export function computePastPredictionStats(points: { outcome?: string | null; error_pct?: number | null }[]) {
+  let correct = 0, wrong = 0, noTrade = 0, unresolved = 0, errorSum = 0, errorCount = 0;
+  for (const p of points) {
+    const bucket = outcomeBucket(p.outcome);
+    if (bucket === "correct") correct += 1;
+    else if (bucket === "wrong") wrong += 1;
+    else if (bucket === "no_trade") noTrade += 1;
+    else unresolved += 1;
+    if (typeof p.error_pct === "number") {
+      errorSum += p.error_pct;
+      errorCount += 1;
+    }
+  }
+  const resolved = correct + wrong;
+  return {
+    total: correct + wrong + unresolved,
+    correct, wrong, unresolved, noTrade,
+    hitRatePct: resolved ? (correct / resolved) * 100 : null,
+    avgErrorPct: errorCount ? errorSum / errorCount : null,
+  };
 }
 
 /** Candle interval sanity check: the prop candles may briefly belong to the
@@ -460,33 +486,10 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
   // Past AI Prediction stat row - derived straight from the same history
   // points the chart plots as dots, so the numbers always match what's on
   // screen (rather than trusting the backend summary's own bucketing).
-  const pastPredictionStats = useMemo(() => {
-    const points = historyData.points as any[];
-    let correct = 0;
-    let wrong = 0;
-    let unresolved = 0;
-    let errorSum = 0;
-    let errorCount = 0;
-    for (const p of points) {
-      const bucket = outcomeBucket(p.outcome);
-      if (bucket === "correct") correct += 1;
-      else if (bucket === "wrong") wrong += 1;
-      else unresolved += 1;
-      if (typeof p.error_pct === "number") {
-        errorSum += p.error_pct;
-        errorCount += 1;
-      }
-    }
-    const resolved = correct + wrong;
-    return {
-      total: points.length,
-      correct,
-      wrong,
-      unresolved,
-      hitRatePct: resolved ? (correct / resolved) * 100 : null,
-      avgErrorPct: errorCount ? errorSum / errorCount : null,
-    };
-  }, [historyData.points]);
+  const pastPredictionStats = useMemo(
+    () => computePastPredictionStats(historyData.points as any[]),
+    [historyData.points]
+  );
 
   const toolButtons: Array<{
     key: string;
@@ -708,9 +711,15 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
             <b className="red">{pastPredictionStats.wrong}</b>
           </div>
           <div className="pc-past-stat">
-            <span>Unresolved</span>
+            <span>Pending</span>
             <b className="yellow">{pastPredictionStats.unresolved}</b>
           </div>
+          {pastPredictionStats.noTrade > 0 && (
+            <div className="pc-past-stat" title="Cycles where no directional call was made - not a prediction, so not counted above">
+              <span>No Trade</span>
+              <b>{pastPredictionStats.noTrade}</b>
+            </div>
+          )}
         </div>
       )}
 

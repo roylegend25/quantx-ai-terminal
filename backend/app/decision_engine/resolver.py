@@ -23,6 +23,7 @@ from app.data_sources import symbol_map
 from app.data_sources.downloader import store_candles
 from app.data_sources.normalizer import TIMEFRAMES_MS
 from app.db.models import MarketCandle, PredictionLedger, PredictionResolution
+from app.decision_engine import outcome
 from app.monitoring.logging import get_logger, log_event
 
 logger = get_logger("quantx.resolver")
@@ -61,7 +62,15 @@ def classify_unresolved_reason(row: PredictionLedger, now: datetime) -> str:
         return "invalid_due_time"
     if row.reference_price is None:
         return "missing_entry_price"
-    if row.direction not in ("LONG", "SHORT", "NEUTRAL"):
+    if row.direction not in ("LONG", "SHORT", "NEUTRAL", "NO_TRADE"):
+        # NO_TRADE is a legitimate, common candidate direction (the source
+        # explicitly chose not to call a direction this cycle) - it was
+        # missing from this allow-list, so every NO_TRADE row that ever
+        # failed one resolution attempt got mislabeled "legacy_missing_metadata"
+        # (implying corrupt/missing metadata) instead of its real failure
+        # reason, masking ~9k genuinely-recoverable rows behind a name that
+        # sounds terminal. Only a truly absent/garbage direction value lands
+        # here now.
         return "legacy_missing_metadata"
     if deadline > now:
         return "awaiting_horizon"
@@ -192,6 +201,7 @@ def _mark_attempt(row: PredictionLedger, now: datetime, error: str | None) -> No
     row.last_resolver_attempt_at = now
     row.last_resolver_error = error
     row.unresolved_status = classify_unresolved_reason(row, now) if error else None
+    row.lifecycle_status = outcome.lifecycle_status_for_attempt(row.unresolved_status) if error else row.lifecycle_status
     row.resolver_claim_token = None
     row.resolver_claimed_at = None
     if error:
@@ -286,10 +296,33 @@ def _resolve_one(db: Session, row: PredictionLedger, candle: MarketCandle, now: 
     correct = (None if (row.direction not in ("LONG", "SHORT") or actual_direction == "NEUTRAL")
                else row.direction == actual_direction)
 
+    # Cost-aware outcome (app.decision_engine.outcome): computed and stored
+    # alongside the fields above as additional, documented provenance for
+    # the calibration dataset and dashboard - it does NOT replace `correct`/
+    # `neutral_result` above, which remain the live resolver's authoritative
+    # accuracy signal (repository.performance(), already-deployed confidence
+    # calibration). Introducing cost-adjustment into that live signal would
+    # be a strategy-threshold change, which this repair is explicitly not
+    # authorized to make silently.
+    cost_outcome = outcome.resolve_prediction_outcome(row.direction, row.reference_price, float(candle.close))
+    if row.direction not in ("LONG", "SHORT"):
+        lifecycle = outcome.RESOLVED_NEUTRAL
+    elif correct is True:
+        lifecycle = outcome.RESOLVED_CORRECT
+    elif correct is False:
+        lifecycle = outcome.RESOLVED_WRONG
+    else:
+        lifecycle = outcome.RESOLVED_NEUTRAL
+    row.lifecycle_status = lifecycle
+
     db.add(PredictionResolution(
         prediction_id=row.prediction_id, actual_return=actual_return, resolved_direction=actual_direction,
         correct=correct, neutral_result=actual_direction == "NEUTRAL", target_hit=target_hit, stop_hit=stop_hit,
         maximum_favorable_excursion=mfe, maximum_adverse_excursion=mae,
+        net_direction_adjusted_return=cost_outcome.net_direction_adjusted_return,
+        estimated_fee=cost_outcome.estimated_fee, estimated_slippage=cost_outcome.estimated_slippage,
+        neutral_band_used=cost_outcome.neutral_band_used, fee_rate_used=cost_outcome.fee_rate_used,
+        slippage_bps_used=cost_outcome.slippage_bps_used,
         resolution_reason="fixed_horizon_close", resolved_at=now, requested_due_at=row.resolution_deadline,
         resolution_provider=provenance.get("resolution_provider"), resolution_exchange=provenance.get("resolution_exchange"),
         resolution_market_type=provenance.get("resolution_market_type"), provider_symbol=provenance.get("provider_symbol"),
@@ -303,15 +336,10 @@ def _resolve_one(db: Session, row: PredictionLedger, candle: MarketCandle, now: 
     row.last_resolver_error = None
 
 
-async def resolve_due(db: Session, limit: int = 200, scan_limit: int | None = None, use_fallback: bool = True) -> dict:
-    """Bounded catch-up cycle. Returns run stats (never raises past its own
-    bookkeeping - a single row's provider errors never abort the batch)."""
-    now = datetime.now(timezone.utc)
-    requested = min(limit, settings.resolver_batch_size)
-    if scan_limit is not None:
-        requested = min(requested, scan_limit)
-    claim_token, rows = _claim_due_rows(db, now, requested)
-
+async def _process_claimed_rows(db: Session, rows: list[PredictionLedger], now: datetime, use_fallback: bool) -> dict:
+    """Shared resolution loop for every claim queue (mixed/recent/historical).
+    Never raises past its own bookkeeping - a single row's provider errors
+    never abort the batch."""
     stats = {"scanned": len(rows), "resolved": 0, "primary_source": 0, "fallback_source": 0,
               "provider_disagreement": 0, "failed": 0, "by_reason": {}}
 
@@ -371,13 +399,103 @@ async def resolve_due(db: Session, limit: int = 200, scan_limit: int | None = No
             stats["primary_source"] += 1
 
     db.commit()
-    # Defensive release if a row raised before normal attempt bookkeeping.
+    return stats
+
+
+def _release_stale_claims(db: Session, claim_token: str) -> None:
+    """Defensive release if a row raised before normal attempt bookkeeping."""
     db.query(PredictionLedger).filter(PredictionLedger.resolver_claim_token == claim_token).update(
         {PredictionLedger.resolver_claim_token: None, PredictionLedger.resolver_claimed_at: None},
         synchronize_session=False,
     )
     db.commit()
+
+
+async def resolve_due(db: Session, limit: int = 200, scan_limit: int | None = None, use_fallback: bool = True) -> dict:
+    """Bounded catch-up cycle over the mixed (75% recent / 25% oldest) queue -
+    unchanged from before the two-queue split, kept for existing callers/tests.
+    Prefer resolve_recent_due/resolve_historical_backfill for new callers so
+    the historical backlog can never delay current predictions."""
+    now = datetime.now(timezone.utc)
+    requested = min(limit, settings.resolver_batch_size)
+    if scan_limit is not None:
+        requested = min(requested, scan_limit)
+    claim_token, rows = _claim_due_rows(db, now, requested)
+    stats = await _process_claimed_rows(db, rows, now, use_fallback)
+    _release_stale_claims(db, claim_token)
     log_event(logger, message="resolver_cycle_completed", category="prediction", **{k: v for k, v in stats.items() if k != "by_reason"})
+    return stats
+
+
+def _claim_rows_by_age(db: Session, now: datetime, batch_size: int, *, newer_than: datetime | None, older_than: datetime | None) -> tuple[str, list[PredictionLedger]]:
+    """Like _claim_due_rows, but scoped to one age band instead of the
+    75/25 mixed split - the recent-priority queue only ever contends with
+    itself for rows, never with the historical-backfill queue's much larger
+    batch, so a huge backlog can never delay a freshly-matured prediction."""
+    token = str(uuid4())
+    stale_before = now - timedelta(seconds=settings.resolver_claim_timeout_seconds)
+    base = (
+        db.query(PredictionLedger)
+        .outerjoin(PredictionResolution, PredictionResolution.prediction_id == PredictionLedger.prediction_id)
+        .filter(
+            PredictionResolution.id.is_(None),
+            PredictionLedger.resolution_deadline <= now,
+            PredictionLedger.reference_price.isnot(None),
+            or_(PredictionLedger.resolver_next_attempt_at.is_(None), PredictionLedger.resolver_next_attempt_at <= now),
+            or_(PredictionLedger.resolver_claim_token.is_(None), PredictionLedger.resolver_claimed_at < stale_before),
+            or_(PredictionLedger.unresolved_status.is_(None), PredictionLedger.unresolved_status != "permanent_data_gap"),
+        )
+    )
+    if newer_than is not None:
+        base = base.filter(PredictionLedger.generated_at >= newer_than)
+    if older_than is not None:
+        base = base.filter(PredictionLedger.generated_at < older_than)
+    # Recent queue: newest-due first (serve the freshest signal fastest).
+    # Historical queue: oldest-due first (drain the tail of the backlog
+    # instead of perpetually re-picking whatever matured most recently
+    # within the backlog itself).
+    order = PredictionLedger.resolution_deadline.desc() if newer_than is not None else PredictionLedger.resolution_deadline.asc()
+    if db.bind.dialect.name == "postgresql":
+        rows = base.order_by(order).with_for_update(skip_locked=True).limit(batch_size).all()
+        for row in rows:
+            row.resolver_claim_token = token
+            row.resolver_claimed_at = now
+        db.commit()
+    else:
+        ids = [r[0] for r in base.with_entities(PredictionLedger.prediction_id).order_by(order).limit(batch_size).all()]
+        if ids:
+            db.query(PredictionLedger).filter(
+                PredictionLedger.prediction_id.in_(ids),
+                or_(PredictionLedger.resolver_claim_token.is_(None), PredictionLedger.resolver_claimed_at < stale_before),
+            ).update({PredictionLedger.resolver_claim_token: token, PredictionLedger.resolver_claimed_at: now}, synchronize_session=False)
+            db.commit()
+        rows = db.query(PredictionLedger).filter(PredictionLedger.resolver_claim_token == token).order_by(order).all()
+    return token, rows
+
+
+async def resolve_recent_due(db: Session, limit: int = 200, recent_window_hours: float = 6.0, use_fallback: bool = True) -> dict:
+    """Recent-priority queue: only predictions generated within the last
+    recent_window_hours. Resolves newly-matured predictions promptly no
+    matter how large the historical backlog is."""
+    now = datetime.now(timezone.utc)
+    claim_token, rows = _claim_rows_by_age(db, now, min(limit, settings.resolver_recent_batch_size),
+                                           newer_than=now - timedelta(hours=recent_window_hours), older_than=None)
+    stats = await _process_claimed_rows(db, rows, now, use_fallback)
+    _release_stale_claims(db, claim_token)
+    log_event(logger, message="resolver_recent_cycle_completed", category="prediction", **{k: v for k, v in stats.items() if k != "by_reason"})
+    return stats
+
+
+async def resolve_historical_backfill(db: Session, limit: int = 1000, recent_window_hours: float = 6.0, use_fallback: bool = True) -> dict:
+    """Historical-backfill queue: only predictions older than
+    recent_window_hours, processed in large controlled batches. Runs on its
+    own schedule/loop, entirely independent of the recent queue's claims."""
+    now = datetime.now(timezone.utc)
+    claim_token, rows = _claim_rows_by_age(db, now, min(limit, settings.resolver_backfill_batch_size),
+                                           newer_than=None, older_than=now - timedelta(hours=recent_window_hours))
+    stats = await _process_claimed_rows(db, rows, now, use_fallback)
+    _release_stale_claims(db, claim_token)
+    log_event(logger, message="resolver_backfill_cycle_completed", category="prediction", **{k: v for k, v in stats.items() if k != "by_reason"})
     return stats
 
 

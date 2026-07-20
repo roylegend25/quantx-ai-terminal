@@ -62,6 +62,7 @@ def persist(db, user_id: str, result: dict, reference_price: float | None, featu
             probability_up=candidate.get("probability_up"), probability_down=candidate.get("probability_down"), confidence=candidate.get("confidence") or 0,
             points=candidate.get("candidate_points", 0), expected_edge=candidate.get("expected_edge"), reference_price=reference_price,
             target_reference_price=result.get("recommended_target"), stop_reference_price=result.get("recommended_stop"), data_revision="active-drive-v2.1",
-            target_horizon_seconds=horizon, resolution_deadline=deadline, feature_snapshot_hash=fingerprint, generated_at=now))
+            target_horizon_seconds=horizon, resolution_deadline=deadline, feature_snapshot_hash=fingerprint, generated_at=now,
+            lifecycle_status="PENDING"))
     db.commit()
     return decision_id
