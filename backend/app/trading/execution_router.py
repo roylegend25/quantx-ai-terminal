@@ -37,7 +37,7 @@ from app.deployment.lease import execution_lease
 from app.exchanges.binance_futures_client import BinanceFuturesClient, LiveTradingLocked
 from app.execution.execution_engine import engine as paper_engine
 from app.execution.order_router import OrderType
-from app.trading import modes, protection, protection_provider, real_risk_gate
+from app.trading import modes, paper_validation_guard, protection, protection_provider, real_risk_gate
 from app.trading.execution_pipeline import (
     STAGE_BINANCE_VALIDATION,
     STAGE_CHAMPION_MODEL,
@@ -1414,8 +1414,21 @@ class ExecutionRouter:
                 "strategy_used": (top_sources[0].get("name") if top_sources else None) or "active_drive_v2"}
             provider_kwargs["_market_revalidation"] = lambda current_price: revalidate_snapshot_price(snapshot, current_price)
             provider_kwargs["_pre_submit_guard"] = pre_submit_guard
+            # PAPER-only one-shot validation guard (see
+            # app.trading.paper_validation_guard): structurally a no-op in
+            # every other mode and when no guard is active. Checked here,
+            # immediately before the real provider call, so a structural
+            # rejection above (missing horizon authority, bad sizing, lost
+            # lease) never consumes the one permitted attempt.
+            if modes.effective_mode() == modes.MODE_PAPER:
+                guard_block = await paper_validation_guard.check_and_register_entry_attempt(symbol)
+                if guard_block:
+                    routed = RouterResult(ok=False, mode=modes.MODE_PAPER, action="open_position", reason=guard_block)
+                    return routed
             routed = await self.provider().open_position(**provider_kwargs)
             routed.detail.setdefault("position_sizing", sizing)
+            if modes.effective_mode() == modes.MODE_PAPER:
+                paper_validation_guard.record_entry_outcome(symbol, routed.ok, routed.detail.get("trade_id"))
             return routed
         finally:
             lost.set()

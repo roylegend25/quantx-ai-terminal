@@ -48,6 +48,7 @@ from app.data_sources.scheduler import start_data_scheduler
 from app.decision_engine.scheduler import start_scheduler as start_decision_resolver
 from app.trading.binance_sync import start_binance_sync
 from app.trading.protection_watchdog import start_protection_watchdog
+from app.trading import paper_validation_guard
 from app.core.config import settings
 from app.deployment import maintenance
 from app.deployment.lease import execution_lease
@@ -70,6 +71,7 @@ async def delayed_background_start():
     start_decision_resolver()
     start_binance_sync()
     start_protection_watchdog()
+    paper_validation_guard.start_watchdog()
 
 @app.on_event("startup")
 async def startup_event():
@@ -90,6 +92,7 @@ async def startup_event():
     # live unlock must never survive a backend restart, redeploy, or reboot.
     from app.trading import modes as _modes
     _modes.startup_safety_reset()
+    paper_validation_guard.startup_recovery()
     instrument_db_engine(db_engine)
     asyncio.create_task(delayed_background_start())
 

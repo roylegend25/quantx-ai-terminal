@@ -1378,3 +1378,36 @@ class BinanceProtectionCapability(Base):
     updated_at = Column(
         DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
     )
+
+
+class PaperValidationGuard(Base):
+    """One-shot PAPER-only validation window (see
+    app.trading.paper_validation_guard). Singleton row (id=1). Never
+    referenced by any live-execution code path - it only gates PAPER opens
+    and calls app.deployment.maintenance; it cannot enable live trading or
+    touch live credentials/leases. State lives here (not in memory) so the
+    watchdog and startup-recovery check both survive a container restart,
+    not just an SSH/tmux/Claude disconnection."""
+    __tablename__ = "paper_validation_guard"
+
+    id = Column(Integer, primary_key=True)
+    active = Column(Boolean, default=False, nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    max_entry_attempts = Column(Integer, default=1, nullable=False)
+    entry_attempts = Column(Integer, default=0, nullable=False)
+    max_positions = Column(Integer, default=1, nullable=False)
+    max_symbols = Column(Integer, default=1, nullable=False)
+    max_holding_seconds = Column(Integer, default=3600, nullable=False)
+    entry_accepted = Column(Boolean, default=False, nullable=False)
+    entry_symbol = Column(String, nullable=True)
+    entry_trade_id = Column(Integer, nullable=True)
+    entry_accepted_at = Column(DateTime, nullable=True)
+    completed = Column(Boolean, default=False, nullable=False)
+    completed_reason = Column(String, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    maintenance_restored_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
