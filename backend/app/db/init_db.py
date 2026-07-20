@@ -293,6 +293,21 @@ def _migrate_verification_run_columns():
             ))
 
 
+def _migrate_trade_reconciliation_columns():
+    """run_counters_applied_at was added after binance_trade_reconciliations
+    already existed on disk (see app.trading.pnl_reconciliation) - tracks
+    whether a persisted P&L row has actually been applied to its
+    LiveVerificationRun counters yet, separately from the row existing at
+    all, so a retry can finish that step instead of skipping it forever."""
+    inspector = inspect(engine)
+    if "binance_trade_reconciliations" not in inspector.get_table_names():
+        return
+    existing = {col["name"] for col in inspector.get_columns("binance_trade_reconciliations")}
+    if "run_counters_applied_at" not in existing:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE binance_trade_reconciliations ADD COLUMN run_counters_applied_at DATETIME"))
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_trade_columns()
@@ -305,6 +320,7 @@ def init_db():
     _migrate_active_drive_ledger_columns()
     _migrate_prediction_resolution_provider_columns()
     _migrate_verification_run_columns()
+    _migrate_trade_reconciliation_columns()
     inspector = inspect(engine)
     if "trading_control" in inspector.get_table_names():
         existing = {col["name"] for col in inspector.get_columns("trading_control")}

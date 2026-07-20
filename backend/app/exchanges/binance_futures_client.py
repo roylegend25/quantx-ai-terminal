@@ -263,8 +263,20 @@ class BinanceFuturesClient:
         data = await self._get("/fapi/v1/allOrders", {"symbol": symbol.upper(), "limit": limit}, signed=True, priority=priority)
         return [BinanceOrder.from_api(o) for o in data]
 
-    async def get_trade_history(self, symbol: str, limit: int = 50, priority: str = LOW) -> list[BinanceUserTrade]:
-        data = await self._get("/fapi/v1/userTrades", {"symbol": symbol.upper(), "limit": limit}, signed=True, priority=priority)
+    async def get_trade_history(
+        self, symbol: str, limit: int = 50, start_time: int | None = None,
+        end_time: int | None = None, priority: str = LOW,
+    ) -> list[BinanceUserTrade]:
+        """Real per-fill trade records (id, order_id, realized_pnl,
+        commission) - unlike /fapi/v1/income, this account's orderId is
+        always populated here, which is why P&L reconciliation matches
+        fills by order id through this endpoint, not income history."""
+        params: dict = {"symbol": symbol.upper(), "limit": min(max(limit, 1), 1000)}
+        if start_time is not None:
+            params["startTime"] = int(start_time)
+        if end_time is not None:
+            params["endTime"] = int(end_time)
+        data = await self._get("/fapi/v1/userTrades", params, signed=True, priority=priority)
         return [BinanceUserTrade.from_api(t) for t in data]
 
     async def get_mark_price(self, symbol: str, priority: str = NORMAL) -> float:

@@ -203,11 +203,7 @@ def stop_if_limited(db: Session, run_id: str) -> LiveVerificationRun:
     return row
 
 
-def record_closed_trade(db: Session, run_id: str, *, net_realised_pnl: float) -> LiveVerificationRun:
-    """Count only separately closed trades with exchange-derived P&L after fees."""
-    row = db.get(LiveVerificationRun, run_id)
-    if not row or row.status not in ACTIVE_STATUSES:
-        raise VerificationBlocked("Verification run is not active")
+def _apply_closed_trade_counters(row: LiveVerificationRun, *, net_realised_pnl: float) -> None:
     if net_realised_pnl > 0:
         row.successful_trades_during_this_run += 1
         row.consecutive_losses_during_this_run = 0
@@ -216,8 +212,40 @@ def record_closed_trade(db: Session, run_id: str, *, net_realised_pnl: float) ->
         row.realised_loss_during_this_run += abs(min(net_realised_pnl, 0.0))
     row.completed_trades_during_this_run += 1
     row.updated_at = _utcnow()
+
+
+def record_closed_trade(db: Session, run_id: str, *, net_realised_pnl: float) -> LiveVerificationRun:
+    """Count only separately closed trades with exchange-derived P&L after fees."""
+    row = db.get(LiveVerificationRun, run_id)
+    if not row or row.status not in ACTIVE_STATUSES:
+        raise VerificationBlocked("Verification run is not active")
+    _apply_closed_trade_counters(row, net_realised_pnl=net_realised_pnl)
     db.commit()
     return stop_if_limited(db, run_id)
+
+
+def record_closed_trade_retroactive(db: Session, run_id: str, *, net_realised_pnl: float) -> LiveVerificationRun:
+    """Backfill completed_trades_during_this_run / realised_loss_during_this_run
+    on a run that is ALREADY stopped, to correct bookkeeping after the fact
+    from authoritative Binance records (see app.trading.pnl_reconciliation).
+
+    Never touches status, stop_reason or live_execution_enabled, and refuses
+    to run on anything still active - this can only fix numbers on a run
+    that is already, permanently, done. Use record_closed_trade for a run
+    that is still open.
+    """
+    row = db.get(LiveVerificationRun, run_id)
+    if not row:
+        raise ValueError("Unknown verification run")
+    if row.status != "stopped":
+        raise VerificationBlocked(
+            "Retroactive reconciliation only applies to an already-stopped run - "
+            "use record_closed_trade for an active run"
+        )
+    _apply_closed_trade_counters(row, net_realised_pnl=net_realised_pnl)
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 def mark_reconciled(db: Session, run_id: str) -> LiveVerificationRun:

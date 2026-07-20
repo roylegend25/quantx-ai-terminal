@@ -1079,6 +1079,42 @@ class LiveVerificationRun(Base):
                         onupdate=lambda: datetime.now(timezone.utc))
 
 
+class BinanceTradeReconciliation(Base):
+    """Idempotent, authoritative P&L record for one closed real trade.
+
+    entry_order_id is unique so reconciling the same trade twice is a no-op
+    (see app.trading.pnl_reconciliation.reconcile_closed_trade) - it never
+    re-touches LiveVerificationRun counters on a repeat call. Built from
+    /fapi/v1/userTrades fills matched by order id (never from /fapi/v1/income,
+    whose orderId is null on this account) plus income-history funding rows
+    matched by symbol and the fill time window.
+    """
+    __tablename__ = "binance_trade_reconciliations"
+
+    id = Column(Integer, primary_key=True)
+    entry_order_id = Column(String, nullable=False, unique=True, index=True)
+    exit_order_id = Column(String, nullable=False)
+    verification_run_id = Column(String, nullable=True, index=True)
+    symbol = Column(String, nullable=False)
+    entry_fill_count = Column(Integer, nullable=False, default=0)
+    exit_fill_count = Column(Integer, nullable=False, default=0)
+    gross_pnl = Column(Float, nullable=False, default=0.0)
+    total_commission = Column(Float, nullable=False, default=0.0)
+    total_funding = Column(Float, nullable=False, default=0.0)
+    net_realised_pnl = Column(Float, nullable=False, default=0.0)
+    window_start_ms = Column(Integer, nullable=True)
+    window_end_ms = Column(Integer, nullable=True)
+    reconciliation_source = Column(String, nullable=True)
+    audit_note = Column(Text, nullable=True)
+    reconciled_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    # Null until the LiveVerificationRun counters have actually been updated
+    # from this row - kept separate from reconciled_at so a retry can finish
+    # the counter update if an earlier call recorded the trade P&L but then
+    # failed before reaching the run-counter step (idempotent AND
+    # self-healing, not just an inert no-op on repeat).
+    run_counters_applied_at = Column(DateTime, nullable=True)
+
+
 class RiskSettings(Base):
     """Editable paper-trading risk limits (see app/risk/settings_repository.py).
 

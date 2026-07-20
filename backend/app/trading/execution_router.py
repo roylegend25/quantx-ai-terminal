@@ -720,10 +720,12 @@ class BinanceExecutionProvider:
 
             await self.sync_positions()
             if verification_run_id:
-                # Binance income is the source of truth. Count success/loss
-                # only when the close order's realised P&L and commissions
-                # are visible; delayed income remains uncounted for later
-                # reconciliation rather than being guessed.
+                # Real Binance fills are the source of truth (see
+                # app.trading.pnl_reconciliation - /fapi/v1/income's orderId
+                # is null on this account, so P&L/commission are matched from
+                # /fapi/v1/userTrades by the exact order id instead). Count
+                # success/loss only when fills are actually visible; a
+                # missing fill halts the run rather than guessing a P&L.
                 try:
                     remaining_positions = await self.client.get_positions(symbol)
                     remaining_orders = await self.client.get_open_orders(symbol)
@@ -735,26 +737,25 @@ class BinanceExecutionProvider:
                         finally:
                             verify_db.close()
                         return self._result(False, "close_position", reason="Verification reconciliation found a remaining position or order")
-                    income = await self.client.get_income_history(limit=100)
-                    run_order_ids = {str(order.order_id)}
-                    if verification_entry_order_id is not None:
-                        run_order_ids.add(str(verification_entry_order_id))
-                    matched = [r for r in income if str(r.get("orderId") or "") in run_order_ids]
-                    pnl_rows = [r for r in matched if r.get("incomeType") in ("REALIZED_PNL", "COMMISSION")]
-                    if matched and pnl_rows:
-                        net_pnl = sum(float(r.get("income") or 0.0) for r in pnl_rows)
-                        from app.trading import verification_runs
-                        verify_db = SessionLocal()
-                        try:
-                            closed_run = verification_runs.record_closed_trade(
-                                verify_db, verification_run_id, net_realised_pnl=net_pnl,
-                            )
-                            verification_runs.mark_reconciled(verify_db, verification_run_id)
-                            if closed_run.status == "stopped":
-                                await execution_lease.release()
-                                maintenance.enable(closed_run.stop_reason or "verification_completed")
-                        finally:
-                            verify_db.close()
+                    if verification_entry_order_id is None:
+                        raise RuntimeError("No entry order id available for P&L reconciliation")
+                    from app.db.models import LiveVerificationRun
+                    from app.trading import verification_runs
+                    from app.trading.pnl_reconciliation import reconcile_closed_trade
+                    verify_db = SessionLocal()
+                    try:
+                        await reconcile_closed_trade(
+                            self.client, verify_db, symbol=symbol,
+                            entry_order_id=verification_entry_order_id, exit_order_id=order.order_id,
+                            verification_run_id=verification_run_id,
+                        )
+                        verification_runs.mark_reconciled(verify_db, verification_run_id)
+                        closed_run = verify_db.get(LiveVerificationRun, verification_run_id)
+                        if closed_run and closed_run.status == "stopped":
+                            await execution_lease.release()
+                            maintenance.enable(closed_run.stop_reason or "verification_completed")
+                    finally:
+                        verify_db.close()
                 except Exception:
                     from app.trading import verification_runs
                     verify_db = SessionLocal()
