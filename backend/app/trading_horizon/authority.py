@@ -401,7 +401,19 @@ def validate_horizon_decision(
             or not bool(payload.get("current_edge_supported", payload.get("edge_supported", False)))
         ):
             raise HorizonAuthorityError("HORIZON_TIMEFRAME_LINK_INVALID")
-        if timeframe in profile.required_timeframes and (link.direction != row.final_direction or not link.eligible):
+        # Only the execution/primary timeframe's link is required to match
+        # final_direction and be independently eligible. Under the strict
+        # (non-PAPER) policy every required timeframe was already forced
+        # unanimous before build_horizon_decision ever set ready=True, so
+        # this was previously an always-true assertion for confirmation
+        # timeframes too - harmless. Under the PAPER-only soft confirmation
+        # policy (app.trading_horizon.service._confirm_higher_timeframes) a
+        # confirmation timeframe can legitimately be NEUTRAL (NO_TRADE,
+        # eligible=False) while the decision still proceeds on the primary's
+        # own evidence; re-imposing strict unanimity here would silently
+        # reject every soft-confirmed decision at consumption time even
+        # though it was correctly approved at issuance time.
+        if timeframe == profile.execution_timeframe and (link.direction != row.final_direction or not link.eligible):
             raise HorizonAuthorityError("HORIZON_TIMEFRAME_LINK_INVALID")
         if expected_role == "bias" and link.direction not in {row.final_direction, "NO_TRADE"}:
             raise HorizonAuthorityError("HORIZON_TIMEFRAME_LINK_INVALID")
