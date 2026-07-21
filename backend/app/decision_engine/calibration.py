@@ -76,9 +76,16 @@ def compute_metrics(rows: list[tuple[PredictionLedger, PredictionResolution]]) -
             "average_realized_move": None, "average_net_move_after_costs": None,
             "false_positive_rate": None, "average_mfe": None, "average_mae": None,
         }
-    correct = sum(1 for _, r in rows if r.correct is True)
-    wrong = sum(1 for _, r in rows if r.correct is False)
-    neutral = sum(1 for _, r in rows if r.neutral_result)
+    # lifecycle_status is authoritative for the correct/wrong/neutral split -
+    # the legacy PredictionResolution.correct/neutral_result booleans are
+    # left NULL/False for many genuinely-neutral historical rows (NO_TRADE/
+    # NEUTRAL predictions, and directional predictions whose realised move
+    # never cleared the neutral band), so counting via those legacy fields
+    # would silently undercount neutral outcomes. rows here are already
+    # lifecycle-status-filtered to TRUSTWORTHY_STATUSES by trustworthy_rows().
+    correct = sum(1 for l, _ in rows if l.lifecycle_status == outcome_mod.RESOLVED_CORRECT)
+    wrong = sum(1 for l, _ in rows if l.lifecycle_status == outcome_mod.RESOLVED_WRONG)
+    neutral = sum(1 for l, _ in rows if l.lifecycle_status == outcome_mod.RESOLVED_NEUTRAL)
     directional = correct + wrong
     confidences = [l.confidence for l, _ in rows if l.confidence is not None]
     expected_moves = [l.expected_edge for l, _ in rows if l.expected_edge is not None]
@@ -129,6 +136,40 @@ def compute_metrics(rows: list[tuple[PredictionLedger, PredictionResolution]]) -
     }
 
 
+def directional_breakdown(rows: list[tuple[PredictionLedger, PredictionResolution]]) -> dict:
+    """Six-way split that keeps a directional prediction's non-hit distinct
+    from a NO_TRADE/NEUTRAL prediction's correct abstention - both land in
+    RESOLVED_NEUTRAL, but they mean different things for model evaluation. A
+    LONG/SHORT prediction whose realised move never cleared the neutral band
+    was a real directional bet that simply didn't pay off either way (should
+    count against the model's directional usefulness); a NO_TRADE/NEUTRAL
+    prediction landing in the same band was the right call to make no bet.
+    rows must already be lifecycle-terminal (RESOLVED_* only)."""
+    correct_direction = wrong_direction = directional_non_hit = correct_abstention = 0
+    for ledger, _ in rows:
+        is_directional_prediction = ledger.direction in ("LONG", "SHORT")
+        if ledger.lifecycle_status == outcome_mod.RESOLVED_CORRECT:
+            correct_direction += 1
+        elif ledger.lifecycle_status == outcome_mod.RESOLVED_WRONG:
+            wrong_direction += 1
+        elif ledger.lifecycle_status == outcome_mod.RESOLVED_NEUTRAL:
+            if is_directional_prediction:
+                directional_non_hit += 1
+            else:
+                correct_abstention += 1
+    return {
+        "correct_direction": correct_direction,
+        "wrong_direction": wrong_direction,
+        "directional_non_hit": directional_non_hit,
+        "correct_abstention": correct_abstention,
+        "total": len(rows),
+        "denominator_note": "correct_direction/wrong_direction/directional_non_hit share one denominator "
+                             "(directional LONG/SHORT predictions only); correct_abstention is a separate "
+                             "denominator (NO_TRADE/NEUTRAL predictions only) - never sum the two groups "
+                             "into one accuracy percentage.",
+    }
+
+
 def rolling_performance(db: Session, *, symbol: str, timeframe: str, direction: str | None = None,
                          source_name: str | None = None) -> dict:
     """Rolling 20/50/100-prediction performance, most-recent-first."""
@@ -161,6 +202,7 @@ def calibration_dataset(db: Session) -> dict:
         "by_symbol": by_symbol,
         "by_direction": by_direction,
         "by_timeframe": by_timeframe,
+        "directional_breakdown": directional_breakdown(trustworthy_rows(db)),
         "min_sample_for_calibration": MIN_SAMPLE_FOR_CALIBRATION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }

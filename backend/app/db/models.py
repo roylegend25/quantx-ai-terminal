@@ -126,6 +126,28 @@ class CalibrationVersion(Base):
     rolled_back_at = Column(DateTime, nullable=True)
     notes = Column(Text, nullable=True)
 
+
+class LegacyNeutralCompatCorrection(Base):
+    """Audit trail for app.decision_engine.legacy_neutral_compat - a narrow,
+    idempotent, versioned backfill that sets PredictionResolution.neutral_result
+    = True for rows whose lifecycle_status is already the authoritative
+    RESOLVED_NEUTRAL but whose legacy neutral_result/correct booleans were
+    never populated to match (pre-dates the lifecycle_status column). This
+    NEVER changes lifecycle_status, resolved_direction, prices, direction, or
+    correct - see legacy_neutral_compat.py for the exact predicate. One row
+    per corrected prediction_id; a second run against an already-corrected
+    row is a no-op and writes no second audit row (the corrected row no
+    longer matches the predicate)."""
+    __tablename__ = "legacy_neutral_compat_corrections"
+    id = Column(Integer, primary_key=True, index=True)
+    prediction_id = Column(String, nullable=False, unique=True, index=True)
+    correction_version = Column(String, nullable=False, index=True)
+    correction_timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    old_neutral_result = Column(Boolean, nullable=True)
+    new_neutral_result = Column(Boolean, nullable=False)
+    audit_reason = Column(String, nullable=False)
+
+
 class ActiveDriveDecision(Base):
     __tablename__ = "active_drive_decisions"
     __table_args__ = (Index("ix_active_drive_scope_time", "user_id", "symbol", "timeframe", "created_at"),)

@@ -145,3 +145,65 @@ def test_rollback_reactivates_previous_version(db):
 def test_rollback_with_no_prior_version_raises(db):
     with pytest.raises(ValueError):
         calibration.rollback_calibration(db, to_version_id=999999)
+
+
+def test_compute_metrics_neutral_count_uses_lifecycle_status_not_legacy_field(db):
+    """A RESOLVED_NEUTRAL row whose legacy neutral_result boolean was never
+    populated (correct=NULL, neutral_result=False) must still count as
+    neutral - lifecycle_status is authoritative, the legacy field is not."""
+    ledger = _ledger("stale-legacy-neutral", direction="LONG", lifecycle_status=outcome.RESOLVED_NEUTRAL)
+    db.add(ledger)
+    db.add(_resolution("stale-legacy-neutral", correct=None, neutral=False))
+    db.commit()
+    rows = calibration.trustworthy_rows(db, source_name="trend")
+    metrics = calibration.compute_metrics([r for r in rows if r[0].prediction_id == PREFIX + "stale-legacy-neutral"])
+    assert metrics["neutral"] == 1
+    assert metrics["correct"] == 0
+    assert metrics["wrong"] == 0
+
+
+def test_directional_breakdown_long_to_neutral_is_non_hit(db):
+    db.add(_ledger("long-non-hit", direction="LONG", lifecycle_status=outcome.RESOLVED_NEUTRAL))
+    db.add(_resolution("long-non-hit", correct=None, neutral=False))
+    db.commit()
+    rows = [r for r in calibration.trustworthy_rows(db) if r[0].prediction_id == PREFIX + "long-non-hit"]
+    breakdown = calibration.directional_breakdown(rows)
+    assert breakdown["directional_non_hit"] == 1
+    assert breakdown["correct_abstention"] == 0
+    assert breakdown["correct_direction"] == 0
+    assert breakdown["wrong_direction"] == 0
+
+
+def test_directional_breakdown_short_to_neutral_is_non_hit(db):
+    db.add(_ledger("short-non-hit", direction="SHORT", lifecycle_status=outcome.RESOLVED_NEUTRAL))
+    db.add(_resolution("short-non-hit", correct=None, neutral=False))
+    db.commit()
+    rows = [r for r in calibration.trustworthy_rows(db) if r[0].prediction_id == PREFIX + "short-non-hit"]
+    breakdown = calibration.directional_breakdown(rows)
+    assert breakdown["directional_non_hit"] == 1
+    assert breakdown["correct_abstention"] == 0
+
+
+def test_directional_breakdown_no_trade_to_neutral_is_correct_abstention(db):
+    db.add(_ledger("abstention", direction="NO_TRADE", lifecycle_status=outcome.RESOLVED_NEUTRAL))
+    db.add(_resolution("abstention", correct=None, neutral=False))
+    db.commit()
+    rows = [r for r in calibration.trustworthy_rows(db) if r[0].prediction_id == PREFIX + "abstention"]
+    breakdown = calibration.directional_breakdown(rows)
+    assert breakdown["correct_abstention"] == 1
+    assert breakdown["directional_non_hit"] == 0
+
+
+def test_directional_breakdown_correct_and_wrong_unaffected(db):
+    db.add(_ledger("dir-correct", direction="LONG", lifecycle_status=outcome.RESOLVED_CORRECT))
+    db.add(_resolution("dir-correct", correct=True))
+    db.add(_ledger("dir-wrong", direction="LONG", lifecycle_status=outcome.RESOLVED_WRONG))
+    db.add(_resolution("dir-wrong", correct=False))
+    db.commit()
+    rows = [r for r in calibration.trustworthy_rows(db)
+            if r[0].prediction_id in (PREFIX + "dir-correct", PREFIX + "dir-wrong")]
+    breakdown = calibration.directional_breakdown(rows)
+    assert breakdown["correct_direction"] == 1
+    assert breakdown["wrong_direction"] == 1
+    assert breakdown["directional_non_hit"] == 0
+    assert breakdown["correct_abstention"] == 0

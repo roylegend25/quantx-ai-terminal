@@ -4,13 +4,14 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import case, func
+from sqlalchemy import case, func, or_
 from types import SimpleNamespace
 import time
 from app.core.config import settings
 from app.core.deps import get_current_user
 from app.db.models import ActiveDriveDecision, MarketCandle, PredictionCycle, PredictionLedger, PredictionResolution, SignalCandidateRecord
 from app.db.session import SessionLocal
+from app.decision_engine import outcome as outcome_mod
 from app.decision_engine import scheduler as resolver_scheduler
 from app.decision_engine.repository import owner
 from app.decision_engine.ledger import HORIZON_SECONDS
@@ -36,6 +37,33 @@ def _iso(v):return v.isoformat() if v else None
 def _naive_utc_now():
     """DB datetimes round-trip through SQLite tz-naive; compare like with like."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+def _is_resolved(ledger, resolution):
+    """lifecycle_status is authoritative - never infer "resolved" from the
+    nullable legacy PredictionResolution.correct field, which is left NULL
+    for a large class of genuinely-terminal RESOLVED_NEUTRAL rows (NO_TRADE/
+    NEUTRAL predictions, and directional predictions whose realised move
+    never cleared the neutral band). A NULL lifecycle_status with an
+    existing resolution row is a not-yet-backfilled legacy row; treat it as
+    resolved (matches what it will read once backfilled) rather than
+    silently miscounting it as still open."""
+    if ledger.lifecycle_status in outcome_mod.RESOLVED_STATUSES:
+        return True
+    return ledger.lifecycle_status is None and resolution is not None
+
+
+def _is_void(ledger):
+    return ledger.lifecycle_status in outcome_mod.VOID_STATUSES
+
+
+def _is_unresolved(ledger, resolution):
+    """Genuinely non-terminal only: PENDING/RESOLVING/RESOLUTION_ERROR_RETRYING.
+    VOID_* is terminal and must never be counted as unresolved, even though a
+    voided row (like a genuinely-open row) has no PredictionResolution."""
+    if ledger.lifecycle_status is not None:
+        return ledger.lifecycle_status not in outcome_mod.TERMINAL_STATUSES
+    return resolution is None
+
 
 def _unresolved_reason(ledger,now,candle_latest_ms,resolver_running):
     """Structured reason one prediction has not resolved. Prefers the
@@ -64,10 +92,15 @@ def _group(rows,key_fn,now=None,candle_latest_ms=None,resolver_running=True,with
     for ledger,resolution in rows:groups[str(key_fn(ledger) or LEGACY_KEY)].append((ledger,resolution))
     out=[]
     for key,items in sorted(groups.items()):
-        resolved=[(l,r) for l,r in items if r is not None]; correct=sum(r.correct is True for _,r in resolved); wrong=sum(r.correct is False for _,r in resolved); neutral=sum(bool(r.neutral_result) for _,r in resolved); directional=correct+wrong; returns=[r.actual_return for _,r in resolved if r.actual_return is not None]
-        row={"key":key,"total_predictions":len(items),"resolved":len(resolved),"unresolved":len(items)-len(resolved),"correct":correct,"wrong":wrong,"neutral":neutral,"accuracy":round(correct/directional,4) if directional>=20 else None,"neutral_rate":round(neutral/len(resolved),4) if resolved else None,"average_realized_return":round(sum(returns)/len(returns),8) if returns else None,"expected_edge_sample_count":directional,"first_prediction":_iso(min((l.generated_at for l,_ in items),default=None)),"latest_prediction":_iso(max((l.generated_at for l,_ in items),default=None))}
+        resolved=[(l,r) for l,r in items if _is_resolved(l,r)]
+        void_n=sum(_is_void(l) for l,_ in items)
+        correct=sum(l.lifecycle_status==outcome_mod.RESOLVED_CORRECT for l,_ in resolved)
+        wrong=sum(l.lifecycle_status==outcome_mod.RESOLVED_WRONG for l,_ in resolved)
+        neutral=sum(l.lifecycle_status==outcome_mod.RESOLVED_NEUTRAL for l,_ in resolved)
+        directional=correct+wrong; returns=[r.actual_return for _,r in resolved if r is not None and r.actual_return is not None]
+        row={"key":key,"total_predictions":len(items),"resolved":len(resolved),"void":void_n,"unresolved":len(items)-len(resolved)-void_n,"correct":correct,"wrong":wrong,"neutral":neutral,"accuracy":round(correct/directional,4) if directional>=20 else None,"neutral_rate":round(neutral/len(resolved),4) if resolved else None,"average_realized_return":round(sum(returns)/len(returns),8) if returns else None,"expected_edge_sample_count":directional,"first_prediction":_iso(min((l.generated_at for l,_ in items),default=None)),"latest_prediction":_iso(max((l.generated_at for l,_ in items),default=None))}
         if with_reasons and now is not None:
-            unresolved=[l for l,r in items if r is None]
+            unresolved=[l for l,r in items if _is_unresolved(l,r)]
             reasons=Counter(_unresolved_reason(l,now,candle_latest_ms or {},resolver_running) for l in unresolved)
             resolved_ats=[r.resolved_at for _,r in resolved if r.resolved_at is not None]
             delays=[(r.resolved_at-l.resolution_deadline).total_seconds() for l,r in resolved if r.resolved_at is not None and l.resolution_deadline is not None]
@@ -97,16 +130,16 @@ def prediction_resolution_summary(symbol:str|None=None,timeframe:str|None=None,e
     try:
         try: rows=_filtered_rows(db,symbol,timeframe,engine,source_type,source_name,source_version,market_regime,date_from,date_to,cycle_id)
         except ValueError as exc: raise HTTPException(422,{"code":"UNSUPPORTED_TIMEFRAME","message":"Unsupported timeframe."}) from exc
-        resolved=[(l,r) for l,r in rows if r is not None]; correct=sum(r.correct is True for _,r in resolved); wrong=sum(r.correct is False for _,r in resolved); neutral=sum(bool(r.neutral_result) for _,r in resolved); now=_naive_utc_now()
-        expired=sum(r is None and l.resolution_deadline < now-timedelta(seconds=TIMEFRAME_SECONDS.get(l.timeframe,300)) for l,r in rows)
+        resolved=[(l,r) for l,r in rows if _is_resolved(l,r)]; correct=sum(l.lifecycle_status==outcome_mod.RESOLVED_CORRECT for l,_ in resolved); wrong=sum(l.lifecycle_status==outcome_mod.RESOLVED_WRONG for l,_ in resolved); neutral=sum(l.lifecycle_status==outcome_mod.RESOLVED_NEUTRAL for l,_ in resolved); void_n=sum(_is_void(l) for l,_ in rows); now=_naive_utc_now()
+        expired=sum(_is_unresolved(l,r) and l.resolution_deadline < now-timedelta(seconds=TIMEFRAME_SECONDS.get(l.timeframe,300)) for l,r in rows)
         candle_latest_ms={(s,tf):ms for s,tf,ms in db.query(MarketCandle.symbol,MarketCandle.timeframe,func.max(MarketCandle.timestamp)).group_by(MarketCandle.symbol,MarketCandle.timeframe)}
         resolver_running=bool(resolver_scheduler.status().get("running"))
         canonical=[(l,r) for l,r in rows if l.timeframe in TIMEFRAMES]; legacy=[(l,r) for l,r in rows if l.timeframe not in TIMEFRAMES]
         by_tf=_group(canonical,lambda l:l.timeframe,now=now,candle_latest_ms=candle_latest_ms,resolver_running=resolver_running,with_reasons=True)
-        present={x["key"] for x in by_tf}; by_tf.extend({"key":tf,"total_predictions":0,"resolved":0,"unresolved":0,"correct":0,"wrong":0,"neutral":0,"accuracy":None,"neutral_rate":None,"average_realized_return":None,"expected_edge_sample_count":0,"first_prediction":None,"latest_prediction":None,"unresolved_reasons":{},"first_resolved_at":None,"latest_resolved_at":None,"oldest_unresolved_at":None,"next_resolution_at":None,"average_resolution_delay_seconds":None,"expected_horizon_seconds":HORIZON_SECONDS.get(tf),"relevant_calibration_samples":0,"required_calibration_samples":20,"readiness_status":"no_predictions"} for tf in TIMEFRAMES if tf not in present)
-        unresolved_reasons=Counter(_unresolved_reason(l,now,candle_latest_ms,resolver_running) for l,r in rows if r is None)
-        oldest_unresolved=min((l.generated_at for l,r in rows if r is None),default=None)
-        return {"total_predictions":len(rows),"resolved":len(resolved),"unresolved":len(rows)-len(resolved),"expired_unresolved":expired,"correct":correct,"wrong":wrong,"neutral":neutral,
+        present={x["key"] for x in by_tf}; by_tf.extend({"key":tf,"total_predictions":0,"resolved":0,"void":0,"unresolved":0,"correct":0,"wrong":0,"neutral":0,"accuracy":None,"neutral_rate":None,"average_realized_return":None,"expected_edge_sample_count":0,"first_prediction":None,"latest_prediction":None,"unresolved_reasons":{},"first_resolved_at":None,"latest_resolved_at":None,"oldest_unresolved_at":None,"next_resolution_at":None,"average_resolution_delay_seconds":None,"expected_horizon_seconds":HORIZON_SECONDS.get(tf),"relevant_calibration_samples":0,"required_calibration_samples":20,"readiness_status":"no_predictions"} for tf in TIMEFRAMES if tf not in present)
+        unresolved_reasons=Counter(_unresolved_reason(l,now,candle_latest_ms,resolver_running) for l,r in rows if _is_unresolved(l,r))
+        oldest_unresolved=min((l.generated_at for l,r in rows if _is_unresolved(l,r)),default=None)
+        return {"total_predictions":len(rows),"resolved":len(resolved),"void":void_n,"unresolved":len(rows)-len(resolved)-void_n,"expired_unresolved":expired,"correct":correct,"wrong":wrong,"neutral":neutral,
           "neutral_threshold":settings.resolution_neutral_band,"neutral_threshold_units":"decimal_return_fraction",
           "unresolved_reasons":dict(unresolved_reasons),"oldest_unresolved_at":_iso(oldest_unresolved),
           "timeframes":TIMEFRAMES,
@@ -184,7 +217,14 @@ def resolver_health():
         now=datetime.now(timezone.utc); naive_now=_naive_utc_now()
         scheduler_status=resolver_scheduler.status()
         resolver_running=bool(scheduler_status.get("running"))
-        base=db.query(PredictionLedger).outerjoin(PredictionResolution,PredictionResolution.prediction_id==PredictionLedger.prediction_id).filter(PredictionResolution.id.is_(None))
+        # VOID_* is terminal (deliberately never resolved) - excluding it here
+        # is required, not cosmetic: without it, every voided row would sit
+        # in due_count/overdue_count forever since it never gains a
+        # PredictionResolution row, permanently inflating the backlog signal.
+        base=db.query(PredictionLedger).outerjoin(PredictionResolution,PredictionResolution.prediction_id==PredictionLedger.prediction_id).filter(
+            PredictionResolution.id.is_(None),
+            or_(PredictionLedger.lifecycle_status.is_(None), PredictionLedger.lifecycle_status.notin_(tuple(outcome_mod.VOID_STATUSES))),
+        )
         due_base=base.filter(PredictionLedger.resolution_deadline<=naive_now)
         due_count=due_base.count()
         not_due_count=base.filter(PredictionLedger.resolution_deadline>naive_now).count()
@@ -316,10 +356,12 @@ def source_health(symbol:str=Query("BTCUSDT"),timeframe:str=Query("15m"),decisio
         known={s["source_name"] for s in sources}
         for name,family in SHADOW_MODELS:
             if name not in known:sources.append({"source_type":"ml","source_name":name,"name":name,"version":"shadow-1","family":family,"configured_status":"shadow","runtime_status":"shadow_not_inferred","dependency_available":False,"production_eligible":False,"shadow":True,"eligible_now":False,"direction":"NO_TRADE","final_points":0,"rejection_code":"SHADOW_ONLY","rejection_reason":"No validated artifact/inference wired into V2","resolved_samples":0,"fresh":False})
-        now=datetime.now(timezone.utc); base=db.query(PredictionLedger).filter(PredictionLedger.symbol==symbol,PredictionLedger.timeframe==timeframe); total=base.count(); resolved=base.join(PredictionResolution,PredictionResolution.prediction_id==PredictionLedger.prediction_id).count(); grace=timedelta(seconds=TIMEFRAME_SECONDS.get(timeframe,300)); expired=base.outerjoin(PredictionResolution,PredictionResolution.prediction_id==PredictionLedger.prediction_id).filter(PredictionResolution.id.is_(None),PredictionLedger.resolution_deadline<now-grace).count(); candle_max=db.query(func.max(MarketCandle.timestamp)).filter(MarketCandle.symbol==symbol,MarketCandle.timeframe==timeframe).scalar(); resolver=resolver_scheduler.status(); resolver.update({"healthy":bool(resolver.get("running") and not resolver.get("last_error") and expired==0),"expired_unresolved":expired,"market_candle_latest":candle_max,"degraded_reason":"Expired predictions lack stored outcome candles" if expired else None})
+        now=datetime.now(timezone.utc); base=db.query(PredictionLedger).filter(PredictionLedger.symbol==symbol,PredictionLedger.timeframe==timeframe); total=base.count(); resolved=base.join(PredictionResolution,PredictionResolution.prediction_id==PredictionLedger.prediction_id).count(); void_n=base.filter(PredictionLedger.lifecycle_status.in_(tuple(outcome_mod.VOID_STATUSES))).count(); grace=timedelta(seconds=TIMEFRAME_SECONDS.get(timeframe,300))
+        # VOID_* is terminal - excluded from "expired" (still-open-past-deadline), not lumped into it.
+        expired=base.outerjoin(PredictionResolution,PredictionResolution.prediction_id==PredictionLedger.prediction_id).filter(PredictionResolution.id.is_(None),PredictionLedger.resolution_deadline<now-grace,or_(PredictionLedger.lifecycle_status.is_(None),PredictionLedger.lifecycle_status.notin_(tuple(outcome_mod.VOID_STATUSES)))).count(); candle_max=db.query(func.max(MarketCandle.timestamp)).filter(MarketCandle.symbol==symbol,MarketCandle.timeframe==timeframe).scalar(); resolver=resolver_scheduler.status(); resolver.update({"healthy":bool(resolver.get("running") and not resolver.get("last_error") and expired==0),"expired_unresolved":expired,"market_candle_latest":candle_max,"degraded_reason":"Expired predictions lack stored outcome candles" if expired else None})
         types=Counter(s["source_type"] for s in sources); working=Counter(s["source_type"] for s in sources if s["runtime_status"]=="working"); payload=decision.decision_payload or {}; metrics=payload.get("decision_metrics") or {}; history=payload.get("history") or {}
         return {"decision_snapshot":{"decision_id":decision.decision_id,"symbol":decision.symbol,"timeframe":decision.timeframe,"engine":decision.engine,"engine_version":decision.engine_version,"generated_at":payload.get("generated_at") or _iso(decision.created_at),"market_data_revision":payload.get("market_data_revision"),"performance_snapshot_revision":payload.get("performance_snapshot_revision")},
-          "summary":{"ml_total":types["ml"],"ml_working":working["ml"],"strategy_total":types["strategy"],"strategy_working":working["strategy"],"strategy_eligible_now":sum(s["source_type"]=="strategy" and s.get("eligible_now") for s in sources),"quant_total":types["quant"],"quant_working":working["quant"],"quant_unavailable":sum(s["source_type"]=="quant" and s["runtime_status"]=="unavailable_data" for s in sources),"candidates_generated":len(rows),"ledger_writes":total,"resolver_healthy":resolver["healthy"]},"sources":sorted(sources,key=lambda x:(x["source_type"],x["source_name"])),"ledger":{"total":total,"resolved":resolved,"unresolved":total-resolved,"expired_unresolved":expired},"resolver":resolver,
+          "summary":{"ml_total":types["ml"],"ml_working":working["ml"],"strategy_total":types["strategy"],"strategy_working":working["strategy"],"strategy_eligible_now":sum(s["source_type"]=="strategy" and s.get("eligible_now") for s in sources),"quant_total":types["quant"],"quant_working":working["quant"],"quant_unavailable":sum(s["source_type"]=="quant" and s["runtime_status"]=="unavailable_data" for s in sources),"candidates_generated":len(rows),"ledger_writes":total,"resolver_healthy":resolver["healthy"]},"sources":sorted(sources,key=lambda x:(x["source_type"],x["source_name"])),"ledger":{"total":total,"resolved":resolved,"void":void_n,"unresolved":total-resolved-void_n,"expired_unresolved":expired},"resolver":resolver,
           "decision_requirements":{"decision_id":decision.decision_id,"signal":decision.signal,"metrics":metrics,"history":history,"blocking_reasons":decision.blocking_reasons,"long_points":decision.long_points,"short_points":decision.short_points,"confidence_diagnostics":payload.get("confidence_diagnostics"),"expected_edge":decision.expected_edge,"risk_reward_ratio":payload.get("risk_reward_ratio"),"data_status":payload.get("data_status"),"market_regime":payload.get("market_regime")}}
     finally:db.close()
 
