@@ -7,6 +7,7 @@ from app.core.deps import get_current_user
 from app.db.models import ActiveDriveDecision, SignalCandidateRecord
 from app.db.session import get_db
 from app.decision_engine.repository import owner
+from app.timeframes.canonical import parse_timeframe
 from app.risk import settings_repository
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
@@ -87,7 +88,12 @@ def live_decision(
     db: Session = Depends(get_db),
 ):
     """One bounded, user-scoped snapshot for every dashboard decision widget."""
-    symbol, timeframe = symbol.upper(), timeframe.lower()
+    try:
+        timeframe = parse_timeframe(timeframe).value
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"code": "UNSUPPORTED_TIMEFRAME",
+            "message": "Unsupported timeframe."}) from exc
+    symbol = symbol.upper()
     row = (
         db.query(ActiveDriveDecision)
         .filter(
@@ -124,12 +130,13 @@ def live_decision(
         _requirement("directional_confidence", "Directional confidence", confidence, "ratio", "DIRECTIONAL_CONFIDENCE_BELOW_THRESHOLD"),
     ]
     expected_edge = payload.get("expected_edge")
+    edge_supported = bool(payload.get("current_edge_supported", payload.get("edge_supported", False)))
     requirements.append({
         "id": "expected_edge", "label": "Expected edge", "value": expected_edge,
-        "required": None, "unit": "return", "status": "waiting" if expected_edge is None else "passed",
+        "required": None, "unit": "return", "status": "passed" if expected_edge is not None and edge_supported else "waiting",
         "formula": "resolved out-of-sample average return after costs",
         "scope": f"{symbol} {timeframe} decision {row.decision_id}",
-        "reason_code": "EDGE_NOT_SUPPORTED" if expected_edge is None else None,
+        "reason_code": None if expected_edge is not None and edge_supported else "EDGE_NOT_SUPPORTED",
         "explanation": "Requires sufficient leakage-safe resolved outcomes after costs.",
         "remaining": None,
     })

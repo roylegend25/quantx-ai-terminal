@@ -20,33 +20,33 @@ function makeDecision(overrides: Partial<any> = {}) {
 }
 
 describe("DecisionReasoningCard", () => {
-  it("shows 'trade allowed' when no execution outcome is supplied (Paper tab)", () => {
+  it("shows 'approved for paper execution' when no execution outcome is supplied (Paper tab)", () => {
     render(<DecisionReasoningCard decision={makeDecision()} />);
-    expect(screen.getByText(/trade allowed/i)).toBeInTheDocument();
+    expect(screen.getByText(/approved for paper execution/i)).toBeInTheDocument();
   });
 
-  it("shows 'trade allowed' when the live execution hasn't been attempted yet", () => {
+  it("shows 'approved for paper execution' when the live execution hasn't been attempted yet", () => {
     render(
       <DecisionReasoningCard decision={makeDecision()} executionOutcome={{ attempted: false, ok: null, reason: null }} />
     );
-    expect(screen.getByText(/trade allowed/i)).toBeInTheDocument();
+    expect(screen.getByText(/approved for paper execution/i)).toBeInTheDocument();
   });
 
-  it("shows 'trade allowed' when the live execution actually succeeded", () => {
+  it("shows 'approved for paper execution' when the live execution actually succeeded", () => {
     render(
       <DecisionReasoningCard decision={makeDecision()} executionOutcome={{ attempted: true, ok: true, reason: null }} />
     );
-    expect(screen.getByText(/trade allowed/i)).toBeInTheDocument();
+    expect(screen.getByText(/approved for paper execution/i)).toBeInTheDocument();
   });
 
-  it("never shows 'trade allowed' when the signal was approved but live execution failed", () => {
+  it("never shows 'approved for paper execution' when the signal was approved but live execution failed", () => {
     render(
       <DecisionReasoningCard
         decision={makeDecision()}
         executionOutcome={{ attempted: true, ok: false, reason: "Insufficient margin" }}
       />
     );
-    expect(screen.queryByText(/trade allowed/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/approved for paper execution/i)).not.toBeInTheDocument();
     expect(screen.getByText(/Signal Approved/)).toBeInTheDocument();
     expect(screen.getByText(/Execution Failed/)).toBeInTheDocument();
     expect(screen.getByText(/Reason: Insufficient margin/)).toBeInTheDocument();
@@ -59,7 +59,7 @@ describe("DecisionReasoningCard", () => {
         executionOutcome={{ attempted: true, ok: false, reason: "Insufficient margin" }}
       />
     );
-    expect(screen.getByText(/blocked by risk/i)).toBeInTheDocument();
+    expect(screen.getByText(/blocked:/i)).toBeInTheDocument();
     expect(screen.queryByText("Execution Failed")).not.toBeInTheDocument();
   });
 });

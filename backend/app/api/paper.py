@@ -19,6 +19,7 @@ from app.monitoring.logging import get_logger, log_event
 from app.risk import settings_repository
 from app.trading import margin as margin_calc
 from app.trading.position_manager import should_close_position
+from app.core.security import INTERNAL_SERVICE_SUBJECT
 
 router = APIRouter(prefix="/api/paper", tags=["paper"])
 
@@ -84,6 +85,31 @@ class StrategyContext(BaseModel):
     risk_reason: str | None = None
     decision_reasons: list[str] | None = None
     model_votes: list[dict] | None = None
+    # Trading Horizon automated-entry linkage - absent for manual API opens.
+    decision_id: str | None = None
+    authority_id: str | None = None
+    execution_mode: str | None = None
+    edge_at_entry: float | None = None
+
+
+_AUTOMATED_ENGINE_NAMES = {"active_drive_v1", "active_drive_v2"}
+
+
+def _claims_automated_provenance(context: "StrategyContext | None") -> bool:
+    """True when the request body claims to be a Trading Horizon
+    automated entry (an engine name, a decision/authority link, an
+    automatic execution_mode, or an edge value) rather than a plain
+    manual open. Only claims like these need the internal-service gate -
+    a real manual open never sends any of them."""
+    if context is None:
+        return False
+    return bool(
+        context.decision_mode in _AUTOMATED_ENGINE_NAMES
+        or context.decision_id
+        or context.authority_id
+        or context.execution_mode == "automatic"
+        or context.edge_at_entry is not None
+    )
 
 
 def _decision_fields(t: Trade) -> dict:
@@ -104,6 +130,10 @@ def _decision_fields(t: Trade) -> dict:
         "regime": t.regime,
         "close_reason": t.close_reason,
         "feature_id": t.feature_id,
+        "decision_id": t.decision_id,
+        "authority_id": t.authority_id,
+        "execution_mode": t.execution_mode,
+        "edge_at_entry": t.edge_at_entry,
     }
 
 def _margin_fields(t: Trade, mark: float | None) -> dict:
@@ -284,6 +314,7 @@ async def open_trade(
     feature_id: int | None = None,
     entry_price: float | None = None,
     context: StrategyContext | None = None,
+    authorization: str | None = Header(default=None),
     user: str | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
@@ -296,6 +327,17 @@ async def open_trade(
     from app.trading import modes as trading_modes
     if trading_modes.kill_switch_active():
         raise HTTPException(status_code=423, detail="Kill switch active - all trading halted")
+
+    # A caller claiming Trading Horizon automated provenance (a decision/
+    # authority link, an automatic execution_mode, an edge value, or a
+    # recognized engine name) must be the internal ledger-booking sink
+    # downstream of the common ExecutionRouter authority/fencing gate -
+    # no external/UI caller may fabricate that linkage. A genuine manual
+    # open (no such claim) remains available to any authenticated caller,
+    # exactly as before Trading Horizon existed.
+    token_subject = decode_access_token(authorization.removeprefix("Bearer ").strip()) if authorization and authorization.startswith("Bearer ") else None
+    if _claims_automated_provenance(context) and token_subject != INTERNAL_SERVICE_SUBJECT:
+        raise HTTPException(status_code=403, detail="HORIZON_AUTHORITY_REQUIRED")
 
     if side not in ["LONG", "SHORT"]:
         raise HTTPException(status_code=400, detail="side must be LONG or SHORT")
@@ -377,6 +419,12 @@ async def open_trade(
         risk_reason=context.risk_reason if context else None,
         decision_reasons=context.decision_reasons if context else None,
         model_votes=context.model_votes if context else None,
+        decision_id=context.decision_id if context else None,
+        authority_id=context.authority_id if context else None,
+        # Same honesty rule as decision_mode above: no decision context means
+        # a direct manual/API open, never fabricated as "automatic".
+        execution_mode=(context.execution_mode if context and context.execution_mode else "manual"),
+        edge_at_entry=context.edge_at_entry if context else None,
     )
 
     db.add(trade)
@@ -748,6 +796,10 @@ async def close_position(
         champion_model_type=trade.champion_model_type,
         strategy_used=trade.strategy_used,
         confidence=trade.confidence,
+        decision_id=trade.decision_id,
+        authority_id=trade.authority_id,
+        execution_mode=trade.execution_mode,
+        edge_at_entry=trade.edge_at_entry,
         updated_at=now,
         # feature_id / strategy_snapshot intentionally NOT copied: outcome
         # recording and strategy-weight attribution happen once, on the

@@ -309,6 +309,14 @@ class ExecutionEngine:
                     "risk_reason": de.get("risk_reason"),
                     "decision_reasons": de.get("top_reasons"),
                     "model_votes": de.get("model_votes"),
+                    # Trading Horizon automated-entry linkage - absent (None)
+                    # for any caller that didn't come through the horizon
+                    # authority path, so a manual/direct open stays honestly
+                    # unlinked rather than fabricating a decision/authority id.
+                    "decision_id": de.get("decision_id"),
+                    "authority_id": de.get("horizon_decision_id"),
+                    "execution_mode": de.get("execution_mode"),
+                    "edge_at_entry": de.get("edge_at_entry"),
                 }
 
                 async with httpx.AsyncClient(timeout=15, headers=self._token_header()) as client:

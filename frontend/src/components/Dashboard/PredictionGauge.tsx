@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { ArrowDownRight, ArrowUpRight, Minus } from "lucide-react";
-import { fmtPct, fmtUsd } from "../../lib/format";
+import { fmtPct } from "../../lib/format";
+import { describeConfidence, normalizeDecision } from "../../lib/decisionSummary";
 
 type Props = {
   prediction: any;
@@ -58,9 +59,11 @@ function PredictionGauge({ prediction, lastUpdated }: Props) {
 
   const direction = prediction?.direction;
   const tone = directionTone(direction);
-  const confidence = Math.max(0, Math.min(100, prediction?.confidence ?? 0));
+  const summary = normalizeDecision(prediction);
+  const hasConfidence = typeof prediction?.confidence === "number";
+  const confidence = hasConfidence ? Math.max(0, Math.min(100, prediction.confidence)) : 0;
   const isNoTrade = direction === "NO_TRADE";
-  const riskReason = prediction?.risk?.reason;
+  const riskReason = summary.primaryBlockReason ?? prediction?.risk?.reason;
 
   const remaining = nextPredictionAt
     ? Math.max(0, Math.ceil((nextPredictionAt - now) / 1000))
@@ -84,32 +87,23 @@ function PredictionGauge({ prediction, lastUpdated }: Props) {
           <Icon size={26} className={tone} />
           <h3 className={`${tone}${isNoTrade ? " no-trade-label" : ""}`}>{isNoTrade ? "NO TRADE" : direction || "—"}</h3>
           <p>Confidence</p>
-          <b className="dial-confidence">{fmtPct(confidence, 0)}</b>
+          <b className="dial-confidence">
+            {isNoTrade || !hasConfidence ? "Not established" : fmtPct(confidence, 0)}
+          </b>
         </div>
       </div>
 
-      {isNoTrade ? (
+      {/* Target/stop/strength intentionally not repeated here: the
+          authoritative decision summary (entry, target, stop, horizon,
+          confidence) lives in PredictionChart's pc-summary. This card is
+          only the at-a-glance confidence dial. */}
+      {isNoTrade && (
         <div className="no-trade-panel">
           <span className="no-trade-message">No active trade setup</span>
           {riskReason && <span className="no-trade-reason">{riskReason}</span>}
-        </div>
-      ) : (
-        <div className="target-stop-row">
-          <div>
-            <span className="tile-label">Target Price</span>
-            <b className="tile-value green">{fmtUsd(prediction?.target)}</b>
-          </div>
-          <div className="align-right">
-            <span className="tile-label">Stop Loss</span>
-            <b className="tile-value red">{fmtUsd(prediction?.stop)}</b>
-          </div>
+          <span className="no-trade-reason">{describeConfidence(summary)}</span>
         </div>
       )}
-
-      <div className={`strength-row${isNoTrade ? " disabled" : ""}`}>
-        <span className="tile-label">Prediction Strength</span>
-        <b>{isNoTrade ? "—" : fmtPct(confidence, 0)}</b>
-      </div>
       <progress value={isNoTrade ? 0 : confidence} max={100} className={isNoTrade ? "disabled" : undefined} />
     </div>
   );

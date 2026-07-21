@@ -5,7 +5,7 @@ from datetime import timezone
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 import httpx
 from app.data_sources.downloader import load_candles as load_cached_candles, store_candles
-from app.data_sources.validator import MIN_USABLE_QUALITY, validate_candles
+from app.data_sources.validator import MIN_USABLE_QUALITY, validate_candle_sequence
 from app.db.models import DataQualityReport, PredictionFeature
 from app.db.session import SessionLocal
 from app.core.deps import get_current_user
@@ -22,6 +22,7 @@ from app.strategy.ensemble import evaluate as ensemble_evaluate
 from app.intelligence import market_intelligence
 from app.ml_lab import champion_gate
 from app.timeframes.multi_timeframe import evaluate_all as evaluate_all_timeframes
+from app.timeframes.canonical import TIMEFRAME_CAPABILITIES, calendar_month_age, parse_timeframe
 from app.ml.feature_store import store as feature_store
 from app.monitoring.logging import get_logger, log_event
 from app.monitoring.metrics import PREDICTION_LATENCY
@@ -64,15 +65,8 @@ MIN_CANDLES_FOR_PREDICTION = 50
 # default interval, so a typo'd or unwired timeframe never masquerades as a
 # real (if uninteresting) prediction.
 SUPPORTED_INTERVALS_MS = {
-    "1m": 60_000,
-    "3m": 3 * 60_000,
-    "5m": 5 * 60_000,
-    "15m": 15 * 60_000,
-    "30m": 30 * 60_000,
-    "1h": 3_600_000,
-    "4h": 4 * 3_600_000,
-    "1d": 86_400_000,
-    "1w": 7 * 86_400_000,
+    value: metadata.fixed_duration_ms or 0 for value, metadata in TIMEFRAME_CAPABILITIES.items()
+    if metadata.prediction_supported
 }
 
 
@@ -522,7 +516,7 @@ async def _fetch_candles_with_fallback(symbol: str, interval: str, limit: int) -
         # Persist the same real, validated live candles used for inference so
         # the fixed-horizon resolver can observe outcomes later. This is
         # append-only by (symbol, timeframe, timestamp, provider).
-        clean, report = validate_candles(candles, SUPPORTED_INTERVALS_MS[interval])
+        clean, report = validate_candle_sequence(candles, interval)
         if clean and report.get("usable"):
             candle_db = SessionLocal()
             try:
@@ -574,13 +568,13 @@ def _data_quality_block(symbol: str, interval: str, provenance: dict, candles: l
 
     if provenance["source"] == "cached_db":
         age_ms = time.time() * 1000 - float(candles[-1]["time"])
-        max_age_ms = SUPPORTED_INTERVALS_MS[interval] * CACHE_FRESHNESS_INTERVALS
-        if age_ms > max_age_ms:
+        age_exceeded = (calendar_month_age(int(candles[-1]["time"]), int(time.time() * 1000))
+                        > CACHE_FRESHNESS_INTERVALS if interval == "1M"
+                        else age_ms > SUPPORTED_INTERVALS_MS[interval] * CACHE_FRESHNESS_INTERVALS)
+        if age_exceeded:
             block["reliable"] = False
-            block["reason"] = (
-                f"Provider unavailable and cached {interval} data is {age_ms / 60000:.0f}m old "
-                f"(limit {max_age_ms / 60000:.0f}m) - NO_TRADE"
-            )
+            block["reason"] = (f"Provider unavailable and cached {interval} data exceeds the "
+                               f"{CACHE_FRESHNESS_INTERVALS}-interval freshness limit - NO_TRADE")
             return block
         # Fresh-enough cache: only trust it if its stored quality clears the bar.
         if report is not None and report.quality_score is not None and report.quality_score < MIN_USABLE_QUALITY:
@@ -660,7 +654,11 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
     # the same as ?interval=1h instead of silently falling back to the "5m"
     # default - see PredictionFeature.timeframe / GET /api/prediction/history,
     # which already used "timeframe" as its query param name.
-    interval = (timeframe or interval).lower()
+    requested_interval = timeframe or interval
+    try:
+        interval = parse_timeframe(requested_interval).value
+    except ValueError:
+        interval = requested_interval
     if interval not in SUPPORTED_INTERVALS_MS:
         raise HTTPException(
             status_code=400,
@@ -694,6 +692,17 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
             market_context = await market_intelligence.get_context(symbol)
         except Exception:
             market_context = None
+
+        # Route measured derivatives/order-flow values into the quant
+        # feature set. These collectors already run for every prediction
+        # (market_intelligence) but their outputs never reached
+        # quant_votes, so funding/OI/order-book quants reported
+        # "unavailable this cycle" forever despite live data existing.
+        if market_context:
+            for key in ("funding_rate", "oi_change_pct", "bid_ask_ratio", "cvd"):
+                value = market_context.get(key)
+                if isinstance(value, (int, float)):
+                    features[key] = float(value)
 
         try:
             consensus = (await evaluate_all_timeframes(symbol, market_context))["consensus"]
@@ -884,7 +893,7 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
         "last_candle_timestamp": int(candles[-1]["time"] // 1000),
         "first_future_timestamp": forecast["median_path"][1]["time"] if len(forecast["median_path"]) > 1 else None,
         "last_future_timestamp": forecast["median_path"][-1]["time"] if len(forecast["median_path"]) > 1 else None,
-        "interval_seconds": TIMEFRAME_SECONDS[interval],
+        "interval_seconds": TIMEFRAME_SECONDS.get(interval),
         "horizon_bars": forecast["bars"],
         "timestamps_valid": timestamps_valid,
         "prices_valid": timestamps_valid,

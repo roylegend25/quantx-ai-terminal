@@ -56,7 +56,7 @@ def go_fully_ready(monkeypatch):
 
 
 def fake_prediction(direction="SHORT", confidence=90.0, required_confidence=70.0):
-    async def fn(symbol, interval="5m", timeframe=None, limit=220):
+    async def fn(symbol, interval="5m", timeframe=None, limit=220, current_user=None):
         decision_engine = {
             "active_model": {"model_type": "lightgbm-v34"},
             "model_votes": [{"name": "Champion ML", "direction": direction, "available": True}],
@@ -169,7 +169,7 @@ def test_pipeline_ignores_test_orders_for_the_live_signal_view(monkeypatch):
 # last_decision_at.
 
 def fake_prediction_at(computed_at_ms, direction="SHORT", confidence=90.0, required_confidence=70.0):
-    async def fn(symbol, interval="5m", timeframe=None, limit=220):
+    async def fn(symbol, interval="5m", timeframe=None, limit=220, current_user=None):
         decision_engine = {
             "active_model": {"model_type": "lightgbm-v34"},
             "model_votes": [{"name": "Champion ML", "direction": direction, "available": True}],
@@ -309,15 +309,10 @@ def test_test_order_places_and_immediately_closes(monkeypatch):
 
     client = make_client()
     r = client.post("/api/trading/binance/test-order", json={"symbol": "BTCUSDT", "confirm": True})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["submit"]["ok"] is True
-    assert body["close"] is not None
-    assert body["close"]["ok"] is True
-    assert mock_client.called("place_market_order")
-
-    attempt = seed_and_fetch_latest_test_attempt()
-    assert attempt.is_test is True
+    assert r.status_code == 409
+    assert r.json()["detail"] == "HORIZON_AUTHORITY_REQUIRED"
+    assert not mock_client.called("get_mark_price")
+    assert not mock_client.called("place_market_order")
 
 
 def seed_and_fetch_latest_test_attempt():
@@ -349,11 +344,8 @@ def test_test_order_returns_exact_rejection_on_binance_failure(monkeypatch):
 
     client = make_client()
     r = client.post("/api/trading/binance/test-order", json={"symbol": "BTCUSDT", "confirm": True})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["submit"]["ok"] is False
-    assert body["submit"]["reason"] == "Margin is insufficient"
-    assert body["close"] is None
+    assert r.status_code == 409
+    assert r.json()["detail"] == "HORIZON_AUTHORITY_REQUIRED"
 
 
 def test_test_order_blocked_when_minimum_exceeds_configured_max(monkeypatch):
@@ -364,8 +356,8 @@ def test_test_order_blocked_when_minimum_exceeds_configured_max(monkeypatch):
 
     client = make_client()
     r = client.post("/api/trading/binance/test-order", json={"symbol": "BTCUSDT", "confirm": True})
-    assert r.status_code == 400
-    assert "exceeds the configured" in r.json()["detail"]
+    assert r.status_code == 409
+    assert r.json()["detail"] == "HORIZON_AUTHORITY_REQUIRED"
 
 
 def test_test_order_rejects_disallowed_symbol(monkeypatch):

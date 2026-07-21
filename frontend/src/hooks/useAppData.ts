@@ -44,6 +44,11 @@ export function useAppData(authed: boolean | null) {
   const [candleState, setCandleState] = useState<"loading" | "ready" | "error">("loading");
   const [candleError, setCandleError] = useState<string | null>(null);
   const [orderbook, setOrderbook] = useDedupedState<any>(null);
+  // Phase 34: the actual wall-clock time of the last successful order book
+  // fetch - not a fabricated "live" flag - so OrderBookCard can compute
+  // real staleness and show a stale/reconnecting indicator instead of
+  // silently displaying an old book as if it were current.
+  const [orderbookUpdatedAt, setOrderbookUpdatedAt] = useState<number | null>(null);
   const [trades, setTrades] = useDedupedState<any[]>([]);
   const [portfolio, setPortfolio] = useDedupedState<any>(null);
   const [positions, setPositions] = useDedupedState<any[]>([]);
@@ -183,7 +188,11 @@ export function useAppData(authed: boolean | null) {
 
       if (isStale()) return;
 
-      setOrderbook(ob);
+      // A failed/empty fetch keeps the last known-good book on screen
+      // (mirrors useBinanceAccount's rate-limit handling) - orderbookUpdatedAt
+      // only advances on an actual successful read, so staleness is always
+      // measured from real data, never reset by a failure.
+      if (ob) { setOrderbook(ob); setOrderbookUpdatedAt(Date.now()); }
       setTrades(tr?.trades || []);
       setPortfolio(pf);
       setPositions(pos?.positions || []);
@@ -523,6 +532,7 @@ export function useAppData(authed: boolean | null) {
     candleState,
     candleError,
     orderbook,
+    orderbookUpdatedAt,
     trades,
     portfolio,
     positions,

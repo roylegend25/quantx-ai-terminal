@@ -13,13 +13,18 @@ the failed attempt is audited.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+from sqlalchemy import func
+from sqlalchemy.orm import Session
 
 from app.core import env_manager
 from app.core.config import settings
 from app.core.deps import get_current_user
+from app.db.models import ActiveDriveDecision
+from app.db.session import get_db
 from app.monitoring.logging import get_logger, log_event
 from app.trading import modes
 
@@ -87,6 +92,8 @@ def _safe_config() -> dict:
         "max_notional_per_trade": settings.binance_max_notional_per_trade,
         "max_daily_loss_usdt": settings.binance_max_daily_loss_usdt,
         "allowed_symbols": settings.binance_allowed_symbols,
+        "active_drive_min_confidence": settings.active_drive_min_confidence,
+        "active_drive_min_confidence_floor": env_manager.ACTIVE_DRIVE_MIN_CONFIDENCE_FLOOR,
         # edits apply to the live settings object immediately AND persist in
         # .env; a container recreate simply re-reads the same file
         "restart_required": False,
@@ -199,6 +206,122 @@ async def update_risk_limits(body: RiskLimitsRequest, request: Request, admin: s
     _audit("server_risk_limits_changed", admin, request, detail={"changes": changes})
 
     return {"ok": True, "message": "Risk limits updated and applied", "config": _safe_config()}
+
+
+def _classify_confidence_risk(value: float) -> str:
+    """Descriptive banding only - not a statistical claim about win rate.
+    Bands start at the hard floor itself, since nothing below it is ever
+    reachable through this API."""
+    if value < env_manager.ACTIVE_DRIVE_MIN_CONFIDENCE_FLOOR:
+        return "BELOW_FLOOR"
+    if value < 0.65:
+        return "AGGRESSIVE"
+    if value < 0.75:
+        return "MODERATE"
+    if value < 0.85:
+        return "CONSERVATIVE"
+    return "VERY_CONSERVATIVE"
+
+
+_HISTORY_LOOKBACK_DAYS = 30
+
+
+def _confidence_history_stats(db: Session, proposed: float) -> dict:
+    """Real counts from ActiveDriveDecision (app/decision_engine/ledger.py
+    persists one row per decision cycle, non-shadow, with the actual
+    calibrated directional confidence used at gate time) over the last
+    _HISTORY_LOOKBACK_DAYS - never an estimate, and explicitly reports zero
+    history rather than fabricating a rate when none exists yet."""
+    window_start = datetime.now(timezone.utc) - timedelta(days=_HISTORY_LOOKBACK_DAYS)
+    rows = (
+        db.query(ActiveDriveDecision.confidence)
+        .filter(
+            ActiveDriveDecision.shadow.is_(False),
+            ActiveDriveDecision.created_at >= window_start,
+            ActiveDriveDecision.confidence.isnot(None),
+        )
+        .all()
+    )
+    total = len(rows)
+    if total == 0:
+        return {
+            "lookback_days": _HISTORY_LOOKBACK_DAYS,
+            "total_decisions": 0,
+            "would_pass_at_current_threshold": None,
+            "would_pass_at_proposed_threshold": None,
+            "note": "No decision history in this window yet - stats will populate as the engine runs.",
+        }
+    current_threshold = settings.active_drive_min_confidence
+    pass_current = sum(1 for (c,) in rows if c >= current_threshold)
+    pass_proposed = sum(1 for (c,) in rows if c >= proposed)
+    return {
+        "lookback_days": _HISTORY_LOOKBACK_DAYS,
+        "total_decisions": total,
+        "current_threshold": current_threshold,
+        "would_pass_at_current_threshold": pass_current,
+        "would_pass_at_current_threshold_pct": round(100 * pass_current / total, 1),
+        "proposed_threshold": proposed,
+        "would_pass_at_proposed_threshold": pass_proposed,
+        "would_pass_at_proposed_threshold_pct": round(100 * pass_proposed / total, 1),
+    }
+
+
+@router.get("/confidence-threshold/preview")
+async def preview_confidence_threshold(proposed: float, db: Session = Depends(get_db), admin: str = Depends(_admin)):
+    """Read-only: shows the risk classification and real historical impact
+    of a candidate threshold WITHOUT changing anything - lets an admin see
+    the effect before committing via the PATCH endpoint below."""
+    if proposed < env_manager.ACTIVE_DRIVE_MIN_CONFIDENCE_FLOOR or proposed > 1.0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"proposed must be between {env_manager.ACTIVE_DRIVE_MIN_CONFIDENCE_FLOOR:g} and 1.0",
+        )
+    return {
+        "proposed_threshold": proposed,
+        "floor": env_manager.ACTIVE_DRIVE_MIN_CONFIDENCE_FLOOR,
+        "risk_classification": _classify_confidence_risk(proposed),
+        "history": _confidence_history_stats(db, proposed),
+    }
+
+
+class ConfidenceThresholdRequest(BaseModel):
+    min_confidence: float
+
+
+@router.patch("/confidence-threshold")
+async def update_confidence_threshold(
+    body: ConfidenceThresholdRequest, request: Request, db: Session = Depends(get_db), admin: str = Depends(_admin)
+):
+    """Changes only the GATE threshold that a decision's own calibrated
+    directional confidence must clear - never the confidence value itself,
+    which is always computed by the decision engine from real evidence.
+    Enforces the hard institutional floor (env_manager.
+    ACTIVE_DRIVE_MIN_CONFIDENCE_FLOOR) unconditionally; every change is
+    audited with the historical impact computed at change time."""
+    try:
+        changes = env_manager.update_env_file({"ACTIVE_DRIVE_MIN_CONFIDENCE": body.min_confidence})
+    except env_manager.EnvUpdateError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except OSError:
+        raise HTTPException(status_code=500, detail="Could not write the server configuration file")
+
+    env_manager.apply_to_settings()
+    history = _confidence_history_stats(db, body.min_confidence)
+    classification = _classify_confidence_risk(body.min_confidence)
+
+    _audit(
+        "server_confidence_threshold_changed",
+        admin, request,
+        detail={"changes": changes, "risk_classification": classification, "history": history},
+    )
+
+    return {
+        "ok": True,
+        "message": f"Calibrated directional confidence threshold set to {body.min_confidence:g} ({classification}).",
+        "risk_classification": classification,
+        "history": history,
+        "config": _safe_config(),
+    }
 
 
 @router.post("/reload")

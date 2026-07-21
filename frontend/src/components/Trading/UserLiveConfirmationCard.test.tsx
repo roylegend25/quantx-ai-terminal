@@ -119,7 +119,7 @@ describe("UserLiveConfirmationCard", () => {
         showToast={showToast}
       />
     );
-    expect(screen.getByRole("button", { name: "User Live Unlock: Active" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Re-confirm Live Order Authorization" })).toBeInTheDocument();
     const lockBtn = screen.getByRole("button", { name: "Lock User Live Access" });
     await userEvent.click(lockBtn);
     expect(api.lockBinanceLive).toHaveBeenCalled();

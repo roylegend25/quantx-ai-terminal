@@ -6,7 +6,7 @@ import MarketSentimentCard from "../components/Dashboard/MarketSentimentCard";
 import type { AppData } from "../hooks/useAppData";
 
 export default function MarketPage(props: AppData) {
-  const { symbol, orderbook, trades, marketContext } = props;
+  const { symbol, orderbook, orderbookUpdatedAt, trades, marketContext } = props;
 
   return (
     <div className="page-grid">
@@ -19,7 +19,7 @@ export default function MarketPage(props: AppData) {
       </Card>
 
       <Card title={`Order Book (${symbol})`}>
-        <OrderBookCard orderbook={orderbook} rows={10} />
+        <OrderBookCard orderbook={orderbook} updatedAt={orderbookUpdatedAt} rows={10} />
       </Card>
 
       <Card title="Recent Trades">

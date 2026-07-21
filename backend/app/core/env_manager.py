@@ -41,7 +41,18 @@ ALLOWED_ENV_KEYS = {
     "BINANCE_MAX_NOTIONAL_PER_TRADE",
     "BINANCE_MAX_DAILY_LOSS_USDT",
     "BINANCE_ALLOWED_SYMBOLS",
+    "ACTIVE_DRIVE_MIN_CONFIDENCE",
 }
+
+# Phase 34: hard institutional safety floor for the calibrated directional
+# confidence gate (app.decision_engine.v2's ACTIVE_DRIVE_MIN_CONFIDENCE
+# blocker). This is a Python constant, deliberately NOT a Settings field or
+# env var itself - nothing in this module or the admin API can ever accept
+# a value below it, regardless of what's requested or what's already sitting
+# in a stale .env file. 0.55 is barely above a coin-flip (0.50) on the
+# abs(long_points-short_points)/total_evidence scale, so it is the loosest
+# floor that still requires a real directional lean before a trade fires.
+ACTIVE_DRIVE_MIN_CONFIDENCE_FLOOR = 0.55
 
 # Documentation + explicit test surface: these must NEVER be editable. The
 # allowlist above already excludes them (and everything else); this set
@@ -78,6 +89,7 @@ _SETTINGS_FIELDS: dict[str, tuple[str, callable]] = {
     "BINANCE_MAX_NOTIONAL_PER_TRADE": ("binance_max_notional_per_trade", float),
     "BINANCE_MAX_DAILY_LOSS_USDT": ("binance_max_daily_loss_usdt", float),
     "BINANCE_ALLOWED_SYMBOLS": ("binance_allowed_symbols", _parse_symbols),
+    "ACTIVE_DRIVE_MIN_CONFIDENCE": ("active_drive_min_confidence", float),
 }
 
 _KEY_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
@@ -156,6 +168,21 @@ def validate_updates(updates: dict) -> dict[str, str]:
                 if not _SYMBOL_RE.match(s):
                     raise EnvUpdateError(f"{s} is not a valid USDT futures symbol")
             normalized[key] = ",".join(symbols)
+            continue
+
+        if key == "ACTIVE_DRIVE_MIN_CONFIDENCE":
+            try:
+                conf = float(raw_value)
+            except (TypeError, ValueError):
+                raise EnvUpdateError("ACTIVE_DRIVE_MIN_CONFIDENCE must be a number")
+            if conf < ACTIVE_DRIVE_MIN_CONFIDENCE_FLOOR:
+                raise EnvUpdateError(
+                    f"ACTIVE_DRIVE_MIN_CONFIDENCE cannot be set below the institutional safety floor "
+                    f"of {ACTIVE_DRIVE_MIN_CONFIDENCE_FLOOR:g}"
+                )
+            if conf > 1.0:
+                raise EnvUpdateError("ACTIVE_DRIVE_MIN_CONFIDENCE cannot exceed 1.0")
+            normalized[key] = f"{conf:g}"
             continue
 
         # numeric limits

@@ -19,6 +19,8 @@ from sqlalchemy.orm import Session
 
 from app.api.bot import BOT_STATE, update_state
 from app.core.config import settings
+from app.core.deps import get_current_user
+from app.core.security import verify_password
 from app.db.models import BinanceBotTrade, BinanceExecutionAttempt, TradingAuditLog
 from app.db.session import get_db
 from app.monitoring.logging import get_logger
@@ -81,37 +83,82 @@ async def set_mode(body: ModeRequest, db: Session = Depends(get_db)):
 # ============================================================ live unlock
 
 class LiveUnlockRequest(BaseModel):
+    # Phase 31: a live-authorization lease additionally requires fresh
+    # password re-authentication, a SECOND distinct typed phrase, and
+    # explicit account + symbol confirmation - none of these existed before
+    # the incident that motivated this. All five inputs plus every
+    # acknowledgement must be correct in the SAME request; there is no
+    # partial-credit path.
+    password: str = ""
     confirmation: str = ""
+    second_confirmation: str = ""
+    account_confirmation: str = ""
+    symbol_confirmation: str = ""
     acknowledgements: dict[str, bool] = {}
 
 
 @router.post("/binance/unlock-live")
-async def unlock_live(body: LiveUnlockRequest, db: Session = Depends(get_db)):
-    """The only path to BINANCE_LIVE execution. Requires the server env
-    lock to be open, the exact typed phrase, and every acknowledgement."""
+async def unlock_live(
+    body: LiveUnlockRequest, db: Session = Depends(get_db), current_user: str = Depends(get_current_user)
+):
+    """The only path to a live-order-authorization lease (Phase 31).
+    Requires the server env lock, live-write credentials, a fresh password
+    re-check, both typed phrases, account + symbol confirmation, and every
+    acknowledgement - all in the same request. Success grants a lease that
+    expires on its own (settings.live_lease_ttl_seconds) and is consumed
+    after one real order (settings.live_lease_max_actions); it does not
+    survive a restart. A failure of any single check is audited as
+    live_unlock_rejected with the specific reason."""
+
+    def rejected(reason: str, status_code: int = 400):
+        modes.audit("live_unlock_rejected", detail={"user": current_user, "reason": reason}, db=db)
+        raise HTTPException(status_code=status_code, detail=reason)
+
     if not settings.binance_live_enabled:
-        raise HTTPException(
+        rejected(
+            "Live trading disabled by server configuration. Set BINANCE_LIVE_ENABLED=true in the backend .env only when ready.",
             status_code=403,
-            detail="Live trading disabled by server configuration. Set BINANCE_LIVE_ENABLED=true in the backend .env only when ready.",
         )
-    if not modes.binance_configured():
-        raise HTTPException(status_code=400, detail="Binance API keys are not configured on the server")
+    if not modes.binance_live_configured():
+        rejected(
+            "Live-write credentials are not configured on the server "
+            "(BINANCE_LIVE_API_KEY / BINANCE_LIVE_API_SECRET) - the shared read-only/testnet key is never used for live orders.",
+            status_code=400,
+        )
+    if not verify_password(body.password, settings.admin_password_hash):
+        rejected("Password re-authentication failed", status_code=401)
     if body.confirmation.strip() != modes.LIVE_UNLOCK_PHRASE:
-        raise HTTPException(status_code=400, detail=f'Type exactly "{modes.LIVE_UNLOCK_PHRASE}" to confirm')
+        rejected(f'Type exactly "{modes.LIVE_UNLOCK_PHRASE}" to confirm')
+    if body.second_confirmation.strip() != modes.LIVE_LEASE_SECOND_CONFIRMATION_PHRASE:
+        rejected(f'Type exactly "{modes.LIVE_LEASE_SECOND_CONFIRMATION_PHRASE}" as the second confirmation')
+    if body.account_confirmation.strip() != current_user:
+        rejected(f"Account confirmation must exactly match your username ({current_user})")
+    symbol_confirmation = body.symbol_confirmation.strip().upper()
+    if symbol_confirmation not in (*settings.binance_allowed_symbols, "ALL"):
+        rejected(
+            f"Symbol confirmation must be one of {', '.join(settings.binance_allowed_symbols)} or ALL"
+        )
     missing = [k for k in modes.LIVE_UNLOCK_ACKNOWLEDGEMENTS if not body.acknowledgements.get(k)]
     if missing:
-        raise HTTPException(
-            status_code=400,
-            detail=f"All safety acknowledgements must be checked (missing: {', '.join(missing)})",
-        )
+        rejected(f"All safety acknowledgements must be checked (missing: {', '.join(missing)})")
 
     control = modes.unlock_live(db=db)
+    lease = modes.create_live_lease(user=current_user, symbol_scope=symbol_confirmation, db=db)
     return {
         "ok": True,
-        "message": "LIVE trading unlocked. Real funds are now at risk.",
+        "message": f"LIVE trading authorized for {lease['seconds_remaining']}s or one order, whichever comes first. Real funds are now at risk.",
         "control": control,
+        "lease": lease,
         "status": modes.exchange_safe_status(db),
     }
+
+
+@router.get("/binance/live-lease-status")
+async def live_lease_status(db: Session = Depends(get_db)):
+    """Current live-authorization lease (if any) for the frontend's
+    lease-expiry countdown. Never returns anything beyond what
+    exchange_safe_status already exposes publicly."""
+    return {"lease": modes.get_active_lease(db)}
 
 
 @router.post("/binance/lock-live")
@@ -391,6 +438,7 @@ async def live_readiness(db: Session = Depends(get_db)):
     connected = await _binance_connected() if configured else False
     control = modes.get_control(db)
     mode = modes.effective_mode(db)
+    lease = modes.get_active_lease(db)
 
     risk_limits_valid = (
         settings.binance_max_leverage >= 1
@@ -436,6 +484,18 @@ async def live_readiness(db: Session = Depends(get_db)):
         {
             "key": "active_mode_binance_live", "label": "Active mode is Binance Live", "passed": mode == modes.MODE_LIVE,
             "detail": mode,
+        },
+        {
+            "key": "live_credentials_configured", "label": "Live-write credentials configured",
+            "passed": modes.binance_live_configured(db),
+            "detail": "Credential present (env or saved securely)" if modes.binance_live_configured(db)
+            else "No live-write credential - save one from the Binance Real Credentials panel",
+        },
+        {
+            "key": "live_authorization_lease", "label": "Live-authorization lease active",
+            "passed": lease is not None,
+            "detail": f"Expires in {lease['seconds_remaining']}s, {lease['actions_remaining']} action(s) left" if lease
+            else "No active lease - re-confirm live trading to authorize the next order",
         },
         {
             "key": "kill_switch_off", "label": "Kill switch off", "passed": not control["kill_switch_active"],
@@ -670,7 +730,20 @@ async def binance_decision_status(symbol: str | None = None, db: Session = Depen
     symbol = (symbol or settings.default_symbol).upper()
     timeframe = "5m"
     try:
-        pred = await compute_prediction(symbol, interval=timeframe)
+        # `prediction()`'s current_user parameter is a FastAPI dependency
+        # (Depends(_prediction_subject)) - calling the route function
+        # directly like this bypasses FastAPI's DI entirely, so without an
+        # explicit value it stays the raw, unresolved Depends(...) sentinel
+        # object rather than a real subject string. That object then fails
+        # deep inside a SQLAlchemy query (binding it as a parameter raises
+        # sqlite3.ProgrammingError), which this bare except silently turned
+        # into "no prediction available" - permanently, for every symbol,
+        # every call, regardless of the real Active Drive V2 decision.
+        # settings.admin_username is exactly what _prediction_subject
+        # itself resolves to for an unauthenticated/direct call (see its
+        # docstring) - this is not a new fallback, just making explicit
+        # what the dependency already does.
+        pred = await compute_prediction(symbol, interval=timeframe, current_user=settings.admin_username)
     except Exception:
         pred = None
 
@@ -1020,13 +1093,11 @@ class TestOrderRequest(BaseModel):
 
 @router.post("/binance/test-order")
 async def binance_test_order(body: TestOrderRequest, db: Session = Depends(get_db)):
-    """Places Binance's smallest legal order for `symbol` (or the default
-    symbol) through the exact same execution pipeline as a real bot order -
-    same risk gate, same stage-by-stage instrumentation - then immediately
-    closes the resulting position, reduce-only. Requires live trading to
-    already be fully unlocked AND an explicit confirm=true: this spends
-    real (tiny) money and pays taker fees on both legs. The exact exchange
-    response is always returned, success or rejection - never swallowed."""
+    """Legacy diagnostic entry is disabled by mandatory Horizon authority.
+
+    Keep confirmation and allowlist validation for a precise operator error,
+    but never read the exchange or route an entry from this endpoint.
+    """
     _require_live(db)
     if not body.confirm:
         raise HTTPException(status_code=400, detail="Explicit confirmation required to place a real test order (confirm=true)")
@@ -1034,56 +1105,9 @@ async def binance_test_order(body: TestOrderRequest, db: Session = Depends(get_d
     symbol = (body.symbol or settings.default_symbol).upper()
     if symbol not in settings.binance_allowed_symbols:
         raise HTTPException(status_code=400, detail=f"{symbol} is not in BINANCE_ALLOWED_SYMBOLS")
-
-    client = execution_router.provider().client
-    try:
-        filters = await client.get_exchange_filters(symbol)
-        mark = await client.get_mark_price(symbol)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Could not read Binance exchange rules: {_safe_error(e)}")
-
-    # 2% headroom over the exact exchange minimum so mark-price movement
-    # between this read and order placement can't drop the order below it.
-    min_qty_notional = filters["min_qty"] * mark
-    notional = round(max(filters["min_notional"], min_qty_notional) * 1.02, 2)
-    if notional > settings.binance_max_notional_per_trade:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Exchange minimum order for {symbol} is ~${notional:.2f} notional, which exceeds the configured "
-                f"max per-trade notional (${settings.binance_max_notional_per_trade:.2f}). Raise "
-                "BINANCE_MAX_NOTIONAL_PER_TRADE to test, or test a different symbol."
-            ),
-        )
-
-    # Test orders go through the exact same protection requirement as a
-    # real bot entry - a tight, symmetric bracket around mark is enough to
-    # exercise the whole placement+verification path without meaning
-    # anything about where the position is expected to move.
-    test_tp = round(mark * 1.02, filters["price_precision"])
-    test_sl = round(mark * 0.98, filters["price_precision"])
-
-    submit = await execution_router.open_position(
-        symbol=symbol, side="LONG", notional_usdt=notional, leverage=1, confidence=100.0, is_test=True,
-        sl=test_sl, tp=test_tp,
-    )
-
-    # close_position cancels any remaining protective orders for this
-    # symbol as part of closing (orphan cleanup) - see
-    # BinanceExecutionProvider.close_position. Always attempt the close if
-    # the entry filled, even when protection itself failed, so a test never
-    # leaves real exposure behind.
-    close_result = None
-    if submit.ok or submit.detail.get("order"):
-        close_result = await execution_router.close_position(symbol=symbol)
-
-    return {
-        "symbol": symbol,
-        "requested_notional": notional,
-        "exchange_filters": filters,
-        "submit": submit.to_dict(),
-        "close": close_result.to_dict() if close_result else None,
-    }
+    # A diagnostic endpoint cannot invent Active Drive V2 authority. It is
+    # deliberately blocked before any exchange read or order operation.
+    raise HTTPException(status_code=409, detail="HORIZON_AUTHORITY_REQUIRED")
 
 
 # ============================================ TP/SL position protection repair

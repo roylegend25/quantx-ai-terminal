@@ -1,7 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  ArrowDownRight,
-  ArrowUpRight,
   Bug,
   Camera,
   ChevronDown,
@@ -12,7 +10,6 @@ import {
   LocateFixed,
   Maximize2,
   Minimize2,
-  Minus,
   PenLine,
   RotateCcw,
   Sparkles,
@@ -25,9 +22,8 @@ import {
 } from "lucide-react";
 import type { Candle } from "../../hooks/useAppData";
 import { api } from "../../services/api";
-import { fmtNum, fmtUsd } from "../../lib/format";
-import { formatCompactLocalDateTime } from "../../utils/dateTime";
 import { validateForecastChartData } from "../../lib/forecastChartData";
+import { selectLatestEligiblePredictions } from "../../lib/latestPredictions";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { isTimeframe, TIMEFRAME_CONFIG, TIMEFRAME_ORDER } from "../../lib/timeframes";
 import ProChartCanvas, {
@@ -36,6 +32,7 @@ import ProChartCanvas, {
   type LiquidityCluster,
 } from "./ProChartCanvas";
 import { ChartDecisionChip, DecisionDetailsBottomSheet, DecisionDetailsPanel, ForecastLegend } from "./ChartDecisionDetails";
+import DecisionSummaryTiles from "./DecisionSummaryTiles";
 
 type Props = {
   symbol: string;
@@ -129,27 +126,39 @@ function loadPrefs(): ChartPrefs {
   }
 }
 
-function formatHorizon(totalMs: number): string {
-  const hours = totalMs / 3_600_000;
-  if (hours < 1) return `${Math.round(totalMs / 60_000)} Minutes`;
-  if (hours < 48) return `${Math.round(hours)} Hours`;
-  const days = hours / 24;
-  if (days < 14) return `${Math.round(days)} Days`;
-  return `${Math.round(days / 7)} Weeks`;
-}
-
-function fmtSignedPct(n: number): string {
-  if (!Number.isFinite(n)) return "—";
-  return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
-}
-
-/** Buckets the backend's specific outcome values down to the three states
- *  the Past AI Prediction UI actually distinguishes visually (green/red/
- *  grey-yellow dots): correct, wrong, or not yet resolved. */
-function outcomeBucket(outcome: string | null | undefined): "correct" | "wrong" | "unresolved" {
+/** Buckets the backend's specific outcome values for the Past AI Prediction
+ *  UI. NO_TRADE is its own bucket, not "unresolved": the source explicitly
+ *  made no directional call that cycle, so there is nothing to resolve -
+ *  counting it as unresolved previously made an inactive series look like
+ *  it had a stuck resolver even when every real (directional) prediction
+ *  had already resolved. */
+export function outcomeBucket(outcome: string | null | undefined): "correct" | "wrong" | "no_trade" | "unresolved" {
   if (outcome === "CORRECT" || outcome === "WIN") return "correct";
   if (outcome === "INCORRECT" || outcome === "LOSS") return "wrong";
-  return "unresolved"; // PENDING, NO_TRADE
+  if (outcome === "NO_TRADE") return "no_trade";
+  return "unresolved"; // PENDING
+}
+
+export function computePastPredictionStats(points: { outcome?: string | null; error_pct?: number | null }[]) {
+  let correct = 0, wrong = 0, noTrade = 0, unresolved = 0, errorSum = 0, errorCount = 0;
+  for (const p of points) {
+    const bucket = outcomeBucket(p.outcome);
+    if (bucket === "correct") correct += 1;
+    else if (bucket === "wrong") wrong += 1;
+    else if (bucket === "no_trade") noTrade += 1;
+    else unresolved += 1;
+    if (typeof p.error_pct === "number") {
+      errorSum += p.error_pct;
+      errorCount += 1;
+    }
+  }
+  const resolved = correct + wrong;
+  return {
+    total: correct + wrong + unresolved,
+    correct, wrong, unresolved, noTrade,
+    hitRatePct: resolved ? (correct / resolved) * 100 : null,
+    avgErrorPct: errorCount ? errorSum / errorCount : null,
+  };
 }
 
 /** Candle interval sanity check: the prop candles may briefly belong to the
@@ -158,6 +167,7 @@ function candlesMatchTimeframe(candles: Candle[], tfMs: number): boolean {
   if (candles.length < 3) return candles.length > 0;
   const d1 = candles[1].time - candles[0].time;
   const d2 = candles[2].time - candles[1].time;
+  if (tfMs === 30 * 86_400_000) return [d1, d2].every(d => d >= 28 * 86_400_000 && d <= 31 * 86_400_000);
   return Math.min(d1, d2) === tfMs;
 }
 
@@ -287,6 +297,17 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
     };
   }, [symbol, interval]);
 
+  // Phase 34: the main chart draws only the latest 10 ELIGIBLE predictions
+  // (a real predicted_price and timestamp) as one continuous line, in
+  // chronological order - the full fetched set (up to 500 points) stays
+  // available in historyData.points for an expandable analytics view, it
+  // just never all renders on the price chart itself, which is what made
+  // the overlay read as visual clutter / "stale duplicate forecast lines".
+  const latestTenPredictions = useMemo(
+    () => selectLatestEligiblePredictions(historyData.points, 10),
+    [historyData.points]
+  );
+
   // ---- liquidity heatmap (only fetched while the overlay is on)
   const liquidityOn = prefs.indicators.includes("liquidity");
   useEffect(() => {
@@ -384,6 +405,11 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
   const change = Number(ticker?.priceChangePercent || 0);
   const changeAbs = Number(ticker?.priceChange || 0);
 
+  // Phase 34: desktop/MacBook heights use clamp() instead of one fixed
+  // number for every width from 1280px to 4K - a fixed 460px reads as
+  // "compressed" on a 1512-1728px MacBook that actually has the vertical
+  // room for a taller chart. Mobile/tablet buckets are unchanged (already
+  // viewport-appropriate, not part of the MacBook compression complaint).
   const chartHeight = fullscreen
     ? undefined
     : isMobile
@@ -394,73 +420,16 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
     ? 520
     : 580;
 
-  const direction = prediction?.direction;
-  const isNoTrade = !prediction || direction === "NO_TRADE" || !direction;
   const forecast = prediction?.forecast;
   const chartCandles=flowCandles.length?flowCandles:displayCandles;
   const lastCandleTime=chartCandles.at(-1)?.time??0;
   const validatedForecast=useMemo(()=>validateForecastChartData(prediction,symbol,tfConfig.ms,lastCandleTime),[prediction,symbol,tfConfig.ms,lastCandleTime]);
   const forecastAvailable = validatedForecast.valid;
   const chartForecast={...forecast,available:forecastAvailable,reason:validatedForecast.reason??forecast?.reason};
-  const confidence = typeof prediction?.confidence === "number" ? Math.max(0, Math.min(100, prediction.confidence)) : null;
-  const target = prediction?.target;
-  const stop = prediction?.stop;
   const lastClose = displayCandles.length ? displayCandles[displayCandles.length - 1].close : lastPrice;
 
-  const directionText = direction === "LONG" ? "BULLISH" : direction === "SHORT" ? "BEARISH" : "NO TRADE";
-  const directionTone = direction === "LONG" ? "green" : direction === "SHORT" ? "red" : "yellow";
-  const DirectionIcon = direction === "LONG" ? ArrowUpRight : direction === "SHORT" ? ArrowDownRight : Minus;
-
-  // Strategies that voted NO_TRADE - only meaningful when the ensemble
-  // itself landed on NO_TRADE (not a directional signal that's merely
-  // below the risk-gate threshold, which already gets a specific reason
-  // string from the backend).
-  const requiredConfidence = prediction?.risk?.required_confidence;
-  const blockedStrategies = useMemo(() => {
-    const strategies = prediction?.strategies;
-    if (!strategies) return [] as string[];
-    return Object.entries(strategies)
-      .filter(([, v]: [string, any]) => v?.direction === "NO_TRADE")
-      .map(([name]) => name.replace(/_/g, " "));
-  }, [prediction?.strategies]);
-
-  // Short display symbol for the NO_TRADE message ("BTC" not "BTCUSDT"),
-  // matching the required phrasing: "No BTC 1h forecast: <reason>".
+  // Short display symbol for chart annotations ("BTC" not "BTCUSDT").
   const shortSymbol = symbol.replace(/USDT$/, "");
-
-  const directionSub = isNoTrade
-    ? [
-        forecastAvailable
-          ? `${shortSymbol} ${interval} informational forecast — not a trade signal`
-          : `Forecast unavailable: ${forecast?.reason || prediction?.risk?.reason || "no qualifying data"}`,
-        typeof requiredConfidence === "number"
-          ? `Point margin ${prediction?.decision_engine?.point_margin ?? 0} / required ${prediction?.decision_engine?.required_point_margin ?? "—"}`
-          : null,
-        direction === "NO_TRADE" && blockedStrategies.length
-          ? `blocked by ${blockedStrategies.join(", ")}`
-          : null,
-      ]
-        .filter(Boolean)
-        .join(" · ")
-    : (confidence ?? 0) >= 80
-    ? `Strong ${direction === "LONG" ? "Buy" : "Sell"} Signal`
-    : (confidence ?? 0) >= 60
-    ? `${direction === "LONG" ? "Buy" : "Sell"} Signal`
-    : "Weak Signal";
-
-  const confidenceLabel = isNoTrade ? "Evidence insufficient" : confidence == null ? "Confidence unavailable" :
-    confidence >= 80 ? "High Confidence" : confidence >= 60 ? "Medium Confidence" : "Low Confidence";
-  const horizonText = formatHorizon(
-    typeof forecast?.horizon_seconds === "number" ? forecast.horizon_seconds * 1000 : FORECAST_BARS * tfConfig.ms
-  );
-
-  const targetPct = lastClose && typeof target === "number" ? ((target - lastClose) / lastClose) * 100 : NaN;
-  const stopPct = lastClose && typeof stop === "number" ? ((stop - lastClose) / lastClose) * 100 : NaN;
-
-  const updatedAt = useMemo(() => {
-    if (typeof prediction?.computed_at !== "number") return null;
-    return formatCompactLocalDateTime(prediction.computed_at);
-  }, [prediction?.computed_at]);
 
   // Debug info: mirrors ProChartCanvas's buildCone() gate exactly (a forecast
   // is only ever drawn for a directional, non-NO_TRADE prediction with at
@@ -517,33 +486,10 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
   // Past AI Prediction stat row - derived straight from the same history
   // points the chart plots as dots, so the numbers always match what's on
   // screen (rather than trusting the backend summary's own bucketing).
-  const pastPredictionStats = useMemo(() => {
-    const points = historyData.points as any[];
-    let correct = 0;
-    let wrong = 0;
-    let unresolved = 0;
-    let errorSum = 0;
-    let errorCount = 0;
-    for (const p of points) {
-      const bucket = outcomeBucket(p.outcome);
-      if (bucket === "correct") correct += 1;
-      else if (bucket === "wrong") wrong += 1;
-      else unresolved += 1;
-      if (typeof p.error_pct === "number") {
-        errorSum += p.error_pct;
-        errorCount += 1;
-      }
-    }
-    const resolved = correct + wrong;
-    return {
-      total: points.length,
-      correct,
-      wrong,
-      unresolved,
-      hitRatePct: resolved ? (correct / resolved) * 100 : null,
-      avgErrorPct: errorCount ? errorSum / errorCount : null,
-    };
-  }, [historyData.points]);
+  const pastPredictionStats = useMemo(
+    () => computePastPredictionStats(historyData.points as any[]),
+    [historyData.points]
+  );
 
   const toolButtons: Array<{
     key: string;
@@ -765,9 +711,15 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
             <b className="red">{pastPredictionStats.wrong}</b>
           </div>
           <div className="pc-past-stat">
-            <span>Unresolved</span>
+            <span>Pending</span>
             <b className="yellow">{pastPredictionStats.unresolved}</b>
           </div>
+          {pastPredictionStats.noTrade > 0 && (
+            <div className="pc-past-stat" title="Cycles where no directional call was made - not a prediction, so not counted above">
+              <span>No Trade</span>
+              <b>{pastPredictionStats.noTrade}</b>
+            </div>
+          )}
         </div>
       )}
 
@@ -797,7 +749,7 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
           candles={chartCandles}
           timeframeMs={tfConfig.ms}
           prediction={prediction}
-          history={historyData.points}
+          history={latestTenPredictions}
           trades={trades ?? []}
           liquidityClusters={liquidity}
           indicators={prefs.indicators}
@@ -827,45 +779,13 @@ function PredictionChart({ symbol, onSymbolChange, interval, onIntervalChange, c
       <div className="pc-tablet-decision">{prediction ? <DecisionDetailsPanel prediction={prediction} /> : <div className="forecast-loading-panel">Calculating Active Drive V2 decision…</div>}</div>
       <DecisionDetailsBottomSheet prediction={prediction} open={detailsOpen} onClose={() => setDetailsOpen(false)} />
 
-      <div className="pc-summary">
-        <div className="pc-tile">
-          <span className="tile-label">Direction</span>
-          <div className={`pc-direction-badge ${directionTone}`}>
-            <DirectionIcon size={16} />
-            {directionText}
-          </div>
-          <span className="pc-tile-sub">{directionSub}</span>
-        </div>
-
-        <div className="pc-tile">
-          <span className="tile-label">Confidence</span>
-          <div
-            className="pc-mini-gauge"
-            style={{ ["--pct" as any]: confidence, ["--tone" as any]: `var(--c-${directionTone})` }}
-          >
-            <div className="pc-mini-gauge-inner">{isNoTrade || confidence == null ? "—" : `${fmtNum(confidence, 0)}%`}</div>
-          </div>
-          <span className="pc-tile-sub">{confidenceLabel}</span>
-        </div>
-
-        <div className="pc-tile">
-          <span className="tile-label">Price Target {isNoTrade ? "" : `(${tfConfig.label})`}</span>
-          <b className="tile-value green">{isNoTrade ? "—" : fmtUsd(target)}</b>
-          <span className="pc-tile-sub green">{isNoTrade ? "" : fmtSignedPct(targetPct)}</span>
-        </div>
-
-        <div className="pc-tile">
-          <span className="tile-label">Stop Loss</span>
-          <b className="tile-value red">{isNoTrade ? "—" : fmtUsd(stop)}</b>
-          <span className="pc-tile-sub red">{isNoTrade ? "" : fmtSignedPct(stopPct)}</span>
-        </div>
-
-        <div className="pc-tile">
-          <span className="tile-label">Prediction Horizon</span>
-          <b className="tile-value">{horizonText}</b>
-          <span className="pc-tile-sub">{updatedAt ? `Updated ${updatedAt}` : "—"}</span>
-        </div>
-      </div>
+      <DecisionSummaryTiles
+        prediction={prediction}
+        interval={interval}
+        intervalMs={tfConfig.ms}
+        forecastBars={FORECAST_BARS}
+        lastClose={lastClose ?? null}
+      />
 
       {showDebug && (
         <div className="pc-debug-panel">

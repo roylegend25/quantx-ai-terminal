@@ -66,6 +66,30 @@ def catchup_progress():
         db.close()
 
 
+@router.get("/lifecycle-health")
+def lifecycle_health():
+    """Explicit lifecycle-status dashboard view (PENDING/RESOLVING/
+    RESOLVED_*/VOID_*/RESOLUTION_ERROR_RETRYING) plus independent
+    recent/historical queue worker health."""
+    db = SessionLocal()
+    try:
+        return resolver_status.lifecycle_health(db)
+    finally:
+        db.close()
+
+
+@router.get("/calibration-dataset")
+async def calibration_dataset(admin: str = Depends(_admin)):
+    """Trustworthy-outcomes-only calibration metrics (app.decision_engine.
+    calibration) - read-only, admin-gated. Never triggers a weight change."""
+    from app.decision_engine import calibration
+    db = SessionLocal()
+    try:
+        return calibration.calibration_dataset(db)
+    finally:
+        db.close()
+
+
 @router.get("/results/latest")
 def results_latest(
     limit: int = Query(default=10, ge=1, le=200),

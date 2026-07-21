@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 from app.core.config import settings
 from app.engine.trading_engine import TradingEngine
 from app.monitoring.logging import get_logger, log_event
@@ -12,6 +13,7 @@ from app.exchanges.binance_time import BinanceProduct, binance_time
 from app.trading.safety_halt import halt_active_verification
 
 RUNNING = False
+LAST_CYCLE_AT: str | None = None
 engine = TradingEngine()
 logger = get_logger("quantx.scheduler")
 
@@ -53,10 +55,11 @@ async def _run_engine_cycle() -> None:
         await heartbeat
 
 async def trading_loop():
-    global RUNNING
+    global RUNNING, LAST_CYCLE_AT
 
     while RUNNING:
         start = time.perf_counter()
+        LAST_CYCLE_AT = datetime.now(timezone.utc).isoformat()
         try:
             if maintenance.enabled():
                 await execution_lease.release()

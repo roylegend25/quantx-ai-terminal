@@ -112,7 +112,7 @@ describe("BotSettingsPage - Binance Live Trading tab", () => {
     });
     render(<BotSettingsPage {...(appDataProps as any)} />);
     await openBinanceTab();
-    await screen.findByRole("button", { name: "User Live Unlock: Active" });
+    await screen.findByRole("button", { name: "Re-confirm Live Order Authorization" });
     expect(screen.getByRole("button", { name: "Lock User Live Access" })).toBeInTheDocument();
   });
 

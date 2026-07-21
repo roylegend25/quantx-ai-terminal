@@ -6,6 +6,7 @@ from app.api.strategy import router as strategy_router
 from app.strategy.performance_repository import DEFAULT_WEIGHT
 from app.strategy.performance_repository import repository as performance_repository
 from app.strategy.rolling_metrics_repository import repository as rolling_metrics_repository
+from app.core.security import create_internal_service_token
 
 
 def test_recording_shadow_metrics_does_not_move_production_weights():
@@ -54,7 +55,7 @@ def test_closing_trade_updates_both_repositories_independently(monkeypatch):
 
     app = FastAPI()
     app.include_router(paper_module.router)
-    client = TestClient(app)
+    client = TestClient(app, headers={"Authorization":f"Bearer {create_internal_service_token()}"})
 
     open_resp = client.post(
         "/api/paper/open",

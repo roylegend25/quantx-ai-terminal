@@ -11,6 +11,23 @@ import { api } from "../../services/api";
  *  configuration (binance_api_key/secret_configured) from the actual
  *  signed account read (binance_account_connected/binance_signed_read_ok)
  *  - `binance_connected` is kept as a back-compat alias of the latter. */
+/** Phase 31: a short-lived, single-use live-order authorization lease -
+ *  independent of, and in addition to, binance_live_enabled_by_server and
+ *  binance_live_unlocked_by_user. Null means no order can reach the real
+ *  exchange right now no matter what those two other fields say. */
+export type LiveLease = {
+  id: number;
+  user: string;
+  symbol_scope: string | null;
+  created_at: string | null;
+  expires_at: string | null;
+  seconds_remaining: number;
+  actions_remaining: number;
+  revoked: boolean;
+  revoked_reason: string | null;
+  active: boolean;
+} | null;
+
 export type TradingStatus = {
   active_mode: "PAPER" | "BINANCE_LIVE_LOCKED" | "BINANCE_LIVE" | string;
   paper_available: boolean;
@@ -24,8 +41,12 @@ export type TradingStatus = {
   binance_signed_read_ok?: boolean;
   binance_account_error?: string | null;
   binance_live_enabled_by_server: boolean;
+  binance_live_credentials_configured: boolean;
   binance_live_unlocked_by_user: boolean;
   can_trade_binance_live: boolean;
+  live_authorization_lease: LiveLease;
+  final_order_routing_eligible: boolean;
+  automatic_execution_mode: "PAPER" | "LIVE";
   reason: string;
   kill_switch_active: boolean;
   allowed_symbols: string[];
@@ -40,6 +61,7 @@ export type TradingStatus = {
 };
 
 export const UNLOCK_PHRASE = "I UNDERSTAND LIVE TRADING RISK";
+export const SECOND_CONFIRMATION_PHRASE = "CONFIRM LIVE EXECUTION NOW";
 
 export const UNLOCK_CHECKS: { key: string; label: string }[] = [
   { key: "real_money_understood", label: "I know this will use real money" },
@@ -67,6 +89,42 @@ export function useTradingStatus(pollMs = 10000) {
   return { status, reload };
 }
 
+/** Persistent, always-visible banner distinguishing "automatic strategy
+ *  execution" (what the scheduler/bot does unattended every cycle) from the
+ *  server/UI capability flags nearby, which must never be read as
+ *  equivalent to it. Phase 31: root-caused by a real incident where
+ *  "Configured"/"Enabled"/"Unlocked" badges were mistaken for "an order can
+ *  actually be placed right now" - this banner states the one fact that
+ *  actually matters, plainly, every time. */
+export function AutomaticExecutionBanner({ status }: { status: TradingStatus | null }) {
+  const mode = status?.automatic_execution_mode ?? "PAPER";
+  const isLive = mode === "LIVE";
+  return (
+    <div className={`auto-execution-banner ${isLive ? "live" : "paper"}`} role="status">
+      <AlertTriangle size={14} />
+      <span>AUTOMATIC STRATEGY EXECUTION: {mode} MODE</span>
+      {isLive && status?.live_authorization_lease && (
+        <LiveLeaseCountdown lease={status.live_authorization_lease} compact />
+      )}
+    </div>
+  );
+}
+
+/** Live-only countdown for the currently active authorization lease -
+ *  renders nothing when there is no active lease (which in PAPER mode, or
+ *  between orders in LIVE mode, is the normal state). */
+export function LiveLeaseCountdown({ lease, compact }: { lease: LiveLease; compact?: boolean }) {
+  if (!lease || !lease.active) return null;
+  const mm = String(Math.floor(lease.seconds_remaining / 60)).padStart(2, "0");
+  const ss = String(lease.seconds_remaining % 60).padStart(2, "0");
+  return (
+    <span className={`live-lease-countdown ${compact ? "compact" : ""}`}>
+      Lease expires in {mm}:{ss} · {lease.actions_remaining} action{lease.actions_remaining === 1 ? "" : "s"} left
+      {lease.symbol_scope && lease.symbol_scope !== "ALL" ? ` · scoped to ${lease.symbol_scope}` : ""}
+    </span>
+  );
+}
+
 export function ModeBadge({ mode, killSwitch }: { mode?: string; killSwitch?: boolean }) {
   const label =
     mode === "BINANCE_LIVE" ? "BINANCE REAL — LIVE" : mode === "BINANCE_LIVE_LOCKED" ? "BINANCE REAL — LOCKED" : "PAPER";
@@ -91,12 +149,25 @@ type UnlockModalProps = {
  *  Real Money. Completing the ceremony calls the backend unlock endpoint;
  *  while the server env lock is off, only a locked "view" switch is offered. */
 export function LiveUnlockModal({ status, onClose, onChanged, showToast }: UnlockModalProps) {
+  const [password, setPassword] = useState("");
   const [text, setText] = useState("");
+  const [secondText, setSecondText] = useState("");
+  const [accountText, setAccountText] = useState("");
+  const [symbolChoice, setSymbolChoice] = useState("");
   const [acks, setAcks] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
 
   const serverLocked = !status.binance_live_enabled_by_server;
-  const ready = !serverLocked && text.trim() === UNLOCK_PHRASE && UNLOCK_CHECKS.every((c) => acks[c.key]);
+  const credentialsMissing = !status.binance_live_credentials_configured;
+  const ready =
+    !serverLocked &&
+    !credentialsMissing &&
+    !!password &&
+    text.trim() === UNLOCK_PHRASE &&
+    secondText.trim() === SECOND_CONFIRMATION_PHRASE &&
+    !!accountText.trim() &&
+    !!symbolChoice &&
+    UNLOCK_CHECKS.every((c) => acks[c.key]);
 
   const selectLockedView = async () => {
     setBusy(true);
@@ -115,8 +186,19 @@ export function LiveUnlockModal({ status, onClose, onChanged, showToast }: Unloc
   const unlock = async () => {
     setBusy(true);
     try {
-      await api.unlockBinanceLive(text.trim(), acks);
-      showToast("User Live Confirmation completed.", "success");
+      const result = await api.unlockBinanceLive({
+        password,
+        confirmation: text.trim(),
+        second_confirmation: secondText.trim(),
+        account_confirmation: accountText.trim(),
+        symbol_confirmation: symbolChoice,
+        acknowledgements: acks,
+      });
+      const seconds = result?.lease?.seconds_remaining ?? 0;
+      showToast(
+        `Live trading authorized for ${seconds}s or one order, whichever comes first.`,
+        "success"
+      );
       await onChanged();
       onClose();
     } catch (e: any) {
@@ -154,11 +236,25 @@ export function LiveUnlockModal({ status, onClose, onChanged, showToast }: Unloc
               </button>
             </div>
           </>
+        ) : credentialsMissing ? (
+          <>
+            <p className="risk-modal-error">
+              <AlertTriangle size={14} /> Live-write credentials are not configured. Use the "Binance Real API
+              Credentials" panel above to save them securely - they're encrypted at rest, deliberately separate from
+              the read-only/testnet key, and never loaded during paper operation.
+            </p>
+            <div className="modal-actions">
+              <button className="mini-btn" onClick={onClose} disabled={busy}>
+                Close
+              </button>
+            </div>
+          </>
         ) : (
           <div className="live-unlock-panel">
             <p className="risk-modal-error">
-              <AlertTriangle size={14} /> This enables REAL-MONEY orders on Binance Futures with the server-configured
-              API key. Losses are possible on every trade.
+              <AlertTriangle size={14} /> This grants a one-time, short-lived authorization for REAL-MONEY orders on
+              Binance Futures. It expires automatically and is consumed after one order - it does not survive a
+              browser refresh, logout, or backend restart, and re-confirming is required every time.
             </p>
             {UNLOCK_CHECKS.map((c) => (
               <label key={c.key} className="live-unlock-check">
@@ -170,6 +266,15 @@ export function LiveUnlockModal({ status, onClose, onChanged, showToast }: Unloc
                 <span>{c.label}</span>
               </label>
             ))}
+            <label className="live-unlock-phrase">
+              <span className="tile-label">Re-enter your password to confirm it's really you, right now</span>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+              />
+            </label>
             <label className="live-unlock-phrase">
               <span className="tile-label">
                 Type <b>{UNLOCK_PHRASE}</b> to confirm
@@ -183,6 +288,41 @@ export function LiveUnlockModal({ status, onClose, onChanged, showToast }: Unloc
                 spellCheck={false}
               />
             </label>
+            <label className="live-unlock-phrase">
+              <span className="tile-label">
+                Type <b>{SECOND_CONFIRMATION_PHRASE}</b> as a second, separate confirmation
+              </span>
+              <input
+                type="text"
+                value={secondText}
+                onChange={(e) => setSecondText(e.target.value)}
+                placeholder={SECOND_CONFIRMATION_PHRASE}
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+            <label className="live-unlock-phrase">
+              <span className="tile-label">Type your account username to confirm which account this is for</span>
+              <input
+                type="text"
+                value={accountText}
+                onChange={(e) => setAccountText(e.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+            <label className="live-unlock-phrase">
+              <span className="tile-label">Confirm exactly which symbol this authorization is for</span>
+              <select value={symbolChoice} onChange={(e) => setSymbolChoice(e.target.value)}>
+                <option value="">Select a symbol…</option>
+                {status.allowed_symbols.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+                <option value="ALL">ALL (unrestricted)</option>
+              </select>
+            </label>
             <div className="modal-actions">
               <button className="mini-btn" onClick={onClose} disabled={busy}>
                 Cancel
@@ -191,7 +331,7 @@ export function LiveUnlockModal({ status, onClose, onChanged, showToast }: Unloc
                 View only
               </button>
               <button className="btn-danger" onClick={unlock} disabled={!ready || busy}>
-                {busy ? "Unlocking…" : "Unlock REAL Trading"}
+                {busy ? "Authorizing…" : "Authorize One Live Order"}
               </button>
             </div>
           </div>

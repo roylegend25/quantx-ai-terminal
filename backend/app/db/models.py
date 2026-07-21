@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, BigInteger, String, Float, DateTime, Text, JSON, Boolean, Index, UniqueConstraint
+from sqlalchemy import Column, Integer, BigInteger, String, Float, DateTime, Text, JSON, Boolean, Index, UniqueConstraint, ForeignKey
 from datetime import datetime, timezone
 from app.db.session import Base
 
@@ -48,6 +48,13 @@ class Trade(Base):
     trailing_stop = Column(Float, nullable=True)  # trailing distance in price units
     realized_pnl = Column(Float, nullable=True)  # accumulates across partial closes
     updated_at = Column(DateTime, nullable=True)
+    # --- automated-entry provenance (Trading Horizon) - all nullable: a
+    # manual/direct API open has no decision or authority behind it and
+    # honestly stays NULL rather than fabricating a link.
+    decision_id = Column(String, nullable=True, index=True)  # ActiveDriveDecision.decision_id that authorized entry
+    authority_id = Column(String, nullable=True, index=True)  # TradingHorizonDecision.id consumed to open this trade
+    execution_mode = Column(String, nullable=True)  # "automatic" (Trading Horizon) | "manual" (direct API open)
+    edge_at_entry = Column(Float, nullable=True)  # net_expected_edge from the authorizing decision at entry time
 
 
 class PredictionFeature(Base):
@@ -83,6 +90,11 @@ class UserBotSetting(Base):
     user_id = Column(String, primary_key=True)
     decision_engine = Column(String, nullable=False, default="active_drive_v2")
     compare_engines_shadow = Column(Boolean, nullable=False, default=False)
+    trading_profile = Column(String, nullable=False, default="auto_adaptive")
+    strict_timeframe_unanimity = Column(Boolean, nullable=False, default=True)
+    auto_profile_enabled = Column(Boolean, nullable=False, default=True)
+    profile_updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    profile_revision = Column(Integer, nullable=False, default=1)
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 class DecisionEngineChange(Base):
@@ -94,6 +106,47 @@ class DecisionEngineChange(Base):
     changed_by = Column(String, nullable=False)
     reason = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+class CalibrationVersion(Base):
+    """Versioned, rollback-able calibration-weight proposals (see
+    app.decision_engine.calibration). A row here is a PROPOSAL computed from
+    trustworthy (RESOLVED_*) outcomes only - applying one to live strategy
+    weights is a separate, explicit, never-automatic action. active=True
+    marks the currently-applied version; at most one row is ever active."""
+    __tablename__ = "calibration_versions"
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    created_by = Column(String, nullable=False)
+    sample_size = Column(Integer, nullable=False)
+    weights_snapshot = Column(JSON, nullable=False)
+    metrics_snapshot = Column(JSON, nullable=False)
+    previous_version_id = Column(Integer, nullable=True)
+    active = Column(Boolean, default=False, nullable=False)
+    applied_at = Column(DateTime, nullable=True)
+    rolled_back_at = Column(DateTime, nullable=True)
+    notes = Column(Text, nullable=True)
+
+
+class LegacyNeutralCompatCorrection(Base):
+    """Audit trail for app.decision_engine.legacy_neutral_compat - a narrow,
+    idempotent, versioned backfill that sets PredictionResolution.neutral_result
+    = True for rows whose lifecycle_status is already the authoritative
+    RESOLVED_NEUTRAL but whose legacy neutral_result/correct booleans were
+    never populated to match (pre-dates the lifecycle_status column). This
+    NEVER changes lifecycle_status, resolved_direction, prices, direction, or
+    correct - see legacy_neutral_compat.py for the exact predicate. One row
+    per corrected prediction_id; a second run against an already-corrected
+    row is a no-op and writes no second audit row (the corrected row no
+    longer matches the predicate)."""
+    __tablename__ = "legacy_neutral_compat_corrections"
+    id = Column(Integer, primary_key=True, index=True)
+    prediction_id = Column(String, nullable=False, unique=True, index=True)
+    correction_version = Column(String, nullable=False, index=True)
+    correction_timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    old_neutral_result = Column(Boolean, nullable=True)
+    new_neutral_result = Column(Boolean, nullable=False)
+    audit_reason = Column(String, nullable=False)
+
 
 class ActiveDriveDecision(Base):
     __tablename__ = "active_drive_decisions"
@@ -109,11 +162,74 @@ class ActiveDriveDecision(Base):
     short_points = Column(Float, nullable=False, default=0.0)
     confidence = Column(Float, nullable=False, default=0.0)
     expected_edge = Column(Float, nullable=True)
+    gross_expected_edge = Column(Float, nullable=True)
+    net_expected_edge = Column(Float, nullable=True)
+    edge_supported = Column(Boolean, nullable=True)
+    edge_block_reason = Column(String, nullable=True)
+    edge_sample_size = Column(Integer, nullable=True)
+    edge_source = Column(String, nullable=True)
     eligible_for_execution = Column(Boolean, nullable=False, default=False)
     blocking_reasons = Column(JSON, nullable=False, default=list)
     decision_payload = Column(JSON, nullable=False, default=dict)
     shadow = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class TradingHorizonDecision(Base):
+    """Immutable, server-issued authority for one possible new entry."""
+    __tablename__ = "trading_horizon_decisions"
+    id = Column(String, primary_key=True)
+    # Historical authorities created before the fingerprint migration remain
+    # NULL; every newly issued authority is required to provide a fingerprint.
+    issuance_fingerprint = Column(String, nullable=True, unique=True, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    selected_profile = Column(String, nullable=False)
+    profile_revision = Column(Integer, nullable=False)
+    authoritative_execution_timeframe = Column(String, nullable=False)
+    final_direction = Column(String, nullable=False)
+    engine_id = Column(String, nullable=False)
+    engine_version = Column(String, nullable=False)
+    unanimous = Column(Boolean, nullable=False)
+    readiness = Column(Boolean, nullable=False)
+    execution_eligible = Column(Boolean, nullable=False)
+    generated_at = Column(DateTime, nullable=False)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    market_data_revision = Column(String, nullable=False)
+    performance_snapshot_revision = Column(String, nullable=False)
+    expected_edge = Column(Float, nullable=True)
+    directional_confidence = Column(Float, nullable=True)
+    point_margin = Column(Float, nullable=True)
+    evidence = Column(JSON, nullable=False, default=dict)
+    blocking_reasons = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class TradingHorizonTimeframeLink(Base):
+    """Immutable proof linking horizon authority to persisted V2 decisions."""
+    __tablename__ = "trading_horizon_timeframe_links"
+    __table_args__ = (
+        UniqueConstraint("horizon_decision_id", "timeframe", "role", name="uq_horizon_timeframe_role"),
+    )
+    id = Column(Integer, primary_key=True)
+    horizon_decision_id = Column(String, ForeignKey("trading_horizon_decisions.id"), nullable=False, index=True)
+    decision_id = Column(String, ForeignKey("active_drive_decisions.decision_id"), nullable=False, index=True)
+    timeframe = Column(String, nullable=False)
+    role = Column(String, nullable=False)
+    direction = Column(String, nullable=False)
+    confidence = Column(Float, nullable=True)
+    eligible = Column(Boolean, nullable=False)
+    engine_id = Column(String, nullable=False)
+    engine_version = Column(String, nullable=False)
+    generated_at = Column(DateTime, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+
+
+class TradingHorizonConsumption(Base):
+    __tablename__ = "trading_horizon_consumptions"
+    horizon_decision_id = Column(String, ForeignKey("trading_horizon_decisions.id"), primary_key=True)
+    idempotency_key = Column(String, nullable=False, unique=True)
+    consumed_at = Column(DateTime, nullable=False)
 
 class SignalCandidateRecord(Base):
     __tablename__ = "signal_candidates"
@@ -144,10 +260,34 @@ class SignalCandidateRecord(Base):
     data_freshness = Column(String, nullable=False, default="live")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
+class PredictionCycle(Base):
+    """User-initiated prediction cycle marker. Starting a new cycle never
+    deletes or rewrites history - older ledger rows simply keep their old
+    cycle_id (or NULL for rows that predate cycles) and dashboards can
+    filter to the current cycle for a fresh-start view."""
+    __tablename__ = "prediction_cycles"
+    id = Column(String, primary_key=True)
+    user_id = Column(String, nullable=False, index=True)
+    label = Column(String, nullable=True)
+    idempotency_key = Column(String, nullable=True, unique=True, index=True)
+    started_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
 class PredictionLedger(Base):
     __tablename__ = "prediction_ledger"
-    __table_args__ = (Index("ix_prediction_ledger_scope", "source_name", "source_version", "symbol", "timeframe", "generated_at"), UniqueConstraint("candidate_id", name="uq_prediction_ledger_candidate"))
+    __table_args__ = (Index("ix_prediction_ledger_scope", "source_name", "source_version", "symbol", "timeframe", "generated_at"), UniqueConstraint("candidate_id", name="uq_prediction_ledger_candidate"),
+                       Index("ix_prediction_ledger_symbol_generated", "symbol", "generated_at"),
+                       # Exact evidence-bucket lookup used by repository.performance()
+                       # for every candidate on every evaluation - without it each
+                       # call table-scans the ledger.
+                       Index("ix_prediction_ledger_perf_bucket", "user_id", "engine", "source_name", "source_version", "symbol", "timeframe", "market_regime"),
+                       Index("ix_prediction_ledger_deadline", "resolution_deadline"),
+                       # Two-queue claim pattern (app.decision_engine.resolver): the
+                       # recent-priority and historical-backfill queues both filter
+                       # on lifecycle_status + resolution_deadline together.
+                       Index("ix_prediction_ledger_lifecycle_deadline", "lifecycle_status", "resolution_deadline"))
     prediction_id = Column(String, primary_key=True)
+    cycle_id = Column(String, nullable=True, index=True)
     candidate_id = Column(String, nullable=False)
     decision_id = Column(String, nullable=False, index=True)
     user_id = Column(String, nullable=False, index=True)
@@ -173,6 +313,17 @@ class PredictionLedger(Base):
     resolution_deadline = Column(DateTime, nullable=False, index=True)
     feature_snapshot_hash = Column(String, nullable=False)
     generated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    # Phase 33: resilient catch-up resolver tracking (app/decision_engine/
+    # resolver.py). resolver_attempts counts backfill attempts since the
+    # prediction became due; next_retry_at implements exponential backoff
+    # so a permanently-gapped row doesn't get hammered every cycle;
+    # unresolved_reason is the last-computed structured reason, persisted
+    # so the dashboard doesn't need to recompute it from scratch per request.
+    resolver_attempts = Column(Integer, default=0)
+    last_resolver_attempt_at = Column(DateTime, nullable=True)
+    last_resolver_error = Column(String, nullable=True)
+    next_retry_at = Column(DateTime, nullable=True)
+    unresolved_reason = Column(String, nullable=True)
 
     # Resolver-attempt bookkeeping (additive - see init_db._migrate_prediction_resolution_provider_columns).
     # NULL/0 on rows written before this existed; the resolver treats that as "never attempted".
@@ -183,6 +334,14 @@ class PredictionLedger(Base):
     resolver_claim_token = Column(String, nullable=True, index=True)
     resolver_claimed_at = Column(DateTime, nullable=True)
     resolver_next_attempt_at = Column(DateTime, nullable=True, index=True)
+    # Explicit lifecycle status (see app.decision_engine.outcome.LIFECYCLE_STATUSES).
+    # Replaces the old single generic "UNRESOLVED" label. PENDING at
+    # creation; a matured-but-not-yet-attempted row still reads PENDING here
+    # (the dashboard derives the PENDING->RESOLVING transition live from
+    # resolution_deadline, which is already indexed, rather than requiring a
+    # write the instant every prediction matures). Terminal states
+    # (RESOLVED_*, VOID_*) are written once and never revised.
+    lifecycle_status = Column(String, nullable=True, index=True, default="PENDING")
 
 class PredictionResolution(Base):
     __tablename__ = "prediction_resolutions"
@@ -200,7 +359,8 @@ class PredictionResolution(Base):
     resolved_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
     # Multi-exchange resolution provenance (additive, nullable - pre-existing
-    # resolved rows were single-source and remain valid without these).
+    # resolved rows were single-source Binance and remain valid without these;
+    # see app/data_sources/resolution_providers.py).
     resolution_provider = Column(String, nullable=True)
     resolution_exchange = Column(String, nullable=True)
     resolution_market_type = Column(String, nullable=True)
@@ -213,6 +373,17 @@ class PredictionResolution(Base):
     provider_count_checked = Column(Integer, nullable=True)
     provider_price_spread_bps = Column(Float, nullable=True)
     resolution_confidence = Column(Float, nullable=True)
+
+    # Exact formula/threshold snapshot used to classify THIS row (see
+    # app.decision_engine.outcome.resolve_prediction_outcome) - stored so a
+    # later change to settings.resolution_neutral_band / fee / slippage
+    # config never silently rewrites already-resolved history.
+    net_direction_adjusted_return = Column(Float, nullable=True)
+    estimated_fee = Column(Float, nullable=True)
+    estimated_slippage = Column(Float, nullable=True)
+    neutral_band_used = Column(Float, nullable=True)
+    fee_rate_used = Column(Float, nullable=True)
+    slippage_bps_used = Column(Float, nullable=True)
 
 class StrategyPerformance(Base):
     __tablename__ = "strategy_performance"
@@ -865,6 +1036,70 @@ class Portfolio(Base):
     losses = Column(Integer, default=0)
 
 
+class BinanceCredential(Base):
+    """Admin-managed Binance Real API credential (Phase 32), singleton row
+    (id=1) matching TradingControl's pattern. The secret is NEVER stored in
+    plaintext - encrypted at rest with a server-only master key
+    (settings.credential_encryption_key, Fernet symmetric encryption; see
+    app/security/credential_store.py). No column here is ever returned by
+    any API response except api_key_fingerprint (a masked display string)
+    and the non-secret metadata fields.
+
+    Saving/rotating a credential here does NOT itself enable live trading -
+    it only makes a write-capable client constructible. BINANCE_LIVE_ENABLED,
+    TradingControl.mode, and an active LiveAuthorizationLease (Phase 31) are
+    still independently required before any real order can be placed."""
+    __tablename__ = "binance_credentials"
+
+    id = Column(Integer, primary_key=True, default=1)
+    label = Column(String, nullable=True)
+    # Expected exchange environment the operator intends this key for -
+    # informational/reminder only, never itself a trading-mode switch.
+    environment = Column(String, default="live")  # "live" | "testnet"
+    encrypted_api_key = Column(Text, nullable=False)
+    encrypted_api_secret = Column(Text, nullable=False)
+    # First 4 + last 4 characters of the real key, safe to return/display.
+    api_key_fingerprint = Column(String, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_by = Column(String, nullable=False)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    last_validated_at = Column(DateTime, nullable=True)
+    last_validation_status = Column(String, nullable=True)  # "ok" | "failed" | None (never tested)
+    last_validation_detail = Column(String, nullable=True)  # safe, non-secret text
+    write_permission_detected = Column(Boolean, nullable=True)  # None = unknown/undetectable
+    withdraw_enabled_detected = Column(Boolean, nullable=True)  # None = unknown/undetectable
+
+
+class LiveAuthorizationLease(Base):
+    """Short-lived, single-use authorization required, in addition to
+    TradingControl.mode and BINANCE_LIVE_ENABLED, before any order reaches
+    the real Binance exchange (Phase 31).
+
+    Root cause this replaces: TradingControl.live_unlocked was a bare
+    persistent boolean with no expiry - an unlock completed for dev
+    verification on one day stayed armed for over three days and let an
+    unrelated later signal place two real orders. A lease instead expires
+    quickly (settings.live_lease_ttl_seconds, clamped), is consumed after
+    settings.live_lease_max_actions real orders, and is unconditionally
+    wiped on every backend startup (see modes.startup_safety_reset) - so it
+    can never survive a restart, deployment, or reboot, and never
+    accumulates unnoticed across days like the boolean did."""
+    __tablename__ = "live_authorization_leases"
+
+    id = Column(Integer, primary_key=True)
+    user = Column(String, nullable=False, index=True)
+    # None/"ALL" = unrestricted; a specific symbol narrows the lease to
+    # exactly the symbol the operator typed during the unlock ceremony.
+    symbol_scope = Column(String, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    expires_at = Column(DateTime, nullable=False, index=True)
+    actions_remaining = Column(Integer, default=1)
+    consumed_at = Column(DateTime, nullable=True)
+    revoked = Column(Boolean, default=False, index=True)
+    revoked_reason = Column(String, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+
 class TradingControl(Base):
     """Singleton row (id=1) of runtime trading-mode state (Phase 22, see
     app/trading/modes.py). The requested mode can only ever be one of
@@ -1011,6 +1246,42 @@ class TradingAuditLog(Base):
     symbol = Column(String, index=True, nullable=True)
     detail = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class ExecutionIntentLock(Base):
+    """Cross-worker new-entry mutex. One active intent per user/symbol/engine."""
+    __tablename__ = "execution_intent_locks"
+    scope_key = Column(String, primary_key=True)
+    idempotency_key = Column(String, nullable=False, unique=True, index=True)
+    owner_token = Column(String, nullable=False)
+    fencing_token = Column(Integer, nullable=False)
+    heartbeat_at = Column(DateTime, nullable=False)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class ExecutionIntentAudit(Base):
+    """Durable idempotency outcome and authority provenance for every intent."""
+    __tablename__ = "execution_intent_audit"
+    id = Column(Integer, primary_key=True, index=True)
+    idempotency_key = Column(String, nullable=False, unique=True, index=True)
+    scope_key = Column(String, nullable=False, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    engine = Column(String, nullable=False)
+    profile_decision_id = Column(String, nullable=False)
+    execution_timeframe = Column(String, nullable=False)
+    direction = Column(String, nullable=False)
+    status = Column(String, nullable=False, index=True)
+    result = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    completed_at = Column(DateTime, nullable=True)
+
+
+class ExecutionFenceCounter(Base):
+    __tablename__ = "execution_fence_counters"
+    scope_key = Column(String, primary_key=True)
+    current_token = Column(Integer, nullable=False, default=0)
 
 
 class BinanceExecutionAttempt(Base):
@@ -1168,6 +1439,39 @@ class BinanceProtectionCapability(Base):
     detected_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     detection_reason = Column(Text, nullable=True)
     last_error = Column(Text, nullable=True)
+    updated_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+
+class PaperValidationGuard(Base):
+    """One-shot PAPER-only validation window (see
+    app.trading.paper_validation_guard). Singleton row (id=1). Never
+    referenced by any live-execution code path - it only gates PAPER opens
+    and calls app.deployment.maintenance; it cannot enable live trading or
+    touch live credentials/leases. State lives here (not in memory) so the
+    watchdog and startup-recovery check both survive a container restart,
+    not just an SSH/tmux/Claude disconnection."""
+    __tablename__ = "paper_validation_guard"
+
+    id = Column(Integer, primary_key=True)
+    active = Column(Boolean, default=False, nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    max_entry_attempts = Column(Integer, default=1, nullable=False)
+    entry_attempts = Column(Integer, default=0, nullable=False)
+    max_positions = Column(Integer, default=1, nullable=False)
+    max_symbols = Column(Integer, default=1, nullable=False)
+    max_holding_seconds = Column(Integer, default=3600, nullable=False)
+    entry_accepted = Column(Boolean, default=False, nullable=False)
+    entry_symbol = Column(String, nullable=True)
+    entry_trade_id = Column(Integer, nullable=True)
+    entry_accepted_at = Column(DateTime, nullable=True)
+    completed = Column(Boolean, default=False, nullable=False)
+    completed_reason = Column(String, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    maintenance_restored_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
         DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
     )

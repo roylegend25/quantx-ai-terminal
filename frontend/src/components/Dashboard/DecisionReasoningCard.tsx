@@ -25,8 +25,14 @@ type Props = {
   executionOutcome?: ExecutionOutcome;
 };
 
-/** Green: trade allowed. Red: risk blocked a directional signal.
- *  Yellow: waiting - no decision yet or no qualifying signal. */
+/** Green: approved for paper execution (every Active Drive V2 gate -
+ *  evidence, margin, calibrated confidence, edge - passed). Red: a
+ *  directional LONG/SHORT candidate exists but a downstream gate blocked
+ *  it before execution (the legacy engine can report this combination;
+ *  Active Drive V2 folds a blocked candidate back to NO_TRADE, so this
+ *  path is legacy-engine-only). Yellow/"waiting": either no decision has
+ *  loaded yet, or the verdict is a genuine NO_TRADE abstention - both
+ *  render the real reason text below, never a bare "waiting". */
 function overallState(decision: any): "allowed" | "blocked" | "waiting" {
   if (!decision) return "waiting";
   if (decision.trade_allowed) return "allowed";
@@ -70,10 +76,15 @@ function DecisionReasoningCard({ decision, regime, executionOutcome }: Props) {
           ) : (
             <>
               <b>
-                {direction === "NO_TRADE" ? `NO TRADE · ${blockers[0] ?? "No actionable decision"}` : direction}
-                {state === "allowed" ? " · trade allowed" : state === "blocked" ? " · blocked by risk" : " · waiting"}
+                {direction === "NO_TRADE"
+                  ? `NO TRADE · ${blockers[0] ?? "No actionable decision"}`
+                  : state === "allowed"
+                  ? `${direction} candidate — approved for paper execution`
+                  : state === "blocked"
+                  ? `${direction} candidate — blocked: ${blockers[0] ?? "risk gate"}`
+                  : direction}
               </b>
-              <p className="regime-desc">{blockers[0] ?? "Waiting for the decision engine."}</p>
+              {!decision && <p className="regime-desc">Waiting for the decision engine - no verdict has loaded yet.</p>}
             </>
           )}
         </div>

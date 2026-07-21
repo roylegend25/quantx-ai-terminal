@@ -4,13 +4,15 @@ import httpx
 
 from app.quant.indicators import compute_features
 from app.strategy.ensemble import evaluate as ensemble_evaluate
+from app.timeframes.canonical import exchange_interval
 
 BINANCE_FAPI = "https://fapi.binance.com"
 
-TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"]
+TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"]
 
 
 async def fetch_candles(client: httpx.AsyncClient, symbol: str, interval: str, limit: int = 220):
+    interval = exchange_interval(interval)
     r = await client.get(
         f"{BINANCE_FAPI}/fapi/v1/klines",
         params={"symbol": symbol, "interval": interval, "limit": limit},

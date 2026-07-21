@@ -24,7 +24,7 @@ from app.monitoring.logging import RequestLoggingMiddleware
 from app.monitoring.metrics import PrometheusMiddleware, instrument_db_engine
 from datetime import datetime, timezone
 from app.core.deps import get_current_user
-from app.db.init_db import init_db
+from app.db.init_db import SchemaCompatibilityError, init_db
 from app.db.session import engine as db_engine
 from app.trading.scheduler import start_scheduler
 from app.trading.position_manager import start_position_manager
@@ -37,6 +37,7 @@ from app.api.data import router as data_router
 from app.api.learning import router as learning_router
 from app.api.portfolio import router as portfolio_router
 from app.api.trading_control import router as trading_control_router
+from app.api.binance_credentials import router as binance_credentials_router
 from app.api.bot_trades import router as bot_trades_router
 from app.api.admin_config import router as admin_config_router
 from app.api.binance_snapshot import router as binance_snapshot_router
@@ -47,6 +48,7 @@ from app.data_sources.scheduler import start_data_scheduler
 from app.decision_engine.scheduler import start_scheduler as start_decision_resolver
 from app.trading.binance_sync import start_binance_sync
 from app.trading.protection_watchdog import start_protection_watchdog
+from app.trading import paper_validation_guard
 from app.core.config import settings
 from app.deployment import maintenance
 from app.deployment.lease import execution_lease
@@ -69,6 +71,7 @@ async def delayed_background_start():
     start_decision_resolver()
     start_binance_sync()
     start_protection_watchdog()
+    paper_validation_guard.start_watchdog()
 
 @app.on_event("startup")
 async def startup_event():
@@ -79,7 +82,17 @@ async def startup_event():
     apply_env_file_to_settings()
     if settings.deployment_maintenance_mode:
         maintenance.enable("application-startup")
-    init_db()
+    try:
+        init_db()
+    except SchemaCompatibilityError:
+        maintenance.enable("TRADING_HORIZON_MIGRATION_REQUIRED")
+        return
+    # Phase 31: unconditionally force PAPER + wipe every live-authorization
+    # lease on every startup, after the schema is confirmed compatible - a
+    # live unlock must never survive a backend restart, redeploy, or reboot.
+    from app.trading import modes as _modes
+    _modes.startup_safety_reset()
+    paper_validation_guard.startup_recovery()
     instrument_db_engine(db_engine)
     asyncio.create_task(delayed_background_start())
 
@@ -121,6 +134,7 @@ app.include_router(data_router, dependencies=protected)
 app.include_router(learning_router, dependencies=protected)
 app.include_router(portfolio_router, dependencies=protected)
 app.include_router(trading_control_router, dependencies=protected)
+app.include_router(binance_credentials_router, dependencies=protected)
 app.include_router(bot_trades_router, dependencies=protected)
 app.include_router(binance_snapshot_router, dependencies=protected)
 app.include_router(analysis_router, dependencies=protected)

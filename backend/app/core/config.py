@@ -47,6 +47,31 @@ class Settings(BaseSettings):
     active_drive_min_resolved_samples: int = 20
     active_drive_family_cap: float = 12.0
 
+    # Current-edge economics (Phase C/D/L): all rates are decimal return
+    # fractions (0.0005 == 5 bps), matching the ".2%"-formatted expected_edge
+    # everywhere downstream. Conservative-by-default: a real net edge must
+    # clear real round-trip costs before current_edge_supported is ever True.
+    active_drive_min_net_edge: float = 0.0005
+    active_drive_estimated_taker_fee_rate: float = 0.0005
+    active_drive_estimated_spread_bps: float = 2.0
+    active_drive_estimated_slippage_bps: float = 3.0
+    active_drive_estimated_funding_cost_rate: float = 0.0
+    active_drive_max_edge_evidence_age_seconds: int = 86400
+
+    # Resolution neutral band, decimal return fraction (0.0005 == 5 bps).
+    # A resolved absolute return at or below this is NEUTRAL: too small to
+    # be a real directional outcome once spread+slippage are considered.
+    # Exact zero was the old implicit band, which made NEUTRAL impossible
+    # on float returns. Neutral outcomes are excluded from the directional
+    # accuracy denominator (correct stays NULL, neutral_result=True).
+    resolution_neutral_band: float = 0.0005
+
+    # Multi-exchange resolver catch-up fallback (app/data_sources/resolution_providers.py,
+    # used only from app/decision_engine/resolver.py's _fetch_and_store_backfill).
+    # Read-only, no order path.
+    resolver_price_disagreement_bps: float = 15.0
+    resolver_allow_spot_fallback: bool = False
+
     deployment_maintenance_mode: bool = False
     deployment_maintenance_file: str = "/app/data/deployment-maintenance"
     scheduler_startup_grace_seconds: int = 15
@@ -72,6 +97,9 @@ class Settings(BaseSettings):
 
     scheduler_interval_seconds: int = 300
     position_manager_interval_seconds: int = 5
+    horizon_evaluation_timeout_seconds: float = 45.0
+    horizon_timeframe_timeout_seconds: float = 20.0
+    horizon_evaluation_concurrency: int = 3
 
     binance_fapi_url: str = "https://fapi.binance.com"
 
@@ -86,11 +114,27 @@ class Settings(BaseSettings):
     # by any endpoint.
     binance_api_key: str = ""
     binance_api_secret: str = ""
+    # Phase 31: credentials for a REAL, write-capable production client are
+    # deliberately a separate pair from binance_api_key/secret above (which
+    # remain the read-only-monitoring + testnet-trading credential). A live
+    # write client (testnet=False, read_only=False) loads ONLY this pair -
+    # so normal paper/testnet operation never has live-capable credentials
+    # loaded into a process at all, by construction, not merely by a flag.
+    # Leave unset until deliberately provisioning live trading.
+    binance_live_api_key: str = ""
+    binance_live_api_secret: str = ""
     # When true, the trading client targets https://testnet.binancefuture.com
     binance_futures_testnet: bool = True
     # Master server-side lock. While false, BINANCE_LIVE mode can never be
     # unlocked from the UI - requests are refused with a clear reason.
     binance_live_enabled: bool = False
+    # Phase 31: short-lived live-order authorization lease (see
+    # app/trading/modes.py create_live_lease). This is independent of, and
+    # in addition to, binance_live_enabled and TradingControl.mode - no
+    # single one of the three can authorize a real order alone. Clamped in
+    # code to a sane maximum regardless of what's configured here.
+    live_lease_ttl_seconds: int = 300
+    live_lease_max_actions: int = 1
     binance_default_leverage: float = 1.0
     binance_max_leverage: float = 3.0
     binance_max_notional_per_trade: float = 25.0
@@ -136,6 +180,42 @@ class Settings(BaseSettings):
     resolver_price_disagreement_bps: float = 15.0
     resolver_allow_spot_fallback: bool = False
     resolver_max_data_age_seconds: float = 21600.0  # 6h - beyond this a candle is "stale" for resolution purposes
+    # Two independent queues (resolve_recent_due / resolve_historical_backfill):
+    # the historical backlog runs its own larger batch on its own loop
+    # interval so it can never delay a freshly-matured prediction, which
+    # only ever contends with other recent rows for the small recent batch.
+    resolver_recent_batch_size: int = 100
+    resolver_recent_window_hours: float = 6.0
+    resolver_backfill_batch_size: int = 300
+    resolver_recent_interval_seconds: float = 20.0
+    resolver_backfill_interval_seconds: float = 15.0
+    # Starvation-free claim allocation (2026-07-21 recent-queue fairness fix):
+    # pure newest-deadline-first claiming let a continuous stream of freshly-
+    # matured predictions permanently starve older PENDING/RETRYING rows once
+    # due volume exceeded one batch. This fraction of resolver_recent_batch_size
+    # is reserved for the OLDEST eligible rows every cycle (guaranteeing
+    # forward progress regardless of new arrivals); the remainder goes to the
+    # newest rows (fast handling of just-matured predictions). Unused capacity
+    # in either allocation transfers to the other within the same cycle - see
+    # app.decision_engine.resolver._claim_rows_fair.
+    resolver_recent_oldest_allocation_fraction: float = 0.5
+    # Isolated-validation finding (2026-07-21, same fairness-fix pass): pure
+    # resolution_deadline ordering inside the "oldest" allocation let a large
+    # never-yet-attempted PENDING backlog itself starve RESOLUTION_ERROR_RETRYING
+    # rows, since PENDING rows are frequently chronologically even older - the
+    # 0.5/0.5 split above alone was not sufficient. This fraction further
+    # reserves that share OF the oldest allocation specifically for RETRYING
+    # rows (the remainder goes to PENDING), so neither can starve the other
+    # regardless of either pool's relative size.
+    resolver_recent_retrying_priority_fraction: float = 0.5
+
+    # Decision-engine calibration (app/decision_engine/calibration.py):
+    # propose_calibration_update always only PROPOSES a bounded, sample-
+    # gated weight adjustment as an inactive CalibrationVersion row. This
+    # flag is read by callers that would otherwise auto-apply a proposal -
+    # it must stay False until offline + shadow validation passes; nothing
+    # in this repair flips it on.
+    calibration_auto_apply_enabled: bool = False
 
     @field_validator("binance_allowed_symbols", mode="before")
     @classmethod
@@ -150,6 +230,21 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 10080
     admin_username: str = "admin"
     admin_password_hash: str = ""
+
+    # Phase 32: server-only master key for encrypting Binance Real API
+    # credentials at rest (Fernet, from the `cryptography` package already
+    # in requirements.txt). Never logged, never returned by any endpoint.
+    # Empty means the credential-store endpoints refuse to save (fail
+    # closed - never a silent plaintext fallback, see
+    # app/security/credential_store.py).
+    credential_encryption_key: str = ""
+
+    # Phase 34: CoinGlass official liquidation-data entitlement. Empty (the
+    # default - no subscription exists in this deployment) means the
+    # liquidation heatmap stays on its existing Binance-derived ESTIMATED
+    # model and reports that honestly; it must never be silently presented
+    # as official CoinGlass data. See app/intelligence/liquidation_heatmap.py.
+    coinglass_api_key: str = ""
 
     # --- ML lifecycle platform (app/mlops/) ---
     auto_retrain: bool = True
