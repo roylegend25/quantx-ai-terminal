@@ -67,24 +67,38 @@ type LifecycleHealth = {
   };
 };
 
-const OUTCOME_META: Record<string, { dot: string; label: string; cls: string }> = {
+// Authoritative lifecycle-status display buckets, matching
+// app.decision_engine.resolver_status.outcome_status exactly (pending,
+// resolving, retrying, correct, wrong, neutral, void, unknown). "unknown" is
+// a real, distinct category - never silently folded into anything else - so
+// an unexpected lifecycle_status value is visible and logged, not hidden
+// behind a generic "Unresolved" label.
+export const OUTCOME_META: Record<string, { dot: string; label: string; cls: string }> = {
+  pending: { dot: "⚪", label: "Pending", cls: "" },
+  resolving: { dot: "\u{1F535}", label: "Resolving", cls: "" },
+  retrying: { dot: "\u{1F7E0}", label: "Retrying", cls: "orange" },
   correct: { dot: "\u{1F7E2}", label: "Correct", cls: "green" },
   wrong: { dot: "\u{1F534}", label: "Wrong", cls: "red" },
   neutral: { dot: "\u{1F7E1}", label: "Neutral", cls: "yellow" },
-  unresolved_not_due: { dot: "⚪", label: "Not due yet", cls: "" },
-  unresolved_due: { dot: "⚪", label: "Awaiting resolution", cls: "" },
-  overdue_provider_error: { dot: "\u{1F7E0}", label: "Overdue / provider issue", cls: "orange" },
+  void: { dot: "⚫", label: "Void", cls: "" },
+  unknown: { dot: "❓", label: "Unknown status", cls: "red" },
 };
 
 const TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d", "1w"];
-const OUTCOMES = ["correct", "wrong", "neutral", "unresolved_not_due", "overdue_provider_error"];
+const OUTCOMES = ["pending", "resolving", "retrying", "correct", "wrong", "neutral", "void"];
 
 function pctFmt(v: number | null | undefined): string {
   return v == null ? "—" : `${(v * 100).toFixed(1)}%`;
 }
 
-function OutcomeDot({ outcome }: { outcome: string }) {
-  const meta = OUTCOME_META[outcome] ?? OUTCOME_META.unresolved_due;
+export function OutcomeDot({ outcome }: { outcome: string }) {
+  const meta = OUTCOME_META[outcome];
+  if (!meta) {
+    // eslint-disable-next-line no-console
+    console.error("Unknown prediction outcome status received from API:", outcome);
+    const fallback = OUTCOME_META.unknown;
+    return <span title={fallback.label} aria-label={fallback.label}>{fallback.dot}</span>;
+  }
   return <span title={meta.label} aria-label={meta.label}>{meta.dot}</span>;
 }
 
@@ -274,9 +288,9 @@ export default function PredictionResultsPage() {
             ))}
           </select>
           <select value={resolvedFilter} onChange={(e) => setResolvedFilter(e.target.value as typeof resolvedFilter)}>
-            <option value="">Resolved + Unresolved</option>
-            <option value="resolved">Resolved only</option>
-            <option value="unresolved">Unresolved only</option>
+            <option value="">All (any lifecycle status)</option>
+            <option value="resolved">Has an outcome (Correct/Wrong/Neutral)</option>
+            <option value="unresolved">No outcome yet (Pending/Resolving/Retrying/Void)</option>
           </select>
           <select value={outcomeFilter} onChange={(e) => setOutcomeFilter(e.target.value)}>
             <option value="">All outcomes</option>
@@ -317,8 +331,13 @@ export default function PredictionResultsPage() {
                 data={timelineData}
                 fill="#7c5cff"
                 shape={(props: any) => {
-                  const meta = OUTCOME_META[props.payload.outcome] ?? OUTCOME_META.unresolved_due;
-                  const color = meta.cls === "green" ? "#2ecc71" : meta.cls === "red" ? "#e74c3c" : meta.cls === "yellow" ? "#f1c40f" : meta.cls === "orange" ? "#ff9f43" : "#8b90a8";
+                  const meta = OUTCOME_META[props.payload.outcome];
+                  if (!meta) {
+                    // eslint-disable-next-line no-console
+                    console.error("Unknown prediction outcome status received from API:", props.payload.outcome);
+                  }
+                  const resolved = meta ?? OUTCOME_META.unknown;
+                  const color = resolved.cls === "green" ? "#2ecc71" : resolved.cls === "red" ? "#e74c3c" : resolved.cls === "yellow" ? "#f1c40f" : resolved.cls === "orange" ? "#ff9f43" : "#8b90a8";
                   return <circle cx={props.cx} cy={props.cy} r={5} fill={props.payload.actual_return == null ? "none" : color} stroke={color} strokeWidth={2} />;
                 }}
               />

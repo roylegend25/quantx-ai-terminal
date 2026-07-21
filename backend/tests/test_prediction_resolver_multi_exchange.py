@@ -258,12 +258,21 @@ def test_unsupported_timeframe_classified_not_fetched(db):
 
 
 def test_outcome_status_never_green_or_red_when_unresolved():
+    """outcome_status is lifecycle_status-authoritative (2026-07-21 chart
+    fix) - never inferred from resolver_attempts or the nullable legacy
+    correct field. A stored PENDING row still awaiting its horizon reads as
+    "pending"; once matured it reads as "resolving" (effective_lifecycle_status
+    reclassifies it live, exactly like the Prediction Lifecycle card) unless
+    it has actually failed an attempt and been marked RESOLUTION_ERROR_RETRYING."""
     now = datetime.now(timezone.utc)
     future = _ledger(symbol="BTCUSDT", prediction_id="btc-status-1", minutes_ago=1, horizon_min=30)
-    overdue = _ledger(symbol="BTCUSDT", prediction_id="btc-status-2", minutes_ago=30, horizon_min=5)
-    overdue.resolver_attempts = 2
-    assert resolver_status.outcome_status(future, None, now) == "unresolved_not_due"
-    assert resolver_status.outcome_status(overdue, None, now) == "overdue_provider_error"
+    matured_untouched = _ledger(symbol="BTCUSDT", prediction_id="btc-status-2", minutes_ago=30, horizon_min=5)
+    retrying = _ledger(symbol="BTCUSDT", prediction_id="btc-status-3", minutes_ago=30, horizon_min=5)
+    retrying.resolver_attempts = 2
+    retrying.lifecycle_status = "RESOLUTION_ERROR_RETRYING"
+    assert resolver_status.outcome_status(future, None, now) == "pending"
+    assert resolver_status.outcome_status(matured_untouched, None, now) == "resolving"
+    assert resolver_status.outcome_status(retrying, None, now) == "retrying"
 
 
 def test_symbol_map_scoped_symbols_never_hit_network(db, monkeypatch):
