@@ -8,11 +8,12 @@ connection while it walks every row.
 """
 from datetime import datetime, timezone
 
-from sqlalchemy import case, func
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 from app.data_sources import symbol_map
 from app.db.models import PredictionLedger, PredictionResolution
+from app.decision_engine import outcome
 from app.decision_engine import scheduler as resolver_scheduler
 from app.decision_engine.resolver import UNRESOLVED_STATUSES
 
@@ -113,6 +114,63 @@ def catchup_progress(db: Session) -> dict:
         "last_error": status.get("last_error"),
         "estimated_completion": None if total_due == 0 or not last_stats.get("resolved") else
             f"~{round(total_due / max(last_stats['resolved'], 1))} more cycles at the current per-cycle resolution rate",
+    }
+
+
+def lifecycle_health(db: Session) -> dict:
+    """Explicit lifecycle-status view (app.decision_engine.outcome) - additive
+    to unresolved_reason_summary/catchup_progress above, which remain the
+    unresolved_status-based views. Distinguishes PENDING (horizon not yet
+    closed - never a resolver problem) from every other state, and reports
+    both queues' worker health independently so the two-queue split is
+    directly observable rather than inferred."""
+    now = datetime.now(timezone.utc)
+    btc_eth = PredictionLedger.symbol.in_(("BTCUSDT", "ETHUSDT"))
+
+    counts = dict(
+        db.query(PredictionLedger.lifecycle_status, func.count(PredictionLedger.prediction_id))
+        .filter(btc_eth).group_by(PredictionLedger.lifecycle_status).all()
+    )
+    # Rows still stored as PENDING (or NULL, pre-migration legacy rows) whose
+    # deadline has actually passed are live-derived as RESOLVING for
+    # display, exactly as outcome.effective_lifecycle_status does per-row -
+    # done here as one aggregate query instead of a python loop over 200k+ rows.
+    stored_pending_matured = (
+        db.query(func.count(PredictionLedger.prediction_id))
+        .filter(btc_eth, PredictionLedger.resolution_deadline <= now,
+                or_(PredictionLedger.lifecycle_status.is_(None), PredictionLedger.lifecycle_status == outcome.PENDING))
+        .scalar() or 0
+    )
+    stored_pending_not_matured = (
+        db.query(func.count(PredictionLedger.prediction_id))
+        .filter(btc_eth, PredictionLedger.resolution_deadline > now,
+                or_(PredictionLedger.lifecycle_status.is_(None), PredictionLedger.lifecycle_status == outcome.PENDING))
+        .scalar() or 0
+    )
+    display_counts = {k: v for k, v in counts.items() if k not in (None, outcome.PENDING)}
+    display_counts[outcome.PENDING] = stored_pending_not_matured
+    display_counts[outcome.RESOLVING] = display_counts.get(outcome.RESOLVING, 0) + stored_pending_matured
+
+    oldest_pending = (
+        db.query(PredictionLedger.resolution_deadline)
+        .filter(btc_eth, PredictionLedger.resolution_deadline <= now,
+                or_(PredictionLedger.lifecycle_status.is_(None), PredictionLedger.lifecycle_status.in_(
+                    (outcome.PENDING, outcome.RESOLVING, outcome.RESOLUTION_ERROR_RETRYING))))
+        .order_by(PredictionLedger.resolution_deadline).first()
+    )
+    oldest_pending_age_seconds = (now - oldest_pending[0].replace(tzinfo=timezone.utc)).total_seconds() if oldest_pending and oldest_pending[0] else None
+
+    latest_resolved = db.query(func.max(PredictionResolution.resolved_at)).join(
+        PredictionLedger, PredictionResolution.prediction_id == PredictionLedger.prediction_id
+    ).filter(btc_eth).scalar()
+
+    queues = resolver_scheduler.queue_status()
+    return {
+        "counts": display_counts,
+        "oldest_matured_pending_age_seconds": oldest_pending_age_seconds,
+        "latest_resolved_prediction_at": latest_resolved.isoformat() if latest_resolved else None,
+        "queues": queues,
+        "generated_at": now.isoformat(),
     }
 
 

@@ -107,6 +107,25 @@ class DecisionEngineChange(Base):
     reason = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
+class CalibrationVersion(Base):
+    """Versioned, rollback-able calibration-weight proposals (see
+    app.decision_engine.calibration). A row here is a PROPOSAL computed from
+    trustworthy (RESOLVED_*) outcomes only - applying one to live strategy
+    weights is a separate, explicit, never-automatic action. active=True
+    marks the currently-applied version; at most one row is ever active."""
+    __tablename__ = "calibration_versions"
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    created_by = Column(String, nullable=False)
+    sample_size = Column(Integer, nullable=False)
+    weights_snapshot = Column(JSON, nullable=False)
+    metrics_snapshot = Column(JSON, nullable=False)
+    previous_version_id = Column(Integer, nullable=True)
+    active = Column(Boolean, default=False, nullable=False)
+    applied_at = Column(DateTime, nullable=True)
+    rolled_back_at = Column(DateTime, nullable=True)
+    notes = Column(Text, nullable=True)
+
 class ActiveDriveDecision(Base):
     __tablename__ = "active_drive_decisions"
     __table_args__ = (Index("ix_active_drive_scope_time", "user_id", "symbol", "timeframe", "created_at"),)

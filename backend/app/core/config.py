@@ -190,6 +190,14 @@ class Settings(BaseSettings):
     resolver_recent_interval_seconds: float = 20.0
     resolver_backfill_interval_seconds: float = 15.0
 
+    # Decision-engine calibration (app/decision_engine/calibration.py):
+    # propose_calibration_update always only PROPOSES a bounded, sample-
+    # gated weight adjustment as an inactive CalibrationVersion row. This
+    # flag is read by callers that would otherwise auto-apply a proposal -
+    # it must stay False until offline + shadow validation passes; nothing
+    # in this repair flips it on.
+    calibration_auto_apply_enabled: bool = False
+
     @field_validator("binance_allowed_symbols", mode="before")
     @classmethod
     def _split_allowed_symbols(cls, v):
