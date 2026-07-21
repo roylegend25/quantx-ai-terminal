@@ -1893,7 +1893,7 @@ function drawHistoryTooltip(
       ? Math.abs((pt.actual_price - pt.predicted_price) / pt.actual_price) * 100
       : null;
   const bucket = outcomeBucket(pt.outcome);
-  const bucketLabel = bucket === "correct" ? "Correct" : bucket === "wrong" ? "Wrong" : "Unresolved";
+  const bucketLabel = bucket === "correct" ? "Correct" : bucket === "wrong" ? "Wrong" : pt.outcome === "NO_TRADE" ? "No Trade" : "Pending";
   const bucketColor = bucket === "correct" ? T.green : bucket === "wrong" ? T.red : pt.outcome === "NO_TRADE" ? T.textDim : T.yellow;
 
   const rows: Array<[string, string, string]> = [

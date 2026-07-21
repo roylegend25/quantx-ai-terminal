@@ -23,7 +23,12 @@ type TfRow = {
   key: string;
   total_predictions: number;
   resolved: number;
+  void: number;
   unresolved: number;
+  pending: number;
+  resolving: number;
+  retrying: number;
+  unknown: number;
   correct: number;
   wrong: number;
   neutral: number;
@@ -43,11 +48,19 @@ type TfRow = {
 
 type Props = { summary: any; onRefresh?: () => void };
 
+// lifecycle_status-authoritative display colors - Pending/Resolving/Retrying
+// are shown as separate stacked segments, never merged into one generic
+// "Unresolved" bucket; Void is its own terminal, excluded-from-accuracy
+// segment, never counted as still-open.
 const OUTCOME_COLORS: Record<string, string> = {
   correct: "#22c55e",
   wrong: "#ef4444",
   neutral: "#eab308",
-  unresolved: "#64748b",
+  pending: "#64748b",
+  resolving: "#3b82f6",
+  retrying: "#f97316",
+  void: "#1e293b",
+  unknown: "#dc2626",
 };
 
 const REASON_LABELS: Record<string, string> = {
@@ -149,7 +162,11 @@ export default function TimeframeCalibrationChart({ summary, onRefresh }: Props)
             <Bar dataKey="correct" name="Correct" stackId="o" fill={OUTCOME_COLORS.correct} />
             <Bar dataKey="wrong" name="Wrong" stackId="o" fill={OUTCOME_COLORS.wrong} />
             <Bar dataKey="neutral" name="Neutral" stackId="o" fill={OUTCOME_COLORS.neutral} />
-            <Bar dataKey="unresolved" name="Unresolved" stackId="o" fill={OUTCOME_COLORS.unresolved} />
+            <Bar dataKey="pending" name="Pending" stackId="o" fill={OUTCOME_COLORS.pending} />
+            <Bar dataKey="resolving" name="Resolving" stackId="o" fill={OUTCOME_COLORS.resolving} />
+            <Bar dataKey="retrying" name="Retrying" stackId="o" fill={OUTCOME_COLORS.retrying} />
+            <Bar dataKey="void" name="Void" stackId="o" fill={OUTCOME_COLORS.void} />
+            {rows.some((r) => r.unknown > 0) && <Bar dataKey="unknown" name="Unknown status" stackId="o" fill={OUTCOME_COLORS.unknown} />}
           </BarChart>
         </ResponsiveContainer>
       </div>
@@ -157,7 +174,7 @@ export default function TimeframeCalibrationChart({ summary, onRefresh }: Props)
       {row && (
         <div className="engine-metric-grid tf-cal-details">
           <span><b>{row.key === "1M" ? "1M · calendar month" : row.key}</b><br />
-            {row.total_predictions} predictions · {row.resolved} resolved · {row.unresolved} unresolved</span>
+            {row.total_predictions} predictions · {row.resolved} resolved · {row.pending} pending · {row.resolving} resolving · {row.retrying} retrying · {row.void} void</span>
           <span><b>Directional accuracy</b><br />
             {row.accuracy == null ? "Insufficient sample" : `${(row.accuracy * 100).toFixed(1)}%`}
             {row.neutral_rate != null && ` · neutral rate ${(row.neutral_rate * 100).toFixed(1)}%`}</span>
@@ -166,7 +183,7 @@ export default function TimeframeCalibrationChart({ summary, onRefresh }: Props)
             <progress value={progress} max={100} aria-label="Calibration progress" /> {row.relevant_calibration_samples ?? 0}/{row.required_calibration_samples ?? 20}
             {" · "}{(row.readiness_status ?? "unknown").replaceAll("_", " ")}</span>
           <span><b>Next resolution</b><br />{row.next_resolution_at ? fmtLocalDateTime(row.next_resolution_at) : "None pending"}</span>
-          <span><b>Unresolved reasons</b><br />
+          <span><b>Open prediction reasons (Pending/Resolving/Retrying)</b><br />
             {row.unresolved_reasons && Object.keys(row.unresolved_reasons).length
               ? Object.entries(row.unresolved_reasons).map(([k, v]) => `${REASON_LABELS[k] ?? k}: ${v}`).join(" · ")
               : "None"}</span>

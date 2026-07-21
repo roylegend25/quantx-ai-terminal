@@ -6,6 +6,7 @@ Python. At 150k+ rows and growing, that distinction is the difference
 between a sub-100ms dashboard call and a multi-second one holding a DB
 connection while it walks every row.
 """
+import logging
 from datetime import datetime, timezone
 
 from sqlalchemy import case, func, or_
@@ -16,8 +17,27 @@ from app.db.models import PredictionLedger, PredictionResolution
 from app.decision_engine import outcome
 from app.decision_engine import scheduler as resolver_scheduler
 from app.decision_engine.resolver import UNRESOLVED_STATUSES
+from app.monitoring.logging import get_logger, log_event
+
+logger = get_logger("quantx.resolver_status")
 
 MIN_SAMPLE_FOR_ACCURACY = 20
+
+# outcome_status's authoritative mapping from lifecycle_status to the
+# dashboard's display bucket. Both VOID_* reasons fold into one "void"
+# bucket for display (the dashboard treats them identically: terminal,
+# excluded from accuracy) - the distinct reason is still available via
+# lifecycle_status itself for anything that needs it.
+_LIFECYCLE_DISPLAY_STATUS = {
+    outcome.PENDING: "pending",
+    outcome.RESOLVING: "resolving",
+    outcome.RESOLUTION_ERROR_RETRYING: "retrying",
+    outcome.RESOLVED_CORRECT: "correct",
+    outcome.RESOLVED_WRONG: "wrong",
+    outcome.RESOLVED_NEUTRAL: "neutral",
+    outcome.VOID_DATA_GAP: "void",
+    outcome.VOID_INVALID_PREDICTION: "void",
+}
 
 
 def unresolved_reason_summary(db: Session, symbol: str | None = None) -> dict:
@@ -273,24 +293,27 @@ def _accuracy_row(db: Session, group_col, filters: list, combined_key: str | Non
 
 
 def outcome_status(ledger: PredictionLedger, resolution: PredictionResolution | None, now: datetime | None = None) -> str:
-    """Single source of truth for the dashboard's dot color - green/red/yellow
-    only ever apply to a resolved row; unresolved is always gray or orange,
-    never green or red."""
+    """Single source of truth for the dashboard's per-row status bucket -
+    lifecycle_status is authoritative. Never inferred from the nullable
+    legacy PredictionResolution.correct field or from resolver_attempts:
+    those produced "neutral"/"unresolved_due"/"overdue_provider_error"
+    buckets that silently merged VOID_DATA_GAP and VOID_INVALID_PREDICTION
+    into the same generic bucket as genuinely-still-retrying rows, and
+    could never distinguish PENDING from RESOLVING at all.
+
+    Returns one of: pending, resolving, retrying, correct, wrong, neutral,
+    void, unknown. "unknown" is returned (with an error logged, never
+    silently coerced to a stale label) only if lifecycle_status somehow
+    holds a value outside the documented set - it must never happen in
+    practice."""
     now = now or datetime.now(timezone.utc)
-    if resolution is not None:
-        if resolution.correct is True:
-            return "correct"
-        if resolution.correct is False:
-            return "wrong"
-        return "neutral"
-    deadline = ledger.resolution_deadline
-    if deadline is not None and deadline.tzinfo is None:
-        deadline = deadline.replace(tzinfo=timezone.utc)  # naive SQLite round-trip is always UTC in this codebase
-    if deadline and deadline > now:
-        return "unresolved_not_due"
-    if (ledger.resolver_attempts or 0) > 0:
-        return "overdue_provider_error"
-    return "unresolved_due"
+    effective = outcome.effective_lifecycle_status(ledger.lifecycle_status, ledger.resolution_deadline, now)
+    mapped = _LIFECYCLE_DISPLAY_STATUS.get(effective)
+    if mapped is not None:
+        return mapped
+    log_event(logger, message="unknown_lifecycle_status", level=logging.ERROR, category="prediction",
+              prediction_id=ledger.prediction_id, lifecycle_status=effective)
+    return "unknown"
 
 
 def latest_results(

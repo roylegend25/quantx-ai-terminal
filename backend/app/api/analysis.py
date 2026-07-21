@@ -90,6 +90,7 @@ def _unresolved_reason(ledger,now,candle_latest_ms,resolver_running):
 def _group(rows,key_fn,now=None,candle_latest_ms=None,resolver_running=True,with_reasons=False):
     groups=defaultdict(list)
     for ledger,resolution in rows:groups[str(key_fn(ledger) or LEGACY_KEY)].append((ledger,resolution))
+    _group_now=now or datetime.now(timezone.utc)
     out=[]
     for key,items in sorted(groups.items()):
         resolved=[(l,r) for l,r in items if _is_resolved(l,r)]
@@ -97,8 +98,24 @@ def _group(rows,key_fn,now=None,candle_latest_ms=None,resolver_running=True,with
         correct=sum(l.lifecycle_status==outcome_mod.RESOLVED_CORRECT for l,_ in resolved)
         wrong=sum(l.lifecycle_status==outcome_mod.RESOLVED_WRONG for l,_ in resolved)
         neutral=sum(l.lifecycle_status==outcome_mod.RESOLVED_NEUTRAL for l,_ in resolved)
+        # Fine-grained non-terminal breakdown (Pending/Resolving/Retrying),
+        # not just one combined "unresolved" bucket - lifecycle_status is
+        # authoritative; effective_lifecycle_status correctly reclassifies a
+        # matured-but-never-attempted row as RESOLVING for display, exactly
+        # matching the Prediction Lifecycle card's own logic.
+        pending_n=resolving_n=retrying_n=unknown_n=0
+        for l,r in items:
+            if not _is_unresolved(l,r):
+                continue
+            effective=outcome_mod.effective_lifecycle_status(l.lifecycle_status,l.resolution_deadline,_group_now)
+            if effective==outcome_mod.PENDING: pending_n+=1
+            elif effective==outcome_mod.RESOLVING: resolving_n+=1
+            elif effective==outcome_mod.RESOLUTION_ERROR_RETRYING: retrying_n+=1
+            else: unknown_n+=1
         directional=correct+wrong; returns=[r.actual_return for _,r in resolved if r is not None and r.actual_return is not None]
-        row={"key":key,"total_predictions":len(items),"resolved":len(resolved),"void":void_n,"unresolved":len(items)-len(resolved)-void_n,"correct":correct,"wrong":wrong,"neutral":neutral,"accuracy":round(correct/directional,4) if directional>=20 else None,"neutral_rate":round(neutral/len(resolved),4) if resolved else None,"average_realized_return":round(sum(returns)/len(returns),8) if returns else None,"expected_edge_sample_count":directional,"first_prediction":_iso(min((l.generated_at for l,_ in items),default=None)),"latest_prediction":_iso(max((l.generated_at for l,_ in items),default=None))}
+        row={"key":key,"total_predictions":len(items),"resolved":len(resolved),"void":void_n,"unresolved":len(items)-len(resolved)-void_n,
+             "pending":pending_n,"resolving":resolving_n,"retrying":retrying_n,"unknown":unknown_n,
+             "correct":correct,"wrong":wrong,"neutral":neutral,"accuracy":round(correct/directional,4) if directional>=20 else None,"neutral_rate":round(neutral/len(resolved),4) if resolved else None,"average_realized_return":round(sum(returns)/len(returns),8) if returns else None,"expected_edge_sample_count":directional,"first_prediction":_iso(min((l.generated_at for l,_ in items),default=None)),"latest_prediction":_iso(max((l.generated_at for l,_ in items),default=None))}
         if with_reasons and now is not None:
             unresolved=[l for l,r in items if _is_unresolved(l,r)]
             reasons=Counter(_unresolved_reason(l,now,candle_latest_ms or {},resolver_running) for l in unresolved)
@@ -136,7 +153,7 @@ def prediction_resolution_summary(symbol:str|None=None,timeframe:str|None=None,e
         resolver_running=bool(resolver_scheduler.status().get("running"))
         canonical=[(l,r) for l,r in rows if l.timeframe in TIMEFRAMES]; legacy=[(l,r) for l,r in rows if l.timeframe not in TIMEFRAMES]
         by_tf=_group(canonical,lambda l:l.timeframe,now=now,candle_latest_ms=candle_latest_ms,resolver_running=resolver_running,with_reasons=True)
-        present={x["key"] for x in by_tf}; by_tf.extend({"key":tf,"total_predictions":0,"resolved":0,"void":0,"unresolved":0,"correct":0,"wrong":0,"neutral":0,"accuracy":None,"neutral_rate":None,"average_realized_return":None,"expected_edge_sample_count":0,"first_prediction":None,"latest_prediction":None,"unresolved_reasons":{},"first_resolved_at":None,"latest_resolved_at":None,"oldest_unresolved_at":None,"next_resolution_at":None,"average_resolution_delay_seconds":None,"expected_horizon_seconds":HORIZON_SECONDS.get(tf),"relevant_calibration_samples":0,"required_calibration_samples":20,"readiness_status":"no_predictions"} for tf in TIMEFRAMES if tf not in present)
+        present={x["key"] for x in by_tf}; by_tf.extend({"key":tf,"total_predictions":0,"resolved":0,"void":0,"unresolved":0,"pending":0,"resolving":0,"retrying":0,"unknown":0,"correct":0,"wrong":0,"neutral":0,"accuracy":None,"neutral_rate":None,"average_realized_return":None,"expected_edge_sample_count":0,"first_prediction":None,"latest_prediction":None,"unresolved_reasons":{},"first_resolved_at":None,"latest_resolved_at":None,"oldest_unresolved_at":None,"next_resolution_at":None,"average_resolution_delay_seconds":None,"expected_horizon_seconds":HORIZON_SECONDS.get(tf),"relevant_calibration_samples":0,"required_calibration_samples":20,"readiness_status":"no_predictions"} for tf in TIMEFRAMES if tf not in present)
         unresolved_reasons=Counter(_unresolved_reason(l,now,candle_latest_ms,resolver_running) for l,r in rows if _is_unresolved(l,r))
         oldest_unresolved=min((l.generated_at for l,r in rows if _is_unresolved(l,r)),default=None)
         return {"total_predictions":len(rows),"resolved":len(resolved),"void":void_n,"unresolved":len(rows)-len(resolved)-void_n,"expired_unresolved":expired,"correct":correct,"wrong":wrong,"neutral":neutral,
