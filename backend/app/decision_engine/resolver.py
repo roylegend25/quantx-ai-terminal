@@ -427,49 +427,131 @@ async def resolve_due(db: Session, limit: int = 200, scan_limit: int | None = No
     return stats
 
 
-def _claim_rows_by_age(db: Session, now: datetime, batch_size: int, *, newer_than: datetime | None, older_than: datetime | None) -> tuple[str, list[PredictionLedger]]:
-    """Like _claim_due_rows, but scoped to one age band instead of the
-    75/25 mixed split - the recent-priority queue only ever contends with
-    itself for rows, never with the historical-backfill queue's much larger
-    batch, so a huge backlog can never delay a freshly-matured prediction."""
+def _claim_rows_fair(db: Session, now: datetime, batch_size: int, *, newer_than: datetime | None,
+                      older_than: datetime | None, oldest_fraction: float = 1.0,
+                      retrying_priority_fraction: float = 0.5) -> tuple[str, list[PredictionLedger]]:
+    """Starvation-free claim, scoped to one age band (recent-window or
+    historical), replacing the pure newest-deadline-first claim that let a
+    continuous stream of freshly-matured predictions permanently starve older
+    PENDING/RETRYING rows once due volume exceeded one batch (2026-07-21
+    fairness fix).
+
+    Three-way reserved allocation, not two - an isolated-copy validation
+    against the real production starvation snapshot showed that a simple
+    oldest-vs-newest split still lets a large never-yet-attempted PENDING
+    backlog starve RESOLUTION_ERROR_RETRYING rows within the "oldest" bucket,
+    since PENDING rows are frequently chronologically even older than rows
+    that already failed one attempt. So the oldest_fraction slice of the
+    batch is itself split again:
+
+      - retrying_priority_fraction of it goes to the oldest-eligible
+        RESOLUTION_ERROR_RETRYING rows (respecting resolver_next_attempt_at),
+      - the remainder goes to the oldest-eligible never-yet-attempted rows
+        (PENDING, or legacy rows with no lifecycle_status yet).
+
+    The rest of the batch (1 - oldest_fraction) goes to the newest-due rows
+    of either status (fast handling of just-matured predictions). Unused
+    capacity at any tier transfers to the others in the same cycle, so a
+    quiet pool never wastes batch capacity. oldest_fraction=1.0
+    (historical-backfill's default) still guarantees the PENDING/RETRYING
+    split for its own scope, but skips the newest-due allocation entirely
+    since that queue never prioritizes "newest" at all.
+
+    Every row is claimed exactly once via an atomic conditional token update
+    (SQLite) / SELECT FOR UPDATE SKIP LOCKED (PostgreSQL) - concurrent workers
+    can never claim the same row. Every tier uses a stable
+    (resolution_deadline, prediction_id) sort so ordering is deterministic
+    across repeated calls with an identical row set."""
     token = str(uuid4())
     stale_before = now - timedelta(seconds=settings.resolver_claim_timeout_seconds)
-    base = (
-        db.query(PredictionLedger)
-        .outerjoin(PredictionResolution, PredictionResolution.prediction_id == PredictionLedger.prediction_id)
-        .filter(
-            PredictionResolution.id.is_(None),
-            PredictionLedger.resolution_deadline <= now,
-            PredictionLedger.reference_price.isnot(None),
-            or_(PredictionLedger.resolver_next_attempt_at.is_(None), PredictionLedger.resolver_next_attempt_at <= now),
-            or_(PredictionLedger.resolver_claim_token.is_(None), PredictionLedger.resolver_claimed_at < stale_before),
-            or_(PredictionLedger.unresolved_status.is_(None), PredictionLedger.unresolved_status != "permanent_data_gap"),
+    is_postgres = db.bind.dialect.name == "postgresql"
+    RETRYING = outcome.RESOLUTION_ERROR_RETRYING
+
+    def _base(exclude_ids: list[str] | None = None):
+        q = (
+            db.query(PredictionLedger)
+            .outerjoin(PredictionResolution, PredictionResolution.prediction_id == PredictionLedger.prediction_id)
+            .filter(
+                PredictionResolution.id.is_(None),
+                PredictionLedger.resolution_deadline <= now,
+                PredictionLedger.reference_price.isnot(None),
+                or_(PredictionLedger.resolver_next_attempt_at.is_(None), PredictionLedger.resolver_next_attempt_at <= now),
+                or_(PredictionLedger.resolver_claim_token.is_(None), PredictionLedger.resolver_claimed_at < stale_before),
+                or_(PredictionLedger.unresolved_status.is_(None), PredictionLedger.unresolved_status != "permanent_data_gap"),
+            )
         )
-    )
-    if newer_than is not None:
-        base = base.filter(PredictionLedger.generated_at >= newer_than)
-    if older_than is not None:
-        base = base.filter(PredictionLedger.generated_at < older_than)
-    # Recent queue: newest-due first (serve the freshest signal fastest).
-    # Historical queue: oldest-due first (drain the tail of the backlog
-    # instead of perpetually re-picking whatever matured most recently
-    # within the backlog itself).
-    order = PredictionLedger.resolution_deadline.desc() if newer_than is not None else PredictionLedger.resolution_deadline.asc()
-    if db.bind.dialect.name == "postgresql":
-        rows = base.order_by(order).with_for_update(skip_locked=True).limit(batch_size).all()
-        for row in rows:
-            row.resolver_claim_token = token
-            row.resolver_claimed_at = now
-        db.commit()
+        if newer_than is not None:
+            q = q.filter(PredictionLedger.generated_at >= newer_than)
+        if older_than is not None:
+            q = q.filter(PredictionLedger.generated_at < older_than)
+        if exclude_ids:
+            q = q.filter(~PredictionLedger.prediction_id.in_(exclude_ids))
+        return q
+
+    def _select_ids(q, order_desc: bool, limit: int) -> list[str]:
+        if limit <= 0:
+            return []
+        order = (PredictionLedger.resolution_deadline.desc() if order_desc else PredictionLedger.resolution_deadline.asc(),
+                 PredictionLedger.prediction_id.asc())
+        if is_postgres:
+            rows = q.order_by(*order).with_for_update(skip_locked=True).limit(limit).all()
+            return [r.prediction_id for r in rows]
+        return [r[0] for r in q.with_entities(PredictionLedger.prediction_id).order_by(*order).limit(limit).all()]
+
+    oldest_fraction = max(0.0, min(1.0, oldest_fraction))
+    retrying_priority_fraction = max(0.0, min(1.0, retrying_priority_fraction))
+    oldest_count = round(batch_size * oldest_fraction)
+    newest_count = batch_size - oldest_count
+    retrying_count = round(oldest_count * retrying_priority_fraction)
+    pending_count = oldest_count - retrying_count
+
+    # Oldest-overdue RETRYING allocation - claimed first so a large PENDING
+    # backlog can never crowd it out, regardless of relative pool size.
+    retrying_ids = _select_ids(_base().filter(PredictionLedger.lifecycle_status == RETRYING),
+                                order_desc=False, limit=retrying_count)
+
+    # Oldest-overdue PENDING/never-attempted allocation, topped up with any
+    # unused RETRYING capacity (few retries currently eligible).
+    remaining_pending = pending_count + (retrying_count - len(retrying_ids))
+    pending_ids = _select_ids(
+        _base(exclude_ids=retrying_ids).filter(or_(PredictionLedger.lifecycle_status.is_(None),
+                                                    PredictionLedger.lifecycle_status != RETRYING)),
+        order_desc=False, limit=remaining_pending)
+
+    # If PENDING also came up short, give the leftover back to RETRYING -
+    # there may simply be more retry-eligible rows than pending ones right now.
+    pending_shortfall = remaining_pending - len(pending_ids)
+    if pending_shortfall > 0:
+        extra_retrying_ids = _select_ids(
+            _base(exclude_ids=retrying_ids + pending_ids).filter(PredictionLedger.lifecycle_status == RETRYING),
+            order_desc=False, limit=pending_shortfall)
+        retrying_ids = retrying_ids + extra_retrying_ids
+
+    oldest_ids = retrying_ids + pending_ids
+
+    # Newest-due allocation from whatever's left, topped up with any oldest
+    # capacity that went unused across both oldest tiers.
+    remaining_newest = newest_count + (oldest_count - len(oldest_ids))
+    newest_ids = _select_ids(_base(exclude_ids=oldest_ids), order_desc=True, limit=remaining_newest)
+
+    ids = oldest_ids + newest_ids
+    if is_postgres:
+        # _select_ids already issued SELECT ... FOR UPDATE SKIP LOCKED above,
+        # locking these rows for this transaction - safe to stamp the token now.
+        if ids:
+            db.query(PredictionLedger).filter(PredictionLedger.prediction_id.in_(ids)).update(
+                {PredictionLedger.resolver_claim_token: token, PredictionLedger.resolver_claimed_at: now},
+                synchronize_session=False)
+            db.commit()
     else:
-        ids = [r[0] for r in base.with_entities(PredictionLedger.prediction_id).order_by(order).limit(batch_size).all()]
         if ids:
             db.query(PredictionLedger).filter(
                 PredictionLedger.prediction_id.in_(ids),
                 or_(PredictionLedger.resolver_claim_token.is_(None), PredictionLedger.resolver_claimed_at < stale_before),
             ).update({PredictionLedger.resolver_claim_token: token, PredictionLedger.resolver_claimed_at: now}, synchronize_session=False)
             db.commit()
-        rows = db.query(PredictionLedger).filter(PredictionLedger.resolver_claim_token == token).order_by(order).all()
+    rows = db.query(PredictionLedger).filter(PredictionLedger.resolver_claim_token == token).order_by(
+        PredictionLedger.resolution_deadline.asc(), PredictionLedger.prediction_id.asc()).all()
     return token, rows
 
 
@@ -478,8 +560,10 @@ async def resolve_recent_due(db: Session, limit: int = 200, recent_window_hours:
     recent_window_hours. Resolves newly-matured predictions promptly no
     matter how large the historical backlog is."""
     now = datetime.now(timezone.utc)
-    claim_token, rows = _claim_rows_by_age(db, now, min(limit, settings.resolver_recent_batch_size),
-                                           newer_than=now - timedelta(hours=recent_window_hours), older_than=None)
+    claim_token, rows = _claim_rows_fair(db, now, min(limit, settings.resolver_recent_batch_size),
+                                        newer_than=now - timedelta(hours=recent_window_hours), older_than=None,
+                                        oldest_fraction=settings.resolver_recent_oldest_allocation_fraction,
+                                        retrying_priority_fraction=settings.resolver_recent_retrying_priority_fraction)
     stats = await _process_claimed_rows(db, rows, now, use_fallback)
     _release_stale_claims(db, claim_token)
     log_event(logger, message="resolver_recent_cycle_completed", category="prediction", **{k: v for k, v in stats.items() if k != "by_reason"})
@@ -491,8 +575,12 @@ async def resolve_historical_backfill(db: Session, limit: int = 1000, recent_win
     recent_window_hours, processed in large controlled batches. Runs on its
     own schedule/loop, entirely independent of the recent queue's claims."""
     now = datetime.now(timezone.utc)
-    claim_token, rows = _claim_rows_by_age(db, now, min(limit, settings.resolver_backfill_batch_size),
-                                           newer_than=None, older_than=now - timedelta(hours=recent_window_hours))
+    # oldest_fraction=1.0: historical backfill has no "newest" component at
+    # all - it always drains the true tail of its own scope first, which was
+    # never subject to the starvation defect (see _claim_rows_fair docstring).
+    claim_token, rows = _claim_rows_fair(db, now, min(limit, settings.resolver_backfill_batch_size),
+                                        newer_than=None, older_than=now - timedelta(hours=recent_window_hours),
+                                        oldest_fraction=1.0)
     stats = await _process_claimed_rows(db, rows, now, use_fallback)
     _release_stale_claims(db, claim_token)
     log_event(logger, message="resolver_backfill_cycle_completed", category="prediction", **{k: v for k, v in stats.items() if k != "by_reason"})

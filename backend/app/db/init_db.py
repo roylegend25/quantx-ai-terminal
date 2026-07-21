@@ -435,6 +435,18 @@ def _migrate_resolution_formula_columns():
                 conn.execute(text(f"ALTER TABLE prediction_resolutions ADD COLUMN {name} {coltype}"))
 
 
+def _migrate_resolver_fair_claim_index():
+    """Composite index for _claim_rows_fair's generated_at range scan
+    (recent-window vs historical-backfill split) combined with the
+    resolution_deadline ordering both allocations sort on (2026-07-21
+    recent-queue fairness fix). create_all only creates this on fresh
+    databases; existing production DBs need it added here."""
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_prediction_ledger_generated_deadline ON prediction_ledger "
+            "(generated_at, resolution_deadline)"))
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_trade_columns()
@@ -451,6 +463,7 @@ def init_db():
     _migrate_performance_indexes()
     _migrate_lifecycle_status_column()
     _migrate_resolution_formula_columns()
+    _migrate_resolver_fair_claim_index()
     inspector = inspect(engine)
     if "trading_control" in inspector.get_table_names():
         existing = {col["name"] for col in inspector.get_columns("trading_control")}

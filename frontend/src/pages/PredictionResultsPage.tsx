@@ -203,11 +203,11 @@ export default function PredictionResultsPage() {
         <div className="engine-metric-grid" style={{ gridTemplateColumns: "repeat(4, minmax(0,1fr))" }}>
           <div>
             <div className="engine-metric-value">{lifecycle?.counts?.PENDING ?? "—"}</div>
-            <span>Pending horizon</span>
+            <span>Pending</span>
           </div>
           <div>
             <div className="engine-metric-value">{lifecycle?.counts?.RESOLVING ?? "—"}</div>
-            <span>Ready for resolution</span>
+            <span>Resolving</span>
           </div>
           <div>
             <div className="engine-metric-value">{lifecycle?.counts?.RESOLUTION_ERROR_RETRYING ?? "—"}</div>
@@ -229,7 +229,7 @@ export default function PredictionResultsPage() {
             <div className="engine-metric-value">
               {((lifecycle?.counts?.VOID_DATA_GAP ?? 0) + (lifecycle?.counts?.VOID_INVALID_PREDICTION ?? 0)) || "—"}
             </div>
-            <span>Void / data gap (terminal, excluded from accuracy)</span>
+            <span>Void (terminal, excluded from accuracy)</span>
           </div>
           <div>
             <div className="engine-metric-value">

@@ -189,6 +189,25 @@ class Settings(BaseSettings):
     resolver_backfill_batch_size: int = 300
     resolver_recent_interval_seconds: float = 20.0
     resolver_backfill_interval_seconds: float = 15.0
+    # Starvation-free claim allocation (2026-07-21 recent-queue fairness fix):
+    # pure newest-deadline-first claiming let a continuous stream of freshly-
+    # matured predictions permanently starve older PENDING/RETRYING rows once
+    # due volume exceeded one batch. This fraction of resolver_recent_batch_size
+    # is reserved for the OLDEST eligible rows every cycle (guaranteeing
+    # forward progress regardless of new arrivals); the remainder goes to the
+    # newest rows (fast handling of just-matured predictions). Unused capacity
+    # in either allocation transfers to the other within the same cycle - see
+    # app.decision_engine.resolver._claim_rows_fair.
+    resolver_recent_oldest_allocation_fraction: float = 0.5
+    # Isolated-validation finding (2026-07-21, same fairness-fix pass): pure
+    # resolution_deadline ordering inside the "oldest" allocation let a large
+    # never-yet-attempted PENDING backlog itself starve RESOLUTION_ERROR_RETRYING
+    # rows, since PENDING rows are frequently chronologically even older - the
+    # 0.5/0.5 split above alone was not sufficient. This fraction further
+    # reserves that share OF the oldest allocation specifically for RETRYING
+    # rows (the remainder goes to PENDING), so neither can starve the other
+    # regardless of either pool's relative size.
+    resolver_recent_retrying_priority_fraction: float = 0.5
 
     # Decision-engine calibration (app/decision_engine/calibration.py):
     # propose_calibration_update always only PROPOSES a bounded, sample-
