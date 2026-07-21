@@ -123,37 +123,63 @@ def lifecycle_health(db: Session) -> dict:
     unresolved_status-based views. Distinguishes PENDING (horizon not yet
     closed - never a resolver problem) from every other state, and reports
     both queues' worker health independently so the two-queue split is
-    directly observable rather than inferred."""
+    directly observable rather than inferred.
+
+    Every query here explicitly checks for an existing PredictionResolution
+    row before treating a NULL/PENDING-stored lifecycle_status as still
+    outstanding: a resolved row's lifecycle_status can be NULL only because
+    it was resolved before this column existed (see the one-time backfill,
+    app.decision_engine.resolver_backfill) - it must never be miscounted as
+    still pending just because the column itself is unbackfilled."""
     now = datetime.now(timezone.utc)
     btc_eth = PredictionLedger.symbol.in_(("BTCUSDT", "ETHUSDT"))
+    has_resolution = PredictionLedger.prediction_id.in_(db.query(PredictionResolution.prediction_id))
 
     counts = dict(
         db.query(PredictionLedger.lifecycle_status, func.count(PredictionLedger.prediction_id))
         .filter(btc_eth).group_by(PredictionLedger.lifecycle_status).all()
     )
+    # A resolved row with a NULL/PENDING stored lifecycle_status (pre-backfill
+    # legacy) is reclassified from its actual resolution outcome here, for
+    # display only - this never writes to the DB.
+    legacy_resolved_breakdown = dict(
+        db.query(
+            case((PredictionResolution.correct.is_(True), outcome.RESOLVED_CORRECT),
+                 (PredictionResolution.correct.is_(False), outcome.RESOLVED_WRONG),
+                 else_=outcome.RESOLVED_NEUTRAL),
+            func.count(PredictionLedger.prediction_id),
+        )
+        .join(PredictionResolution, PredictionResolution.prediction_id == PredictionLedger.prediction_id)
+        .filter(btc_eth, or_(PredictionLedger.lifecycle_status.is_(None), PredictionLedger.lifecycle_status == outcome.PENDING))
+        .group_by(PredictionResolution.correct)
+        .all()
+    )
     # Rows still stored as PENDING (or NULL, pre-migration legacy rows) whose
-    # deadline has actually passed are live-derived as RESOLVING for
-    # display, exactly as outcome.effective_lifecycle_status does per-row -
-    # done here as one aggregate query instead of a python loop over 200k+ rows.
+    # deadline has actually passed AND that have no resolution yet are
+    # live-derived as RESOLVING for display, exactly as
+    # outcome.effective_lifecycle_status does per-row - done here as one
+    # aggregate query instead of a python loop over 200k+ rows.
     stored_pending_matured = (
         db.query(func.count(PredictionLedger.prediction_id))
-        .filter(btc_eth, PredictionLedger.resolution_deadline <= now,
+        .filter(btc_eth, PredictionLedger.resolution_deadline <= now, ~has_resolution,
                 or_(PredictionLedger.lifecycle_status.is_(None), PredictionLedger.lifecycle_status == outcome.PENDING))
         .scalar() or 0
     )
     stored_pending_not_matured = (
         db.query(func.count(PredictionLedger.prediction_id))
-        .filter(btc_eth, PredictionLedger.resolution_deadline > now,
+        .filter(btc_eth, PredictionLedger.resolution_deadline > now, ~has_resolution,
                 or_(PredictionLedger.lifecycle_status.is_(None), PredictionLedger.lifecycle_status == outcome.PENDING))
         .scalar() or 0
     )
     display_counts = {k: v for k, v in counts.items() if k not in (None, outcome.PENDING)}
     display_counts[outcome.PENDING] = stored_pending_not_matured
     display_counts[outcome.RESOLVING] = display_counts.get(outcome.RESOLVING, 0) + stored_pending_matured
+    for status, count in legacy_resolved_breakdown.items():
+        display_counts[status] = display_counts.get(status, 0) + count
 
     oldest_pending = (
         db.query(PredictionLedger.resolution_deadline)
-        .filter(btc_eth, PredictionLedger.resolution_deadline <= now,
+        .filter(btc_eth, PredictionLedger.resolution_deadline <= now, ~has_resolution,
                 or_(PredictionLedger.lifecycle_status.is_(None), PredictionLedger.lifecycle_status.in_(
                     (outcome.PENDING, outcome.RESOLVING, outcome.RESOLUTION_ERROR_RETRYING))))
         .order_by(PredictionLedger.resolution_deadline).first()

@@ -484,6 +484,7 @@ export const api = {
   resolverHealth: () => getJson("/api/predictions/resolver/health"),
   unresolvedSummary: (symbol?: string) => getJson(`/api/predictions/unresolved-summary${symbol ? `?symbol=${symbol}` : ""}`),
   catchupProgress: () => getJson("/api/predictions/catchup-progress"),
+  lifecycleHealth: () => getJson("/api/predictions/lifecycle-health"),
   predictionResultsLatest: (params: {
     limit?: number; symbol?: string; timeframe?: string; model?: string;
     resolved?: boolean; outcome?: string; source_exchange?: string;

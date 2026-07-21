@@ -57,6 +57,16 @@ type ResolverHealth = {
   last_error: string | null;
 };
 
+type LifecycleHealth = {
+  counts: Record<string, number>;
+  oldest_matured_pending_age_seconds: number | null;
+  latest_resolved_prediction_at: string | null;
+  queues: {
+    recent: { running: boolean; last_run: string | null; last_resolved: number; last_error: string | null };
+    historical: { running: boolean; last_run: string | null; last_resolved: number; last_error: string | null };
+  };
+};
+
 const OUTCOME_META: Record<string, { dot: string; label: string; cls: string }> = {
   correct: { dot: "\u{1F7E2}", label: "Correct", cls: "green" },
   wrong: { dot: "\u{1F534}", label: "Wrong", cls: "red" },
@@ -82,6 +92,7 @@ export default function PredictionResultsPage() {
   const [results, setResults] = useState<ResultRow[]>([]);
   const [accuracy, setAccuracy] = useState<AccuracySummary | null>(null);
   const [health, setHealth] = useState<ResolverHealth | null>(null);
+  const [lifecycle, setLifecycle] = useState<LifecycleHealth | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -94,7 +105,7 @@ export default function PredictionResultsPage() {
 
   const load = useCallback(async () => {
     try {
-      const [resultsRes, accuracyRes, healthRes] = await Promise.all([
+      const [resultsRes, accuracyRes, healthRes, lifecycleRes] = await Promise.all([
         api.predictionResultsLatest({
           limit: 10,
           symbol: symbolFilter === "All" ? undefined : symbolFilter,
@@ -106,10 +117,12 @@ export default function PredictionResultsPage() {
         }),
         api.predictionAccuracySummary(),
         api.resolverHealth(),
+        api.lifecycleHealth(),
       ]);
       setResults((resultsRes as { results: ResultRow[] }).results);
       setAccuracy(accuracyRes as AccuracySummary);
       setHealth(healthRes as ResolverHealth);
+      setLifecycle(lifecycleRes as LifecycleHealth);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load prediction results");
@@ -182,6 +195,67 @@ export default function PredictionResultsPage() {
               {health?.last_error ? "Error" : "OK"}
             </div>
             <span>Data-source health</span>
+          </div>
+        </div>
+      </Card>
+
+      <Card title="Prediction Lifecycle" full>
+        <div className="engine-metric-grid" style={{ gridTemplateColumns: "repeat(4, minmax(0,1fr))" }}>
+          <div>
+            <div className="engine-metric-value">{lifecycle?.counts?.PENDING ?? "—"}</div>
+            <span>Pending horizon</span>
+          </div>
+          <div>
+            <div className="engine-metric-value">{lifecycle?.counts?.RESOLVING ?? "—"}</div>
+            <span>Ready for resolution</span>
+          </div>
+          <div>
+            <div className="engine-metric-value">{lifecycle?.counts?.RESOLUTION_ERROR_RETRYING ?? "—"}</div>
+            <span>Retrying</span>
+          </div>
+          <div>
+            <div className="engine-metric-value green">{lifecycle?.counts?.RESOLVED_CORRECT ?? "—"}</div>
+            <span>Correct</span>
+          </div>
+          <div>
+            <div className="engine-metric-value red">{lifecycle?.counts?.RESOLVED_WRONG ?? "—"}</div>
+            <span>Wrong</span>
+          </div>
+          <div>
+            <div className="engine-metric-value yellow">{lifecycle?.counts?.RESOLVED_NEUTRAL ?? "—"}</div>
+            <span>Neutral</span>
+          </div>
+          <div>
+            <div className="engine-metric-value">
+              {((lifecycle?.counts?.VOID_DATA_GAP ?? 0) + (lifecycle?.counts?.VOID_INVALID_PREDICTION ?? 0)) || "—"}
+            </div>
+            <span>Void / data gap (terminal, excluded from accuracy)</span>
+          </div>
+          <div>
+            <div className="engine-metric-value">
+              {lifecycle?.oldest_matured_pending_age_seconds != null
+                ? `${Math.round(lifecycle.oldest_matured_pending_age_seconds / 60)}m`
+                : "—"}
+            </div>
+            <span>Oldest matured pending age</span>
+          </div>
+          <div>
+            <div className={`engine-metric-value ${lifecycle?.queues.recent.running ? "green" : "orange"}`}>
+              {lifecycle ? (lifecycle.queues.recent.running ? "Running" : "Stopped") : "—"}
+            </div>
+            <span>Recent-priority queue</span>
+          </div>
+          <div>
+            <div className={`engine-metric-value ${lifecycle?.queues.historical.running ? "green" : "orange"}`}>
+              {lifecycle ? (lifecycle.queues.historical.running ? "Running" : "Stopped") : "—"}
+            </div>
+            <span>Historical-backfill queue</span>
+          </div>
+          <div>
+            <div className="engine-metric-value">
+              {lifecycle?.latest_resolved_prediction_at ? fmtLocalDateTime(lifecycle.latest_resolved_prediction_at) : "—"}
+            </div>
+            <span>Latest resolved prediction</span>
           </div>
         </div>
       </Card>
