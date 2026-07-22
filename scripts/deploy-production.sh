@@ -13,7 +13,7 @@ GIT_SHA="$(git -C "$PROJECT_DIR" rev-parse --short=12 HEAD)"
 # this script no longer matches how docker-compose.yml picks up the running
 # image (via the BACKEND_IMAGE env var read from .env), so this deploy
 # updates .env directly instead of re-tagging a floating pointer.
-IMMUTABLE_IMAGE="quantx-backend:decision-execution-pipeline-link-$GIT_SHA-$TIMESTAMP"
+IMMUTABLE_IMAGE="quantx-backend:v2-only-perf-cleanup-$GIT_SHA-$TIMESTAMP"
 CURRENT_IMAGE="$(grep -E '^BACKEND_IMAGE=' "$PROJECT_DIR/.env" | cut -d= -f2-)"
 TEST_IMAGE="$CURRENT_IMAGE"
 if [ -z "$TEST_IMAGE" ] || ! docker image inspect "$TEST_IMAGE" >/dev/null 2>&1; then
@@ -74,6 +74,15 @@ docker run --rm -v "$PROJECT_DIR/backend:/app" -w /app -e SECRET_KEY=deployment-
   tests/test_binance_real_dry_run.py tests/test_paper_smoke_scenarios.py \
   tests/test_horizon_authority.py tests/test_execution_fencing.py tests/test_execution_transparency_api.py \
   tests/test_execution_router_binance.py tests/test_trading_horizon.py -q
+
+# --- V2-only / performance-cleanup test files (explicit, in addition to
+# the full suite above) - Active Drive V1 disabled in production, N+1
+# performance-lookup batching, authority TTL/scheduler-cadence gap fix,
+# concurrent dashboard fan-out ---
+docker run --rm -v "$PROJECT_DIR/backend:/app" -w /app -e SECRET_KEY=deployment-test-only "$TEST_IMAGE" \
+  python -m pytest tests/test_legacy_engine_gated.py tests/test_v2_performance_batching.py \
+  tests/test_authority_ttl_scheduler_gap.py tests/test_dashboard_concurrent_fanout.py \
+  tests/test_active_drive_v2.py tests/test_forecast_points.py tests/test_prediction_multi_symbol.py -q
 
 (cd "$PROJECT_DIR/frontend" && npm run test -- --run && npx tsc --noEmit && npm run build)
 
@@ -186,6 +195,8 @@ asyncio.run(main())
 docker exec quantx-backend python -c '
 from app.core.config import settings
 assert settings.binance_live_enabled is False, "BINANCE_LIVE_ENABLED must remain false after deploy"
+assert settings.active_drive_v1_available is False, "Active Drive V1 (legacy, archived at archive/quantx-classic) must stay disabled in production"
+assert settings.default_decision_engine == "active_drive_v2", "Active Drive V2 must remain the default/only production decision engine"
 '
 
 # --- The unified current-pipeline API is reachable and internally
