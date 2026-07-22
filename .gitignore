@@ -2,6 +2,7 @@
 .env.backup.*
 .env.tmp.*
 .env.*.local
+.env.bak-*
 __pycache__/
 *.pyc
 backend/.venv/
@@ -9,6 +10,30 @@ backend/data/env-backups/
 backend/data/models/
 backend/data/ml_lab/
 backend/data/pg-backups/
+
+# Databases - never committed. backend/data/paper.db is the live production
+# database; back it up externally (see backups/) before any operation that
+# could discard it, never via git.
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Runtime-only state files, recreated by the app itself
+backend/data/deployment-maintenance
+backend/data/.schema-migration.lock
+backend/data/live_goal_state.json
+backend/data/*.stale-orphaned-*
+
+# Logs
+*.log
+
+# Frontend build output and dependencies
+frontend/dist/
+frontend/dist.*/
+frontend/node_modules/
 
 # Local rollback snapshots may contain secrets
 backups/
