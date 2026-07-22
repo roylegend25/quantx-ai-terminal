@@ -60,12 +60,30 @@ def _history_eta(db, user_id, limiting: dict | None, relevant_samples: int) -> d
     return out
 
 
+# _history_counts() is purely informational diagnostics (never a gating
+# input - history_pass/relevant_samples come from limiting_source, not
+# these counts). global_resolved in particular counts EVERY resolved
+# active_drive_v2 row for the user with no symbol/timeframe/regime filter
+# at all - as prediction_ledger grows (measured live: 1.1s+ once the table
+# passed ~230k rows), this became the largest single cost inside
+# evaluate() after the N+1 performance-lookup batching fix. Cached with a
+# short TTL since it's diagnostic display data, not a real-time gate.
+_HISTORY_COUNTS_CACHE_TTL_SECONDS = 30
+_history_counts_cache: dict[tuple, tuple[float, dict]] = {}
+
 def _history_counts(db,user_id,symbol,timeframe,regime):
+    import time as _time
+    key = (user_id, symbol, timeframe, regime)
+    cached = _history_counts_cache.get(key)
+    if cached and _time.time() - cached[0] < _HISTORY_COUNTS_CACHE_TTL_SECONDS:
+        return cached[1]
     def count(*filters):
         return db.query(PredictionResolution).join(PredictionLedger,PredictionResolution.prediction_id==PredictionLedger.prediction_id).filter(PredictionLedger.user_id==user_id,PredictionLedger.engine=="active_drive_v2",*filters).count()
-    return {"global_resolved":count(),"symbol_resolved":count(PredictionLedger.symbol==symbol),
+    result = {"global_resolved":count(),"symbol_resolved":count(PredictionLedger.symbol==symbol),
         "symbol_timeframe_resolved":count(PredictionLedger.symbol==symbol,PredictionLedger.timeframe==timeframe),
         "symbol_timeframe_regime_resolved":count(PredictionLedger.symbol==symbol,PredictionLedger.timeframe==timeframe,PredictionLedger.market_regime==regime)}
+    _history_counts_cache[key] = (_time.time(), result)
+    return result
 
 # ---------------------------------------------------------------------------
 # Current-edge calculation (Phase C/D/E).

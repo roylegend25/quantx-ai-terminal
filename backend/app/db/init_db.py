@@ -201,6 +201,26 @@ def _migrate_indicator_execution_mode_columns(bind=engine):
     return changed
 
 
+def _migrate_prediction_ledger_perf_batch_index(bind=engine):
+    """repository.performance_batch()'s query deliberately omits source_name
+    from its WHERE clause (it fetches every candidate's evidence rows in
+    one shot instead of one query per candidate - see Stage 1/2 performance
+    work), so the pre-existing ix_prediction_ledger_perf_bucket index
+    (source_name as its 3rd column) is unusable past (user_id, engine) for
+    it. Without this index, performance_batch() regresses to a real table
+    scan as prediction_ledger grows - measured live against a database with
+    enough history for evaluate() to take longer than the old per-candidate
+    approach it replaced."""
+    inspector = inspect(bind)
+    if "prediction_ledger" not in inspector.get_table_names():
+        return
+    with bind.begin() as connection:
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_prediction_ledger_perf_batch "
+            "ON prediction_ledger (user_id, engine, symbol, timeframe, market_regime)"
+        ))
+
+
 def _migrate_execution_provenance_columns(bind=engine):
     """decision_id/authority_id/execution_mode/edge_at_entry/cycle_id on
     trades, binance_bot_trades, binance_execution_attempts (Decision/
@@ -265,6 +285,7 @@ def initialize_schema(bind=engine):
         _migrate_prediction_ledger_symbol_generated_index,
         _migrate_indicator_execution_mode_columns,
         _migrate_execution_provenance_columns,
+        _migrate_prediction_ledger_perf_batch_index,
     )
     for migrate in legacy_stages:
         migrate(bind)
@@ -522,6 +543,7 @@ def init_db():
     _migrate_resolver_fair_claim_index()
     _migrate_indicator_execution_mode_columns()
     _migrate_execution_provenance_columns()
+    _migrate_prediction_ledger_perf_batch_index()
     upgrade_risk_settings_scope()
     inspector = inspect(engine)
     if "trading_control" in inspector.get_table_names():

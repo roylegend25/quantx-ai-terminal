@@ -306,6 +306,18 @@ class PredictionLedger(Base):
                        # for every candidate on every evaluation - without it each
                        # call table-scans the ledger.
                        Index("ix_prediction_ledger_perf_bucket", "user_id", "engine", "source_name", "source_version", "symbol", "timeframe", "market_regime"),
+                       # repository.performance_batch()'s query deliberately does NOT
+                       # filter on source_name (it fetches every candidate's rows in
+                       # one shot, then groups by source_name in Python) - without
+                       # source_name as a leading column, ix_prediction_ledger_perf_bucket
+                       # above is unusable past (user_id, engine) for this query shape,
+                       # which becomes a real regression as the ledger grows (measured
+                       # live: performance_batch() slower than the old per-candidate
+                       # performance() once the table had enough history). This index
+                       # is shaped for exactly that query: filter on
+                       # (user_id, engine, symbol, timeframe, market_regime), sort by
+                       # the joined PredictionResolution.resolved_at.
+                       Index("ix_prediction_ledger_perf_batch", "user_id", "engine", "symbol", "timeframe", "market_regime"),
                        Index("ix_prediction_ledger_deadline", "resolution_deadline"),
                        # Two-queue claim pattern (app.decision_engine.resolver): the
                        # recent-priority and historical-backfill queues both filter
