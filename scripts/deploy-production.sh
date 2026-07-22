@@ -72,7 +72,10 @@ docker image inspect "$IMMUTABLE_IMAGE" >/dev/null
 
 docker run -d --rm --name "$VALIDATION_NAME" -p 127.0.0.1:19000:8000 -v "$VALIDATION_DATA:/app/data" -e SECRET_KEY=isolated-validation-only -e PAPER_DATABASE_URL=sqlite:////app/data/paper.db -e DEPLOYMENT_MAINTENANCE_MODE=true -e REDIS_URL=redis://quantx-redis:6379/0 --network quantx-ai-terminal_default "$IMMUTABLE_IMAGE" >/dev/null
 
-for _ in $(seq 1 30); do
+# 180s, not 30s: init_db()'s migrations/schema checks run against the full
+# production-scale database copy here (hundreds of thousands of rows), which
+# takes meaningfully longer to become ready than a small/empty test database.
+for _ in $(seq 1 180); do
   curl -fsS http://127.0.0.1:19000/api/health >/dev/null && break
   sleep 1
 done
@@ -107,7 +110,7 @@ else
 fi
 docker compose -f "$PROJECT_DIR/docker-compose.yml" --env-file "$PROJECT_DIR/.env" up -d --no-deps --no-build --force-recreate backend
 
-for _ in $(seq 1 60); do
+for _ in $(seq 1 180); do
   curl -fsS http://127.0.0.1:9000/api/health >/dev/null && break
   sleep 1
 done
