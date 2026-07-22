@@ -21,7 +21,6 @@ from app.strategy.ensemble import NO_TRADE_BAND as ENSEMBLE_NO_TRADE_BAND
 from app.strategy.ensemble import evaluate as ensemble_evaluate
 from app.intelligence import market_intelligence
 from app.ml_lab import champion_gate
-from app.timeframes.multi_timeframe import evaluate_all as evaluate_all_timeframes
 from app.timeframes.canonical import TIMEFRAME_CAPABILITIES, calendar_month_age, parse_timeframe
 from app.ml.feature_store import store as feature_store
 from app.monitoring.logging import get_logger, log_event
@@ -704,12 +703,18 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
                 if isinstance(value, (int, float)):
                     features[key] = float(value)
 
-        try:
-            consensus = (await evaluate_all_timeframes(symbol, market_context))["consensus"]
-        except Exception:
-            consensus = None
-
-        pred = make_prediction(features, market_context, consensus, data_quality=data_quality)
+        # Stage 1 performance audit: this used to unconditionally call
+        # evaluate_all_timeframes() here - 10 fresh concurrent Binance klines
+        # requests plus a full legacy ensemble/feature recompute per
+        # timeframe, purely to produce a confidence nudge (consensus is only
+        # ever read by ActiveDriveV1Adapter, never by ActiveDriveV2Engine -
+        # see v2.py, which reads legacy["strategies"]/["features"] but never
+        # legacy["confidence"]/["direction"]). Active Drive V1 is disabled in
+        # production (see archive/quantx-classic, core/config.py
+        # active_drive_v1_available default), so this consensus fan-out no
+        # longer has any consumer in the production critical path - removing
+        # it cut ~2s and 10 external calls off every cold prediction.
+        pred = make_prediction(features, market_context, None, data_quality=data_quality)
         legacy_decision = pred["decision_engine"]
         rr = None
         if pred.get("target") is not None and pred.get("stop") is not None and pred.get("price") is not None:

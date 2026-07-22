@@ -68,10 +68,6 @@ async def _fake_get_context(symbol, force_refresh=False):
     return None
 
 
-async def _fake_evaluate_all_timeframes(symbol, market_context=None):
-    return {"timeframes": {}, "consensus": None}
-
-
 def make_client():
     app = FastAPI()
     app.include_router(prediction_router)
@@ -124,7 +120,6 @@ def _assert_valid_prediction_response(body: dict, symbol: str, timeframe: str = 
 def test_prediction_route_returns_valid_structure_for_both_symbols(monkeypatch):
     monkeypatch.setattr(prediction_module.httpx, "AsyncClient", _FakeAsyncClient)
     monkeypatch.setattr(prediction_module.market_intelligence, "get_context", _fake_get_context)
-    monkeypatch.setattr(prediction_module, "evaluate_all_timeframes", _fake_evaluate_all_timeframes)
 
     client = make_client()
 
@@ -141,7 +136,6 @@ def test_prediction_route_returns_valid_structure_for_every_timeframe(monkeypatc
     both BTCUSDT and ETHUSDT."""
     monkeypatch.setattr(prediction_module.httpx, "AsyncClient", _FakeAsyncClient)
     monkeypatch.setattr(prediction_module.market_intelligence, "get_context", _fake_get_context)
-    monkeypatch.setattr(prediction_module, "evaluate_all_timeframes", _fake_evaluate_all_timeframes)
 
     client = make_client()
 
@@ -159,7 +153,6 @@ def test_prediction_route_accepts_timeframe_query_param_as_interval_alias(monkey
     recognized parameter at all and was dropped without error."""
     monkeypatch.setattr(prediction_module.httpx, "AsyncClient", _FakeAsyncClient)
     monkeypatch.setattr(prediction_module.market_intelligence, "get_context", _fake_get_context)
-    monkeypatch.setattr(prediction_module, "evaluate_all_timeframes", _fake_evaluate_all_timeframes)
     prediction_module._prediction_cache.clear()
 
     client = make_client()
@@ -175,7 +168,6 @@ def test_prediction_route_supports_3m_timeframe(monkeypatch):
     client = make_client()
     resp = client.get("/api/prediction/BTCUSDT", params={"timeframe": "3m"})
     monkeypatch.setattr(prediction_module.market_intelligence, "get_context", _fake_get_context)
-    monkeypatch.setattr(prediction_module, "evaluate_all_timeframes", _fake_evaluate_all_timeframes)
     assert resp.status_code == 200
     assert resp.json()["timeframe"] == "3m"
 

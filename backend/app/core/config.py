@@ -36,7 +36,10 @@ class Settings(BaseSettings):
 
     # Active Drive V2 rollout: V2 authoritative by default, V1 retained for manual rollback.
     active_drive_v2_enabled: bool = True
-    active_drive_v1_available: bool = True
+    # Legacy engine, disabled by default - see archive/quantx-classic for the
+    # archived reference implementation. Only enable for a documented manual
+    # rollback; it must never be the default in any environment.
+    active_drive_v1_available: bool = False
     default_decision_engine: str = "active_drive_v2"
     active_drive_v1_shadow_mode: bool = False
     active_drive_v2_shadow_only: bool = False

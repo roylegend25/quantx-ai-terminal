@@ -28,11 +28,13 @@ export default function DecisionEngineSettings({ showToast }: Props) {
       <p className="regime-desc">Exactly one server-selected engine controls future decisions. Switching never changes positions or orders.</p>
       <div className="engine-card-grid" role="radiogroup" aria-label="Decision engine">
         {state.available_engines.map((engine: any) => <button key={engine.id} role="radio" aria-checked={engine.selected}
-          className={`engine-choice ${engine.selected ? "selected" : ""}`} onClick={() => { if (!engine.selected) { setAcknowledged(false); setPending(engine.id); } }}>
+          disabled={!engine.available && !engine.selected}
+          className={`engine-choice ${engine.selected ? "selected" : ""} ${!engine.available ? "unavailable" : ""}`}
+          onClick={() => { if (!engine.selected && engine.available) { setAcknowledged(false); setPending(engine.id); } }}>
           <span className="engine-choice-head"><BrainCircuit size={19}/><b>{engine.name}</b>{engine.selected && <CheckCircle2 size={18}/>}</span>
           <span className={`chip ${engine.id === "active_drive_v2" ? "green" : "yellow"}`}>{engine.id === "active_drive_v2" ? "Recommended" : "Legacy rollback"}</span>
-          <small>v{engine.version} · {engine.health}</small>
-          <span>{engine.id === "active_drive_v2" ? "Multi-model, multi-strategy, quant scoring with conservative evidence weighting." : "Original decision engine retained for manual rollback."}</span>
+          <small>v{engine.version} · {engine.health}{!engine.available ? " · Disabled in production" : ""}</small>
+          <span>{engine.id === "active_drive_v2" ? "Multi-model, multi-strategy, quant scoring with conservative evidence weighting." : "Archived legacy engine (see archive/quantx-classic) - disabled in production and cannot be selected here."}</span>
         </button>)}
       </div>
       <label className="engine-shadow-toggle"><input type="checkbox" checked={state.compare_engines_shadow}

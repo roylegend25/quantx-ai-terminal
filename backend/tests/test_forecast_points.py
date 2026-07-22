@@ -139,13 +139,11 @@ def _make_client():
 def test_prediction_route_exposes_consistent_forecast_fields(monkeypatch, symbol, timeframe):
     from tests.test_prediction_multi_symbol import (
         _FakeAsyncClient,
-        _fake_evaluate_all_timeframes,
         _fake_get_context,
     )
 
     monkeypatch.setattr(prediction_module.httpx, "AsyncClient", _FakeAsyncClient)
     monkeypatch.setattr(prediction_module.market_intelligence, "get_context", _fake_get_context)
-    monkeypatch.setattr(prediction_module, "evaluate_all_timeframes", _fake_evaluate_all_timeframes)
     prediction_module._prediction_cache.clear()
 
     client = _make_client()
