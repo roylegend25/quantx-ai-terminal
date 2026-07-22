@@ -380,7 +380,7 @@ export default function RiskPage(props: AppData) {
         </div>
       </Card>
 
-      <RiskSettingsForm showToast={showToast} />
+      <RiskSettingsForm scope="paper" showToast={showToast} />
 
       <Card title="Live Decision Risk Summary">
         <div className="kv-grid">

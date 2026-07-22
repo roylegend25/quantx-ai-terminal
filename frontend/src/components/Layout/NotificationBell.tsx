@@ -19,16 +19,24 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { Skeleton } from "../MLLab/widgets";
 import LocalTime from "../LocalTime";
 
-/** Topbar notification bell for MLOps events. Self-contained: polls
- *  GET /api/ml/notifications every 30s, shows the unread badge, and a
- *  panel with the latest events + mark-read actions.
+/** Topbar notification bell, merging two independent feeds: MLOps events
+ *  (GET /api/ml/notifications) and indicator-eligibility/settings events
+ *  (GET /api/indicators/notifications - Bot Settings Part 8: moved to
+ *  shadow-only, recommended for reactivation, shadow performance
+ *  deteriorated, insufficient data quality, config threshold changed,
+ *  settings copied). Both feeds are merged by created_at into one list
+ *  with one summed unread badge - not a second bell - and mark-read routes
+ *  to whichever backend the item actually came from.
  *
  *  Below 768px the panel is a bottom sheet (backdrop, drag handle, safe-area
  *  padding, scroll-locked background); at 768px+ it's a bell-anchored
  *  popover. See the ".notif-*" rules in App.css. */
 
+type Source = "ml" | "indicator";
+
 type Item = {
   id: number;
+  source: Source;
   event: string;
   severity: "info" | "success" | "warning" | "error";
   title: string;
@@ -75,15 +83,31 @@ export default function NotificationBell({ routeKey }: Props) {
 
   const refresh = useCallback(async () => {
     try {
-      const res = await api.mlNotifications(15);
-      setItems(res?.notifications || []);
-      setUnread(res?.unread ?? 0);
-      setStatus("ready");
-      hasLoadedOnce.current = true;
+      const [mlRes, indicatorRes] = await Promise.allSettled([api.mlNotifications(15), api.indicatorNotifications(15)]);
+      const mlItems: Item[] =
+        mlRes.status === "fulfilled" ? (mlRes.value?.notifications || []).map((n: any) => ({ ...n, source: "ml" as const })) : [];
+      const indicatorItems: Item[] =
+        indicatorRes.status === "fulfilled"
+          ? (indicatorRes.value?.notifications || []).map((n: any) => ({ ...n, source: "indicator" as const }))
+          : [];
+      const merged = [...mlItems, ...indicatorItems].sort((a, b) => {
+        const at = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const bt = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return bt - at;
+      });
+      const mlUnread = mlRes.status === "fulfilled" ? mlRes.value?.unread ?? 0 : 0;
+      const indicatorUnread = indicatorRes.status === "fulfilled" ? indicatorRes.value?.unread ?? 0 : 0;
+      setItems(merged.slice(0, 15));
+      setUnread(mlUnread + indicatorUnread);
+      // Only report a hard error if BOTH feeds failed - one feed being
+      // down must not blank an otherwise-working panel.
+      if (mlRes.status === "rejected" && indicatorRes.status === "rejected") {
+        if (!hasLoadedOnce.current) setStatus("error");
+      } else {
+        setStatus("ready");
+        hasLoadedOnce.current = true;
+      }
     } catch {
-      // A background poll failing after a successful first load must not
-      // blank an already-populated panel - only surface the error state
-      // when nothing has ever loaded (nothing to fall back to).
       if (!hasLoadedOnce.current) setStatus("error");
     }
   }, []);
@@ -126,9 +150,10 @@ export default function NotificationBell({ routeKey }: Props) {
     return () => document.body.classList.remove("notif-scroll-lock");
   }, [open, isMobile]);
 
-  async function markRead(id: number) {
+  async function markRead(item: Item) {
     try {
-      await api.mlNotificationRead(id);
+      if (item.source === "indicator") await api.indicatorNotificationRead(item.id);
+      else await api.mlNotificationRead(item.id);
       await refresh();
     } catch {
       /* keep the row - retry on next poll */
@@ -137,7 +162,7 @@ export default function NotificationBell({ routeKey }: Props) {
 
   async function markAll() {
     try {
-      await api.mlNotificationsReadAll();
+      await Promise.allSettled([api.mlNotificationsReadAll(), api.indicatorNotificationsReadAll()]);
       await refresh();
     } catch {
       /* ignore */
@@ -271,10 +296,10 @@ export default function NotificationBell({ routeKey }: Props) {
                       const isLong = (n.message?.length ?? 0) > LONG_MESSAGE_CHARS;
                       const isExpanded = expanded.has(n.id);
                       return (
-                        <li key={n.id} className={`notif-item${n.read ? " read" : ""}`}>
+                        <li key={`${n.source}-${n.id}`} className={`notif-item${n.read ? " read" : ""}`}>
                           <button
                             className="notif-item-main"
-                            onClick={() => !n.read && markRead(n.id)}
+                            onClick={() => !n.read && markRead(n)}
                             title={n.read ? undefined : "Tap to mark read"}
                           >
                             <Icon size={16} className={`notif-item-icon sev-${n.severity}`} aria-hidden="true" />

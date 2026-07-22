@@ -7,6 +7,7 @@ from app.risk import settings_repository as risk_settings_repository
 from app.core.config import settings
 from app.db.trading_horizon_migration import migration_table_names, upgrade as upgrade_trading_horizon
 from app.db.trading_horizon_issuance_migration import upgrade as upgrade_horizon_issuance
+from app.db.risk_settings_scope_migration import upgrade as upgrade_risk_settings_scope
 
 
 class SchemaCompatibilityError(RuntimeError):
@@ -65,6 +66,17 @@ LEGACY_ADDITIVE_COLUMNS = {
     "active_drive_decisions": {
         "gross_expected_edge": "FLOAT", "net_expected_edge": "FLOAT", "edge_supported": "BOOLEAN",
         "edge_block_reason": "VARCHAR", "edge_sample_size": "INTEGER", "edge_source": "VARCHAR",
+        # Point-margin promotion + indicator-eligibility integration (see
+        # decision_engine/eligibility.py, decision_engine/v2.py). All
+        # additive/nullable - pre-existing decisions keep NULL, they predate
+        # scoped settings and per-indicator eligibility tracking.
+        "point_margin": "FLOAT", "required_point_margin": "FLOAT", "point_margin_pass": "BOOLEAN",
+        "configuration_scope": "VARCHAR", "configuration_version": "INTEGER",
+        "active_indicators": "JSON", "shadow_indicators": "JSON", "disabled_indicators": "JSON",
+        "exclusion_reasons": "JSON",
+    },
+    "signal_candidates": {
+        "execution_mode": "VARCHAR", "eligibility_status": "VARCHAR",
     },
 }
 
@@ -171,6 +183,18 @@ def _migrate_active_drive_edge_columns(bind=engine):
     return _add_missing_columns(bind, "active_drive_decisions", LEGACY_ADDITIVE_COLUMNS["active_drive_decisions"])
 
 
+def _migrate_indicator_execution_mode_columns(bind=engine):
+    """Point-margin promotion + per-indicator eligibility columns (see
+    decision_engine/eligibility.py). Additive/nullable across
+    active_drive_decisions, signal_candidates, and prediction_ledger -
+    existing rows predate scoped settings and eligibility tracking and keep
+    NULL rather than a fabricated backfill."""
+    changed = _add_missing_columns(bind, "active_drive_decisions", LEGACY_ADDITIVE_COLUMNS["active_drive_decisions"])
+    changed += _add_missing_columns(bind, "signal_candidates", LEGACY_ADDITIVE_COLUMNS["signal_candidates"])
+    changed += _add_missing_columns(bind, "prediction_ledger", {"execution_mode": "VARCHAR"})
+    return changed
+
+
 def _migrate_prediction_ledger_symbol_generated_index(bind=engine):
     """Composite index backing the Prediction Results dashboard's "latest N
     for symbol" query. Without it, SQLite applies the single-column symbol
@@ -210,11 +234,13 @@ def initialize_schema(bind=engine):
         _migrate_active_drive_ledger_columns,
         _migrate_active_drive_edge_columns,
         _migrate_prediction_ledger_symbol_generated_index,
+        _migrate_indicator_execution_mode_columns,
     )
     for migrate in legacy_stages:
         migrate(bind)
     upgrade_trading_horizon(bind)
     upgrade_horizon_issuance(bind)
+    upgrade_risk_settings_scope(bind)
     status = check_schema_compatibility(bind)
     if not status["compatible"]:
         raise SchemaCompatibilityError(
@@ -464,6 +490,8 @@ def init_db():
     _migrate_lifecycle_status_column()
     _migrate_resolution_formula_columns()
     _migrate_resolver_fair_claim_index()
+    _migrate_indicator_execution_mode_columns()
+    upgrade_risk_settings_scope()
     inspector = inspect(engine)
     if "trading_control" in inspector.get_table_names():
         existing = {col["name"] for col in inspector.get_columns("trading_control")}
@@ -493,7 +521,8 @@ def init_db():
             db.commit()
 
         performance_repository.seed_defaults(db)
-        risk_settings_repository.get_settings(db=db)
+        risk_settings_repository.get_settings(scope="paper", db=db)
+        risk_settings_repository.get_settings(scope="binance_real", db=db)
         if db.get(UserBotSetting, settings.admin_username) is None:
             db.add(UserBotSetting(user_id=settings.admin_username, decision_engine="active_drive_v2", compare_engines_shadow=False))
             db.commit()

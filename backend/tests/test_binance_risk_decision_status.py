@@ -260,7 +260,7 @@ def test_decision_status_allowed_when_fully_ready(monkeypatch):
     real_get_settings = risk_settings_repo.get_settings
     monkeypatch.setattr(
         risk_settings_repo, "get_settings",
-        lambda db=None: {**real_get_settings(db=db), "max_open_positions": 5},
+        lambda scope="paper", db=None: {**real_get_settings(scope=scope, db=db), "max_open_positions": 5},
     )
     monkeypatch.setattr(prediction_module, "prediction", fake_prediction(confidence=90.0))
     client = make_client()
@@ -283,7 +283,7 @@ def test_decision_status_blocks_symbol_that_already_has_a_position(monkeypatch):
     real_get_settings = risk_settings_repo.get_settings
     monkeypatch.setattr(
         risk_settings_repo, "get_settings",
-        lambda db=None: {**real_get_settings(db=db), "max_open_positions": 5},
+        lambda scope="paper", db=None: {**real_get_settings(scope=scope, db=db), "max_open_positions": 5},
     )
     monkeypatch.setattr(prediction_module, "prediction", fake_prediction(confidence=90.0))
     client = make_client()

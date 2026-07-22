@@ -4,6 +4,7 @@ import Card from "../components/Layout/Card";
 import PaperLiveTabs, { type PaperLiveTab } from "../components/Trading/PaperLiveTabs";
 import DecisionEngineSettings from "../components/Trading/DecisionEngineSettings";
 import RiskSettingsForm from "../components/Trading/RiskSettingsForm";
+import BinanceRealSafetyPanel from "../components/Trading/BinanceRealSafetyPanel";
 import ServerTradingControlCard from "../components/Trading/ServerTradingControlCard";
 import UserLiveConfirmationCard from "../components/Trading/UserLiveConfirmationCard";
 import ApiKeyStatusCard from "../components/Trading/ApiKeyStatusCard";
@@ -13,6 +14,73 @@ import { fmtUsd } from "../lib/format";
 import type { AppData } from "../hooks/useAppData";
 import TradingHorizonSettings from "../components/Trading/TradingHorizonSettings";
 
+type CopyDirection = "paper_to_real" | "real_to_paper";
+
+function CopySettingsControls({
+  showToast,
+  onCopied,
+}: {
+  showToast: (message: string, tone?: "success" | "error") => void;
+  onCopied: () => void;
+}) {
+  const [pending, setPending] = useState<CopyDirection | null>(null);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function doCopy() {
+    if (!pending) return;
+    setBusy(true);
+    try {
+      const [fromScope, toScope] = pending === "paper_to_real" ? ["paper", "binance_real"] : ["binance_real", "paper"];
+      await api.riskSettingsCopy(fromScope, toScope, reason || undefined, true);
+      showToast(`Settings copied from ${fromScope} to ${toScope}. This never enables live execution.`, "success");
+      setPending(null);
+      setReason("");
+      onCopied();
+    } catch (e: any) {
+      showToast(e?.message || "Failed to copy settings", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="controls" style={{ marginBottom: 12 }}>
+      <button onClick={() => setPending("paper_to_real")}>Copy Paper Settings to Binance Real</button>
+      <button onClick={() => setPending("real_to_paper")}>Copy Binance Real Settings to Paper</button>
+
+      {pending && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <h3>Confirm copy</h3>
+            <p className="regime-desc">
+              {pending === "paper_to_real"
+                ? "This overwrites Binance Real's confidence, point margin, evidence, and risk limits with Paper's current values."
+                : "This overwrites Paper's confidence, point margin, evidence, and risk limits with Binance Real's current values."}{" "}
+              This never enables live execution.
+            </p>
+            <input
+              className="risk-number-input"
+              style={{ width: "100%" }}
+              placeholder="Reason (optional)"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
+            <div className="controls" style={{ marginTop: 16 }}>
+              <button onClick={doCopy} disabled={busy}>
+                {busy ? "Copying…" : "Confirm Copy"}
+              </button>
+              <button onClick={() => setPending(null)} disabled={busy}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function BotSettingsPage(props: AppData) {
   const { botStatus, dashboard, load, showToast } = props;
   const status = (botStatus?.status || dashboard?.bot?.status || "loading").toUpperCase();
@@ -21,6 +89,9 @@ export default function BotSettingsPage(props: AppData) {
 
   const [tab, setTab] = useState<PaperLiveTab | "engine" | "horizon">("paper");
   const { status: liveStatus, reload: reloadLiveStatus } = useTradingStatus();
+  // Bumped after a settings copy so both RiskSettingsForm instances remount
+  // and refetch, instead of a disruptive full-page reload.
+  const [settingsRefreshKey, setSettingsRefreshKey] = useState(0);
 
   const refreshBinanceStatus = async () => {
     await Promise.all([reloadLiveStatus(), api.liveReadiness().catch(() => null)]);
@@ -95,6 +166,9 @@ export default function BotSettingsPage(props: AppData) {
               </button>
             </div>
           </Card>
+
+          <CopySettingsControls showToast={showToast} onCopied={() => setSettingsRefreshKey((k) => k + 1)} />
+          <RiskSettingsForm key={`paper-${settingsRefreshKey}`} scope="paper" showToast={showToast} title="Paper Trading Settings" />
         </>
       ) : (
         <>
@@ -144,13 +218,21 @@ export default function BotSettingsPage(props: AppData) {
              click). Same shared card/ceremony as the Binance Real page. */}
           <UserLiveConfirmationCard status={liveStatus} onChanged={refreshBinanceStatus} showToast={showToast} />
 
-          {/* A. User live bot settings - shared with Paper: the real risk
-             gate reads the identical settings row the paper gate reads, so
-             there is only one form to edit, not two. */}
+          {/* A0b. Read-only safety section (Part 1): live execution status,
+             server live lock, maintenance, Binance auth, real positions/orders. */}
+          <BinanceRealSafetyPanel />
+
+          <CopySettingsControls showToast={showToast} onCopied={() => setSettingsRefreshKey((k) => k + 1)} />
+
+          {/* A. Binance Real's own settings - separate scope/row from Paper,
+             with its own audit trail. Changing these never auto-enables
+             live execution; that remains gated by the server live lock,
+             live unlock ceremony, and kill switch below. */}
           <RiskSettingsForm
+            key={`binance-${settingsRefreshKey}`}
+            scope="binance_real"
             showToast={showToast}
-            title="User Live Bot Settings"
-            note="Applies to both Paper and Binance Live execution - the real-order risk gate reads this exact settings row. Binance real orders are additionally gated by the server live lock, live unlock, symbol allowlist and kill switch below."
+            title="Binance Real Bot Settings"
           />
 
           {/* B. Server protected settings - admin-only, self-hides for

@@ -44,14 +44,19 @@ def persist(db, user_id: str, result: dict, reference_price: float | None, featu
         edge_supported=result.get("current_edge_supported", result.get("edge_supported")), edge_block_reason=result.get("edge_block_reason"),
         edge_sample_size=result.get("edge_sample_size"), edge_source=result.get("edge_source"),
         eligible_for_execution=result.get("eligible_for_execution", False), blocking_reasons=result.get("blocking_reasons", []),
-        decision_payload=decision_payload, shadow=shadow, created_at=now))
+        decision_payload=decision_payload, shadow=shadow, created_at=now,
+        point_margin=result.get("point_margin"), required_point_margin=result.get("required_point_margin"),
+        point_margin_pass=result.get("point_margin_pass"), configuration_scope=result.get("configuration_scope"),
+        configuration_version=result.get("configuration_version"), active_indicators=result.get("active_indicators"),
+        shadow_indicators=result.get("shadow_indicators"), disabled_indicators=result.get("disabled_indicators"),
+        exclusion_reasons=result.get("exclusion_reasons")))
     for candidate in result.get("candidates", []):
         candidate_id = uuid.uuid4().hex
         record_fields = {key: candidate.get(key) for key in (
             "source_type", "source_family", "source_name", "source_version", "symbol", "timeframe", "direction",
             "probability_up", "probability_down", "confidence", "candidate_points", "expected_edge", "risk_reward_ratio",
             "market_regime", "evidence_tier", "resolved_sample_size", "historical_accuracy", "eligible",
-            "rejection_reason", "evidence", "data_freshness",
+            "rejection_reason", "evidence", "data_freshness", "execution_mode", "eligibility_status",
         )}
         record_fields["evidence"] = {**(candidate.get("evidence") or {}), "diagnostics": {k: candidate.get(k) for k in ("raw_confidence","calibrated_confidence","base_points","reliability_weight","sample_size_weight","symbol_weight","timeframe_weight","regime_weight","recent_performance_weight","calibration_weight","correlation_penalty","eligible_now","regime_compatible","required_data_available","rejection_code")}}
         db.add(SignalCandidateRecord(id=candidate_id, decision_id=decision_id, user_id=user_id, **record_fields))
@@ -63,6 +68,6 @@ def persist(db, user_id: str, result: dict, reference_price: float | None, featu
             points=candidate.get("candidate_points", 0), expected_edge=candidate.get("expected_edge"), reference_price=reference_price,
             target_reference_price=result.get("recommended_target"), stop_reference_price=result.get("recommended_stop"), data_revision="active-drive-v2.1",
             target_horizon_seconds=horizon, resolution_deadline=deadline, feature_snapshot_hash=fingerprint, generated_at=now,
-            lifecycle_status="PENDING"))
+            lifecycle_status="PENDING", execution_mode=candidate.get("execution_mode")))
     db.commit()
     return decision_id

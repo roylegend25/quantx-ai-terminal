@@ -114,7 +114,7 @@ def _risk_approval_snapshot(db: Session, *, user_id: str, symbol: str, decision_
                             profile: str, timeframe: str, payload: dict,
                             generated_at: datetime, expires_at: datetime,
                             direction: str, confidence_pct: float) -> dict:
-    risk = settings_repository.get_user_settings(user_id, db)
+    risk = settings_repository.get_user_settings(user_id, scope="paper", db=db)  # Horizon authority issuance has no mode signal today; conservative default preserves pre-split behavior
     configured = float(risk["max_position_size_usd"])
     risk_pct = float(risk["max_risk_per_trade_pct"])
     if configured <= 0 or risk_pct <= 0:

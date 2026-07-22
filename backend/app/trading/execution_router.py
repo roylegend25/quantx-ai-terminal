@@ -285,6 +285,7 @@ class BinanceExecutionProvider:
             client=self.client, confidence=confidence, data_reliable=data_reliable,
             spread_pct=spread_pct, open_positions=open_positions, sl=sl, tp=tp,
             existing_position_on_symbol=existing_position_on_symbol,
+            point_margin=kwargs.get("point_margin") or decision_engine.get("point_margin"),
         )
         if not gate.allowed:
             failing = next((c for c in gate.checks if not c.get("passed")), None)

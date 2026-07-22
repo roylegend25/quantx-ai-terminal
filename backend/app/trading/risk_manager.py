@@ -33,7 +33,7 @@ def calculate_levels(entry: float, atr: float, side: str):
     )
 
 def basic_trade_allowed(confidence: float, open_positions: int):
-    risk = settings_repository.get_settings()
+    risk = settings_repository.get_settings(scope="paper")
     required = risk["min_confidence_to_trade"] * 100
 
     if confidence < required:
@@ -178,7 +178,7 @@ def evaluate_risk(
     confidence, the specific limit that tripped) for the frontend to explain
     *why* the bot is waiting rather than just that it is.
     """
-    risk = settings_repository.get_settings()
+    risk = settings_repository.get_settings(scope="paper")
     portfolio = portfolio or {}
     trade_history = trade_history or []
 

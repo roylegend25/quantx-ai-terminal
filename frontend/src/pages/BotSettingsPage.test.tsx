@@ -42,6 +42,8 @@ vi.mock("../services/api", () => ({
     killSwitch: vi.fn(),
     riskSettingsGet: vi.fn().mockResolvedValue({
       min_confidence_to_trade: 0.6,
+      min_point_margin: 4,
+      min_total_evidence: 8,
       max_open_positions: 3,
       max_daily_loss_pct: 5,
       max_weekly_loss_pct: 10,
@@ -53,10 +55,31 @@ vi.mock("../services/api", () => ({
       allow_long: true,
       allow_short: true,
       paper_trading_enabled: true,
+      scope: "paper",
+      version: 1,
       updated_at: null,
     }),
     riskSettingsUpdate: vi.fn(),
     riskSettingsReset: vi.fn(),
+    riskSettingsCopy: vi.fn(),
+    riskSettingsAudit: vi.fn().mockResolvedValue({ scope: "paper", history: [] }),
+    riskSettingsBinanceSafety: vi.fn().mockResolvedValue({
+      live_execution_status: "PAPER",
+      server_live_lock_enabled: false,
+      kill_switch_active: false,
+      maintenance: { enabled: false, marker_present: false, reason: null },
+      binance_authenticated: false,
+      binance_unavailable_reason: null,
+      current_real_positions: [],
+      current_real_open_orders: [],
+    }),
+    riskSettingsPreviewImpact: vi.fn().mockResolvedValue({
+      sample_size: 0,
+      sample_too_small: true,
+      decisions_qualifying_now: 0,
+      decisions_qualifying_under_proposed: 0,
+      signal_frequency_change: 0,
+    }),
     decisionEngine: vi.fn(),
     switchDecisionEngine: vi.fn(),
     setEngineComparison: vi.fn(),
@@ -187,5 +210,39 @@ describe("BotSettingsPage - Decision Engine tab", () => {
     await userEvent.click(screen.getByRole("checkbox", {name:/I acknowledge/}));
     await userEvent.click(screen.getByRole("button", {name:"Confirm engine switch"}));
     expect(api.switchDecisionEngine).toHaveBeenCalledWith("active_drive_v1");
+  });
+});
+
+describe("BotSettingsPage - Paper/Binance Real settings separation", () => {
+  it("fetches paper-scoped settings on the Paper tab and binance_real-scoped settings on the Binance tab", async () => {
+    render(<BotSettingsPage {...(appDataProps as any)} />);
+    await screen.findByText(/Paper Trading Settings/);
+    expect(api.riskSettingsGet).toHaveBeenCalledWith("paper");
+
+    await openBinanceTab();
+    await screen.findByText(/Binance Real Bot Settings/);
+    expect(api.riskSettingsGet).toHaveBeenCalledWith("binance_real");
+  });
+
+  it("renders the read-only Binance Real safety panel only on the Binance tab", async () => {
+    render(<BotSettingsPage {...(appDataProps as any)} />);
+    expect(screen.queryByText("Binance Real Safety Status (read-only)")).not.toBeInTheDocument();
+    await openBinanceTab();
+    await screen.findByText("Binance Real Safety Status (read-only)");
+  });
+
+  it("copy buttons open a confirmation modal and never call any live-execution API before confirming", async () => {
+    render(<BotSettingsPage {...(appDataProps as any)} />);
+    await screen.findByText(/Paper Trading Settings/);
+    await userEvent.click(screen.getByRole("button", { name: "Copy Paper Settings to Binance Real" }));
+    expect(await screen.findByText("Confirm copy")).toBeInTheDocument();
+    expect(api.riskSettingsCopy).not.toHaveBeenCalled();
+
+    (api.riskSettingsCopy as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    await userEvent.click(screen.getByRole("button", { name: "Confirm Copy" }));
+    expect(api.riskSettingsCopy).toHaveBeenCalledWith("paper", "binance_real", undefined, true);
+    // Never touches anything in the live-trading/unlock surface.
+    expect(api.unlockBinanceLive).not.toHaveBeenCalled();
+    expect(api.adminSetBinanceLive).not.toHaveBeenCalled();
   });
 });

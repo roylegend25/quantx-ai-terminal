@@ -98,8 +98,8 @@ def _binance_unavailable(e: Exception) -> dict:
     }
 
 
-def _risk_summary(db: Session) -> dict:
-    risk = settings_repository.get_settings(db=db)
+def _risk_summary(db: Session, scope: str) -> dict:
+    risk = settings_repository.get_settings(scope=scope, db=db)
     control = modes.get_control(db)
     mode = modes.effective_mode(db)
     return {
@@ -140,7 +140,7 @@ async def paper_summary(db: Session = Depends(get_db)):
         "max_open_positions": paper["max_open_positions"],
         "total_notional_exposure": paper["total_notional_exposure"],
         "nearest_liquidation_distance_pct": paper["nearest_liquidation_distance_pct"],
-        "risk": _risk_summary(db),
+        "risk": _risk_summary(db, "paper"),
     }
 
 
@@ -213,7 +213,7 @@ async def binance_summary(db: Session = Depends(get_db)):
         "open_positions": len(positions),
         "total_notional_exposure": round(total_notional, 2),
         "nearest_liquidation_distance_pct": round(nearest_liq, 2) if nearest_liq is not None else None,
-        "risk": _risk_summary(db),
+        "risk": _risk_summary(db, "binance_real"),
         **_staleness_envelope(snapshot_service.section_meta()["account"]),
     }
 

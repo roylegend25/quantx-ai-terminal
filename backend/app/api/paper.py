@@ -281,7 +281,7 @@ async def portfolio(db: Session = Depends(get_db)):
     p.equity = p.balance + unrealized
     db.commit()
 
-    risk_settings = settings_repository.get_settings()
+    risk_settings = settings_repository.get_settings(scope="paper")
     equity = p.equity
     return {
         "balance": round(p.balance, 2),
@@ -357,7 +357,7 @@ async def open_trade(
     # otherwise pass the same pre-check and open past the configured limit.
     # This is the one place that actually writes the row, so it's the one
     # place that can enforce the limit for real.
-    risk_settings = settings_repository.get_settings()
+    risk_settings = settings_repository.get_settings(scope="paper")
     open_count = db.query(Trade).filter(Trade.status == "OPEN").count()
     if open_count >= risk_settings["max_open_positions"]:
         raise HTTPException(

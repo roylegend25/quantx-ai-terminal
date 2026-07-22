@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CartesianGrid, Line, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis, ZAxis } from "recharts";
 import Card from "../components/Layout/Card";
+import IndicatorPerformancePanel from "../components/Predictions/IndicatorPerformancePanel";
 import { api } from "../services/api";
 import { fmtLocalDateTime } from "../lib/format";
 
@@ -88,7 +89,12 @@ function OutcomeDot({ outcome }: { outcome: string }) {
   return <span title={meta.label} aria-label={meta.label}>{meta.dot}</span>;
 }
 
-export default function PredictionResultsPage() {
+type Props = {
+  showToast?: (message: string, tone?: "success" | "error") => void;
+};
+
+export default function PredictionResultsPage({ showToast }: Props) {
+  const toast = showToast ?? (() => {});
   const [results, setResults] = useState<ResultRow[]>([]);
   const [accuracy, setAccuracy] = useState<AccuracySummary | null>(null);
   const [health, setHealth] = useState<ResolverHealth | null>(null);
@@ -363,6 +369,8 @@ export default function PredictionResultsPage() {
           </div>
         )}
       </Card>
+
+      <IndicatorPerformancePanel showToast={toast} />
     </div>
   );
 }

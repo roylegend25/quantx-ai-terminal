@@ -279,7 +279,7 @@ def make_prediction(
     # this endpoint has no portfolio context - that fuller picture is what
     # app.trading.risk_manager.evaluate_risk() computes before the scheduler
     # actually routes an order.
-    risk_settings = settings_repository.get_settings()
+    risk_settings = settings_repository.get_settings(scope="paper")
     required_confidence = round(risk_settings["min_confidence_to_trade"] * 100, 1)
     direction = decision["direction"]
     direction_allowed = (

@@ -127,7 +127,7 @@ class ExecutionEngine:
         return False
 
     def status(self) -> dict:
-        risk = settings_repository.get_settings()
+        risk = settings_repository.get_settings(scope="paper")
         return {
             "engine": "operational",
             "mode": "paper",
@@ -202,7 +202,7 @@ class ExecutionEngine:
         # Re-reads the dashboard-editable limits rather than the static env
         # config, so this final gate can never fall out of sync with what
         # the risk_manager.evaluate_risk() pre-check just approved.
-        risk = settings_repository.get_settings()
+        risk = settings_repository.get_settings(scope="paper")
 
         if not risk["paper_trading_enabled"]:
             return reject("paper trading is disabled in risk settings")

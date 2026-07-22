@@ -12,8 +12,9 @@ class PositionSizingError(ValueError):
 
 def calculate_position_size(db, *, user_id: str, symbol: str, risk_approval: dict,
                             mode: str, requested_notional: float | None = None) -> dict:
+    scope = "binance_real" if mode in {"BINANCE_LIVE", "BINANCE_TESTNET"} else "paper"
     try:
-        current = settings_repository.get_user_settings(user_id, db)
+        current = settings_repository.get_user_settings(user_id, scope=scope, db=db)
         current_user_limit = float(current["max_position_size_usd"])
         current_risk_pct = float(current["max_risk_per_trade_pct"])
         persisted_limit = float(risk_approval["approved_notional_ceiling_usd"])

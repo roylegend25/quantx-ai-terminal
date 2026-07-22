@@ -189,6 +189,13 @@ class Settings(BaseSettings):
     resolver_backfill_batch_size: int = 300
     resolver_recent_interval_seconds: float = 20.0
     resolver_backfill_interval_seconds: float = 15.0
+    # Indicator poor-performance/star evaluator (see
+    # app.decision_engine.indicator_performance) - deliberately much less
+    # frequent than the resolver ticks above: this evaluates already-
+    # resolved history, not due predictions, so there's no latency pressure.
+    indicator_performance_interval_seconds: float = 300.0
+    indicator_performance_lookback_hours: int = 24
+    indicator_performance_batch_size: int = 200
     # Starvation-free claim allocation (2026-07-21 recent-queue fairness fix):
     # pure newest-deadline-first claiming let a continuous stream of freshly-
     # matured predictions permanently starve older PENDING/RETRYING rows once

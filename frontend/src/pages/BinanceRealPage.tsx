@@ -4,6 +4,7 @@ import Card from "../components/Layout/Card";
 import EditRiskModal, { type RiskPatch } from "../components/Dashboard/EditRiskModal";
 import AutoCardTable from "../components/Responsive/AutoCardTable";
 import BinancePositionsTable from "../components/Trading/BinancePositionsTable";
+import RiskSettingsForm from "../components/Trading/RiskSettingsForm";
 import ServerTradingControlCard from "../components/Trading/ServerTradingControlCard";
 import UserLiveConfirmationCard from "../components/Trading/UserLiveConfirmationCard";
 import BinanceCredentialCard from "../components/Trading/BinanceCredentialCard";
@@ -212,6 +213,9 @@ export default function BinanceRealPage(props: AppData) {
 
       {/* ---------------- execution mode ---------------- */}
       <ExecutionModeCard status={status} onChanged={onChanged} showToast={showToast} />
+
+      {/* ---------------- Binance Real's own risk/settings scope ---------------- */}
+      <RiskSettingsForm scope="binance_real" showToast={showToast} title="Binance Real Bot Settings" />
 
       {/* ---------------- server trading control (Phase 24) ---------------- */}
       <ServerTradingControlCard showToast={showToast} />

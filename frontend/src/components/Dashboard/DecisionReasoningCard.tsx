@@ -136,6 +136,70 @@ function DecisionReasoningCard({ decision, regime, executionOutcome }: Props) {
           </div>
         </div>
       )}
+
+      {typeof decision?.point_margin === "number" && (
+        <div className="dec-kv-row">
+          <div>
+            <span className="tile-label">Point Margin</span>
+            <b className={`tile-value ${decision.point_margin_pass ? "green" : "red"}`}>
+              {decision.point_margin.toFixed(2)} / required {decision.required_point_margin?.toFixed?.(2) ?? "—"}
+            </b>
+          </div>
+          <div>
+            <span className="tile-label">Configuration Scope</span>
+            <b className="tile-value dec-small">
+              {decision.configuration_scope ?? "—"} · v{decision.configuration_version ?? "—"}
+            </b>
+          </div>
+        </div>
+      )}
+
+      {(decision?.active_indicators?.length > 0 || decision?.shadow_indicators?.length > 0 || decision?.disabled_indicators?.length > 0) && (
+        <div className="dec-why-decided">
+          <span className="tile-label">Why Bot Decided This</span>
+          {decision?.active_indicators?.length > 0 && (
+            <div className="chip-row" style={{ marginTop: 6 }}>
+              <span className="regime-desc" style={{ marginRight: 6 }}>
+                Contributed:
+              </span>
+              {decision.active_indicators.map((name: string) => (
+                <span className="chip green" key={name}>
+                  {name.replaceAll("_", " ")}
+                </span>
+              ))}
+            </div>
+          )}
+          {decision?.shadow_indicators?.length > 0 && (
+            <div className="chip-row" style={{ marginTop: 6 }}>
+              <span className="regime-desc" style={{ marginRight: 6 }}>
+                Shadow (excluded from ensemble):
+              </span>
+              {decision.shadow_indicators.map((name: string) => {
+                const reason = decision?.exclusion_reasons?.[name];
+                const starred = reason === "RECOMMENDED_FOR_REACTIVATION";
+                return (
+                  <span className="chip yellow" key={name} title={reason}>
+                    {name.replaceAll("_", " ")}
+                    {starred ? " ⭐" : ""}
+                  </span>
+                );
+              })}
+            </div>
+          )}
+          {decision?.disabled_indicators?.length > 0 && (
+            <div className="chip-row" style={{ marginTop: 6 }}>
+              <span className="regime-desc" style={{ marginRight: 6 }}>
+                Manually disabled:
+              </span>
+              {decision.disabled_indicators.map((name: string) => (
+                <span className="chip" key={name}>
+                  {name.replaceAll("_", " ")}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -232,7 +232,7 @@ def test_open_position_blocked_when_symbol_already_has_a_position(monkeypatch):
     monkeypatch.setattr(settings, "binance_max_notional_per_trade", 200.0)
     # bump the total-count cap above 1 so it's the symbol-specific check
     # under test that fires, not the unrelated max_open_positions one
-    settings_repository.update_settings({"max_open_positions": 5})
+    settings_repository.update_settings({"max_open_positions": 5}, scope="binance_real")
     try:
         client = MockBinanceClient(position=btc_long_position())
         provider = make_provider(client)
@@ -248,7 +248,7 @@ def test_open_position_blocked_when_symbol_already_has_a_position(monkeypatch):
         assert not client.called("set_leverage")
         assert not client.called("place_market_order")
     finally:
-        settings_repository.reset_settings()
+        settings_repository.reset_settings(scope="binance_real")
 
 
 def test_testnet_open_blocked_by_gate_places_nothing():

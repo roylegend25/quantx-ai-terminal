@@ -66,6 +66,46 @@ vi.mock("../services/api", () => ({
     adminSetBinanceLive: vi.fn(),
     adminUpdateRiskLimits: vi.fn(),
     killSwitch: vi.fn(),
+    riskSettingsGet: vi.fn().mockResolvedValue({
+      min_confidence_to_trade: 0.6,
+      min_point_margin: 4,
+      min_total_evidence: 8,
+      max_open_positions: 3,
+      max_daily_loss_pct: 5,
+      max_weekly_loss_pct: 10,
+      max_drawdown_pct: 15,
+      max_risk_per_trade_pct: 1,
+      cooldown_minutes: 5,
+      max_consecutive_losses: 3,
+      max_position_size_usd: 1000,
+      allow_long: true,
+      allow_short: true,
+      paper_trading_enabled: true,
+      scope: "binance_real",
+      version: 1,
+      updated_at: null,
+    }),
+    riskSettingsUpdate: vi.fn(),
+    riskSettingsReset: vi.fn(),
+    riskSettingsCopy: vi.fn(),
+    riskSettingsAudit: vi.fn().mockResolvedValue({ scope: "binance_real", history: [] }),
+    riskSettingsBinanceSafety: vi.fn().mockResolvedValue({
+      live_execution_status: "PAPER",
+      server_live_lock_enabled: false,
+      kill_switch_active: false,
+      maintenance: { enabled: false, marker_present: false, reason: null },
+      binance_authenticated: false,
+      binance_unavailable_reason: null,
+      current_real_positions: [],
+      current_real_open_orders: [],
+    }),
+    riskSettingsPreviewImpact: vi.fn().mockResolvedValue({
+      sample_size: 0,
+      sample_too_small: true,
+      decisions_qualifying_now: 0,
+      decisions_qualifying_under_proposed: 0,
+      signal_frequency_change: 0,
+    }),
   },
 }));
 
@@ -135,6 +175,12 @@ describe("BinanceRealPage", () => {
     await screen.findByText("Binance Real Money Terminal");
     expect(container.textContent).not.toMatch(/BINANCE_API_(KEY|SECRET)=/);
     expect(container.textContent).not.toMatch(/api[_-]?secret/i);
+  });
+
+  it("renders Binance Real's own scoped risk settings form", async () => {
+    render(<BinanceRealPage showToast={showToast} />);
+    await screen.findByText("Binance Real Bot Settings");
+    expect(api.riskSettingsGet).toHaveBeenCalledWith("binance_real");
   });
 });
 

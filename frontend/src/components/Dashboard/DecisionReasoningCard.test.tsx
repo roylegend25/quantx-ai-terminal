@@ -62,4 +62,43 @@ describe("DecisionReasoningCard", () => {
     expect(screen.getByText(/blocked:/i)).toBeInTheDocument();
     expect(screen.queryByText("Execution Failed")).not.toBeInTheDocument();
   });
+
+  it("shows the point-margin gate and configuration scope/version", () => {
+    render(
+      <DecisionReasoningCard
+        decision={makeDecision({ point_margin: 7, required_point_margin: 4, point_margin_pass: true, configuration_scope: "paper", configuration_version: 3 })}
+      />
+    );
+    expect(screen.getByText(/7\.00 \/ required 4\.00/)).toBeInTheDocument();
+    expect(screen.getByText(/paper · v3/)).toBeInTheDocument();
+  });
+
+  it("shows contributing, shadow-excluded, and manually-disabled indicators under 'Why Bot Decided This'", () => {
+    render(
+      <DecisionReasoningCard
+        decision={makeDecision({
+          active_indicators: ["ema_20_50_continuation"],
+          shadow_indicators: ["rsi_momentum"],
+          disabled_indicators: ["macd_momentum"],
+          exclusion_reasons: { rsi_momentum: "SHADOW_ONLY_POOR_PERFORMANCE", macd_momentum: "MANUALLY_DISABLED" },
+        })}
+      />
+    );
+    expect(screen.getByText("Why Bot Decided This")).toBeInTheDocument();
+    expect(screen.getByText("ema 20 50 continuation")).toBeInTheDocument();
+    expect(screen.getByText("rsi momentum")).toBeInTheDocument();
+    expect(screen.getByText("macd momentum")).toBeInTheDocument();
+  });
+
+  it("shows a star badge next to a shadow indicator recommended for reactivation", () => {
+    render(
+      <DecisionReasoningCard
+        decision={makeDecision({
+          shadow_indicators: ["rsi_momentum"],
+          exclusion_reasons: { rsi_momentum: "RECOMMENDED_FOR_REACTIVATION" },
+        })}
+      />
+    );
+    expect(screen.getByText(/rsi momentum ⭐/)).toBeInTheDocument();
+  });
 });

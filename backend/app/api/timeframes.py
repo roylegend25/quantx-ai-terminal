@@ -193,7 +193,7 @@ async def _evaluate_horizon(symbol: str, chart_timeframe: str | None = None,
         selected_engine = setting.decision_engine
         risk_policy_revision = None
         if issue_authority:
-            risk_state = settings_repository.get_user_settings(owner_id, state_db)
+            risk_state = settings_repository.get_user_settings(owner_id, scope="paper", db=state_db)  # Horizon issuance has no mode signal here; conservative default preserves pre-split behavior
             risk_policy_revision = risk_state.get("updated_at") or "risk-settings:initial"
     finally:
         state_db.close()

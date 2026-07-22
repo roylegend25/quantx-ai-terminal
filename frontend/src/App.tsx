@@ -89,7 +89,7 @@ function App() {
       case "predictions":
         return <PredictionsPage {...data} />;
       case "prediction-results":
-        return <PredictionResultsPage />;
+        return <PredictionResultsPage showToast={data.showToast} />;
       case "positions":
         return <PositionsPage {...data} navigate={setActive} />;
       case "performance":

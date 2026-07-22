@@ -67,6 +67,7 @@ async def evaluate_real_order(
     leverage: float,
     client,
     confidence: float | None = None,
+    point_margin: float | None = None,
     data_reliable: bool | None = None,
     spread_pct: float | None = None,
     open_positions: int | None = None,
@@ -189,7 +190,7 @@ async def evaluate_real_order(
         )
     passed("max_notional")
 
-    risk = settings_repository.get_settings(db=db)
+    risk = settings_repository.get_settings(scope="binance_real", db=db)
 
     if open_positions is not None and open_positions >= risk["max_open_positions"]:
         return blocked("max_open_positions", f"Maximum open positions reached ({risk['max_open_positions']})")
@@ -211,6 +212,17 @@ async def evaluate_real_order(
             f"Confidence {confidence:.1f}% below required {required_confidence:.1f}%",
         )
     passed("confidence")
+
+    # Point margin is a separate gate from confidence (Bot Settings Part 2) -
+    # the minimum absolute difference between the final LONG and SHORT
+    # decision scores. Never merged with the confidence check above.
+    required_point_margin = risk["min_point_margin"]
+    if point_margin is not None and point_margin < required_point_margin:
+        return blocked(
+            "point_margin",
+            f"Point margin {point_margin:.2f} below required {required_point_margin:.2f}",
+        )
+    passed("point_margin")
 
     if data_reliable is False:
         return blocked("data_quality", "Market data quality below the usable threshold")

@@ -49,6 +49,46 @@ async function patchJson<T = any>(url: string, body: Record<string, unknown>): P
   return data;
 }
 
+/** Like putJson, but surfaces structured 409 CONFIRMATION_REQUIRED detail
+ *  (code/message/lowered_fields) instead of stringifying it - used by the
+ *  Bot Settings risk-lowering confirmation flow. */
+async function putJsonDetailed<T = any>(url: string, body: Record<string, unknown>): Promise<T> {
+  const res = await authFetch(`${API}${url}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = data?.detail;
+    const message = typeof detail === "string" ? detail : detail?.message || data?.message || `Request failed (${res.status})`;
+    const err = new Error(message) as Error & { status?: number; detail?: any };
+    err.status = res.status;
+    err.detail = detail;
+    throw err;
+  }
+  return data;
+}
+
+/** Like postJson with a body, surfacing structured 409 detail the same way. */
+async function postJsonDetailed<T = any>(url: string, body: Record<string, unknown>): Promise<T> {
+  const res = await authFetch(`${API}${url}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = data?.detail;
+    const message = typeof detail === "string" ? detail : detail?.message || data?.message || `Request failed (${res.status})`;
+    const err = new Error(message) as Error & { status?: number; detail?: any };
+    err.status = res.status;
+    err.detail = detail;
+    throw err;
+  }
+  return data;
+}
+
 export const api = {
   dashboard: () => getJson("/api/dashboard"),
   liveDecision: (symbol: string, timeframe: string) =>
@@ -478,9 +518,42 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
-  riskSettingsGet: () => getJson("/api/risk/settings"),
-  riskSettingsUpdate: (patch: Record<string, unknown>) => putJson("/api/risk/settings", patch),
-  riskSettingsReset: () => postJson("/api/risk/settings/reset"),
+  riskSettingsGet: (scope: string = "paper") => getJson(`/api/risk/settings?scope=${scope}`),
+  riskSettingsUpdate: (patch: Record<string, unknown>, scope: string = "paper") =>
+    putJsonDetailed(`/api/risk/settings?scope=${scope}`, patch),
+  riskSettingsReset: (scope: string = "paper") => postJson(`/api/risk/settings/reset?scope=${scope}`),
+  riskSettingsCopy: (fromScope: string, toScope: string, reason?: string, confirm = false) =>
+    postJsonDetailed("/api/risk/settings/copy", { from_scope: fromScope, to_scope: toScope, reason, confirm }),
+  riskSettingsAudit: (scope: string = "paper", limit = 200) =>
+    getJson(`/api/risk/settings/audit?scope=${scope}&limit=${limit}`),
+  riskSettingsBinanceSafety: () => getJson("/api/risk/settings/binance-safety"),
+  riskSettingsPreviewImpact: (scope: string, patch: Record<string, unknown>, windowDays = 14) =>
+    postJson("/api/risk/settings/preview-impact", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope, patch, window_days: windowDays }),
+    }),
+
+  indicatorPerformance: (params: { symbol?: string; timeframe?: string; status?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.symbol) qs.set("symbol", params.symbol);
+    if (params.timeframe) qs.set("timeframe", params.timeframe);
+    if (params.status) qs.set("status", params.status);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return getJson(`/api/indicators/performance${suffix}`);
+  },
+  indicatorHistory: (id: number) => getJson(`/api/indicators/${id}/history`),
+  indicatorAction: (id: number, action: string, reason?: string) =>
+    postJson(`/api/indicators/${id}/action`, {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, reason }),
+    }),
+  indicatorNotifications: (limit = 50, unreadOnly = false) =>
+    getJson(`/api/indicators/notifications?limit=${limit}${unreadOnly ? "&unread_only=true" : ""}`),
+  indicatorNotificationRead: (id: number) => postJson(`/api/indicators/notifications/${id}/read`),
+  indicatorNotificationsReadAll: () => postJson("/api/indicators/notifications/read-all"),
+  indicatorGovernanceSettingsGet: () => getJson("/api/indicators/governance-settings"),
+  indicatorGovernanceSettingsUpdate: (patch: Record<string, unknown>) =>
+    putJson("/api/indicators/governance-settings", patch),
   resolverHealth: () => getJson("/api/predictions/resolver/health"),
   unresolvedSummary: (symbol?: string) => getJson(`/api/predictions/unresolved-summary${symbol ? `?symbol=${symbol}` : ""}`),
   catchupProgress: () => getJson("/api/predictions/catchup-progress"),

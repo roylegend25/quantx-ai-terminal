@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.db.models import TradingControl
 from app.exchanges.binance_models import BinanceBalance
+from app.exchanges.binance_snapshot_service import snapshot_service
 from app.trading import modes, real_risk_gate
 
 
@@ -61,6 +62,15 @@ def testnet_mode():
     finally:
         db.close()
     real_risk_gate.reset_duplicate_guard()
+    # The snapshot cache keys its freshness check on id(client) (see
+    # app.exchanges.binance_snapshot_service._Section.fresh_for). Each test
+    # here builds its own short-lived FakeClient, and CPython can reuse a
+    # just-freed object's id for a brand new one - without resetting here, a
+    # later test's fresh FakeClient can occasionally collide with a stale
+    # cached snapshot from an earlier test's (already garbage-collected)
+    # client, silently reporting no open positions/orders. Reset explicitly
+    # rather than rely on TTL expiry or id() never repeating.
+    snapshot_service.reset()
     modes.set_mode(modes.MODE_TESTNET)
     yield
     settings.binance_block_new_trades_if_unprotected = original_unprotected_gate

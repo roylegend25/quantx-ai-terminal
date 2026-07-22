@@ -173,6 +173,25 @@ class ActiveDriveDecision(Base):
     decision_payload = Column(JSON, nullable=False, default=dict)
     shadow = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    # Additive (see init_db._migrate_active_drive_point_margin_columns) - NULL
+    # on rows written before this existed. point_margin/required_point_margin/
+    # point_margin_pass promote the point-margin gate from decision_payload
+    # JSON to first-class columns (mirrors TradingHorizonDecision.point_margin
+    # below). configuration_scope/configuration_version identify which
+    # RiskSettings row (paper|binance_real, and its version) produced this
+    # decision's thresholds. active/shadow/disabled_indicators and
+    # exclusion_reasons record indicator eligibility (see
+    # decision_engine/eligibility.py) - which sources actually contributed to
+    # long_points/short_points vs. were excluded and why.
+    point_margin = Column(Float, nullable=True)
+    required_point_margin = Column(Float, nullable=True)
+    point_margin_pass = Column(Boolean, nullable=True)
+    configuration_scope = Column(String, nullable=True)
+    configuration_version = Column(Integer, nullable=True)
+    active_indicators = Column(JSON, nullable=True)
+    shadow_indicators = Column(JSON, nullable=True)
+    disabled_indicators = Column(JSON, nullable=True)
+    exclusion_reasons = Column(JSON, nullable=True)
 
 
 class TradingHorizonDecision(Base):
@@ -259,6 +278,11 @@ class SignalCandidateRecord(Base):
     evidence = Column(JSON, nullable=False, default=dict)
     data_freshness = Column(String, nullable=False, default="live")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    # Additive (see init_db._migrate_indicator_execution_mode_columns). NULL
+    # on rows written before this existed. Queryable equivalent of what used
+    # to only be inferable from evidence.diagnostics.rejection_code=="SHADOW_ONLY".
+    execution_mode = Column(String, nullable=True, index=True)  # ACTIVE | SHADOW | DISABLED
+    eligibility_status = Column(String, nullable=True)  # snapshot of IndicatorEligibility.status at candidate time
 
 class PredictionCycle(Base):
     """User-initiated prediction cycle marker. Starting a new cycle never
@@ -342,6 +366,11 @@ class PredictionLedger(Base):
     # write the instant every prediction matures). Terminal states
     # (RESOLVED_*, VOID_*) are written once and never revised.
     lifecycle_status = Column(String, nullable=True, index=True, default="PENDING")
+    # Additive (see init_db._migrate_indicator_execution_mode_columns). NULL
+    # on rows written before this existed. Lets indicator-performance
+    # aggregation (app.decision_engine.indicator_performance) split ACTIVE vs
+    # SHADOW resolution history without re-deriving it from candidate joins.
+    execution_mode = Column(String, nullable=True, index=True)  # ACTIVE | SHADOW
 
 class PredictionResolution(Base):
     __tablename__ = "prediction_resolutions"
@@ -655,6 +684,154 @@ class MLNotification(Base):
     message = Column(Text, nullable=True)
     data = Column(JSON, nullable=True)
     read = Column(Boolean, default=False, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class IndicatorEligibility(Base):
+    """Current ACTIVE/SHADOW_ONLY/MANUALLY_DISABLED/etc. status for one
+    indicator on one exact (symbol, timeframe, mode). Absence of a row means
+    ACTIVE (see app.decision_engine.eligibility.lookup) - this table only
+    ever records exceptions to the default. Scoped per `mode` ("paper" |
+    "binance_real") so removing an indicator's influence from one mode never
+    touches the other. Deliberately NOT split by market regime - regime is
+    tracked for performance diagnostics only, it does not fragment the
+    on/off decision (see plan ambiguity #2, resolved: one status per
+    symbol/timeframe/mode)."""
+    __tablename__ = "indicator_eligibility"
+    __table_args__ = (
+        UniqueConstraint("source_name", "source_version", "symbol", "timeframe", "mode",
+                          name="uq_indicator_eligibility_scope"),
+        Index("ix_indicator_eligibility_lookup", "source_name", "source_version", "symbol", "timeframe", "mode"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    source_name = Column(String, nullable=False, index=True)
+    source_version = Column(String, nullable=False)
+    symbol = Column(String, nullable=False, index=True)
+    timeframe = Column(String, nullable=False, index=True)
+    mode = Column(String, nullable=False)  # "paper" | "binance_real"
+    status = Column(String, nullable=False, default="ACTIVE")
+    # ACTIVE | SHADOW_ONLY_POOR_PERFORMANCE | MANUALLY_DISABLED |
+    # RECOMMENDED_FOR_REACTIVATION | INSUFFICIENT_SAMPLE | DATA_QUALITY_BLOCKED
+    status_reason = Column(Text, nullable=True)
+    trigger_snapshot = Column(JSON, nullable=True)
+    shadow_since = Column(DateTime, nullable=True)
+    last_evaluated_at = Column(DateTime, nullable=True)
+    last_status_change_at = Column(DateTime, nullable=True)
+    evaluation_version = Column(Integer, nullable=False, default=0)  # monotonic, bumped only on a real status change; notification dedup key
+    updated_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+
+class IndicatorEligibilityHistory(Base):
+    """Append-only status-change audit for IndicatorEligibility. One row is
+    inserted only when new_status != previous_status (the idempotency
+    requirement - a repeat evaluation that resolves to the same status
+    writes nothing new here)."""
+    __tablename__ = "indicator_eligibility_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    eligibility_id = Column(Integer, ForeignKey("indicator_eligibility.id"), nullable=False, index=True)
+    source_name = Column(String, nullable=False, index=True)
+    source_version = Column(String, nullable=False)
+    symbol = Column(String, nullable=False)
+    timeframe = Column(String, nullable=False)
+    mode = Column(String, nullable=False)
+    previous_status = Column(String, nullable=True)
+    new_status = Column(String, nullable=False)
+    trigger_snapshot = Column(JSON, nullable=True)
+    changed_by = Column(String, nullable=False, default="system")  # "system" for automatic transitions, admin id for manual
+    reason = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class IndicatorPerformanceRollup(Base):
+    """Persisted, evaluator-refreshed cache of per-indicator performance,
+    tracked independently for ACTIVE and SHADOW execution (Part 5 requires
+    shadow stats never to be conflated with active stats). Source of truth
+    remains PredictionLedger + PredictionResolution, filtered by
+    app.decision_engine.outcome.TRUSTWORTHY_STATUSES; this table is safe to
+    recompute/rebuild, never authoritative on its own."""
+    __tablename__ = "indicator_performance_rollup"
+    __table_args__ = (
+        UniqueConstraint("source_name", "source_version", "symbol", "timeframe", "execution_mode",
+                          name="uq_indicator_perf_rollup"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    source_name = Column(String, nullable=False, index=True)
+    source_version = Column(String, nullable=False)
+    symbol = Column(String, nullable=False, index=True)
+    timeframe = Column(String, nullable=False, index=True)
+    execution_mode = Column(String, nullable=False)  # "ACTIVE" | "SHADOW"
+    sample_size = Column(Integer, nullable=False, default=0)
+    correct = Column(Integer, nullable=False, default=0)
+    wrong = Column(Integer, nullable=False, default=0)
+    neutral = Column(Integer, nullable=False, default=0)
+    wrong_rate = Column(Float, nullable=True)
+    hit_rate = Column(Float, nullable=True)  # correct / (correct + wrong); neutral excluded from denominator
+    net_expectancy = Column(Float, nullable=True)
+    mfe_avg = Column(Float, nullable=True)
+    mae_avg = Column(Float, nullable=True)
+    last_10_outcomes = Column(JSON, nullable=True)
+    data_quality_flag = Column(Boolean, nullable=False, default=False)
+    computed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class IndicatorGovernanceSettings(Base):
+    """Configuration-driven thresholds for the poor-performance/star rules
+    (Bot Settings Part 6/10) - singleton row (id=1), editable via
+    GET/PUT /api/indicators/governance-settings. Kept separate from
+    RiskSettings (which is scoped paper/binance_real) since these thresholds
+    govern the shared indicator-eligibility evaluator, not per-mode trading
+    risk limits."""
+    __tablename__ = "indicator_governance_settings"
+
+    id = Column(Integer, primary_key=True, default=1)
+    poor_performance_window = Column(Integer, nullable=False, default=10)
+    poor_performance_wrong_threshold = Column(Integer, nullable=False, default=7)
+    min_sample_for_poor_performance_check = Column(Integer, nullable=False, default=10)
+    status_change_cooldown_hours = Column(Float, nullable=False, default=24.0)
+    star_min_shadow_samples = Column(Integer, nullable=False, default=20)
+    star_min_hit_rate = Column(Float, nullable=False, default=0.65)
+    star_max_wrong_rate = Column(Float, nullable=False, default=0.35)
+    star_max_mae_pct = Column(Float, nullable=False, default=5.0)
+    star_recent_subwindow = Column(Integer, nullable=False, default=10)
+    data_quality_void_rate_threshold = Column(Float, nullable=False, default=0.30)
+    updated_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+
+class IndicatorNotification(Base):
+    """In-app notification feed for indicator-eligibility/settings events -
+    parallel to MLNotification, not merged into it, because the dedup
+    semantics differ: MLNotification dedupes warning-class events within a
+    6h wall-clock window, whereas this table dedupes structurally on
+    (event, source_name, symbol, timeframe, evaluation_version) via the
+    unique constraint below (insert-or-ignore) - a genuinely new evaluation
+    version is a new notification regardless of elapsed time, and a repeat
+    of the same version is always the same event, never re-posted."""
+    __tablename__ = "indicator_notifications"
+    __table_args__ = (
+        UniqueConstraint("event", "source_name", "symbol", "timeframe", "evaluation_version",
+                          name="uq_indicator_notification_dedup"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    event = Column(String, nullable=False, index=True)
+    # moved_to_shadow_only | recommended_for_reactivation | shadow_performance_deteriorated |
+    # insufficient_data_quality | config_threshold_changed | settings_copied
+    severity = Column(String, nullable=False, default="info")
+    title = Column(String, nullable=False)
+    message = Column(Text, nullable=True)
+    source_name = Column(String, nullable=True, index=True)
+    symbol = Column(String, nullable=True)
+    timeframe = Column(String, nullable=True)
+    evaluation_version = Column(Integer, nullable=True)
+    data = Column(JSON, nullable=True)
+    read = Column(Boolean, nullable=False, default=False, index=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
 
@@ -1387,19 +1564,29 @@ class BinanceTradeReconciliation(Base):
 
 
 class RiskSettings(Base):
-    """Editable paper-trading risk limits (see app/risk/settings_repository.py).
+    """Editable risk limits, one row per scope (see app/risk/settings_repository.py).
 
-    Singleton row (id=1). Both the /api/prediction risk gate and the
-    auto-trading scheduler (app/engine/trading_engine.py) read this
-    dynamically, so a PUT from the Risk Management page changes behavior on
-    the very next prediction/cycle - no redeploy. paper_trading_enabled only
-    ever gates this process's own paper-ledger writes; it has no bearing on
-    live trading, which this codebase has no order-placement path for at all.
+    Scoped by `scope` ("paper" | "binance_real") - Paper and Binance Real are
+    two independent rows, never one shared row. The /api/prediction risk
+    gate, real_risk_gate.py, and the auto-trading scheduler all read the
+    scope-appropriate row dynamically, so a PUT from Bot Settings changes
+    behavior on the very next prediction/cycle - no redeploy.
+    paper_trading_enabled only ever gates this process's own paper-ledger
+    writes; it has no bearing on live trading, which is gated entirely and
+    separately by app.trading.modes (env lock + UI unlock + live
+    authorization lease + kill switch) - this table never influences that
+    gate chain, only the numeric/directional limits an already-authorized
+    order is checked against.
     """
     __tablename__ = "risk_settings"
+    __table_args__ = (UniqueConstraint("scope", name="uq_risk_settings_scope"),)
 
-    id = Column(Integer, primary_key=True, default=1)
+    id = Column(Integer, primary_key=True)
+    scope = Column(String, nullable=False, index=True, default="paper")  # "paper" | "binance_real"
+    version = Column(Integer, nullable=False, default=1)  # optimistic concurrency, mirrors UserBotSetting.profile_revision
     min_confidence_to_trade = Column(Float, default=0.70)
+    min_point_margin = Column(Float, default=4.0)  # abs(long_points - short_points) gate; see decision_engine/v2.py
+    min_total_evidence = Column(Float, default=8.0)
     max_risk_per_trade_pct = Column(Float, default=1.0)
     max_daily_loss_pct = Column(Float, default=2.0)
     max_weekly_loss_pct = Column(Float, default=6.0)
@@ -1420,6 +1607,27 @@ class RiskSettings(Base):
     updated_at = Column(
         DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
     )
+
+
+class RiskSettingsAudit(Base):
+    """One row per changed field per risk-settings save (see
+    app/risk/settings_repository.py). Never touched by anything that also
+    touches app.trading.modes - a settings save/copy/reset can never carry
+    live-execution side effects, by construction of which modules import
+    what, not just by convention."""
+    __tablename__ = "risk_settings_audit"
+    __table_args__ = (Index("ix_risk_settings_audit_scope_time", "scope", "created_at"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    scope = Column(String, nullable=False, index=True)
+    configuration_version = Column(Integer, nullable=False)
+    field = Column(String, nullable=False)
+    previous_value = Column(JSON, nullable=True)
+    new_value = Column(JSON, nullable=True)
+    changed_by = Column(String, nullable=False)
+    reason = Column(Text, nullable=True)
+    change_kind = Column(String, nullable=False, default="update")  # update | reset | copy_from_paper | copy_from_binance_real
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
 
 class BinanceProtectionCapability(Base):

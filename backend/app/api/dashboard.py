@@ -36,7 +36,7 @@ async def dashboard():
         btc = await symbol_snapshot(client, "BTCUSDT")
         eth = await symbol_snapshot(client, "ETHUSDT")
 
-    risk = settings_repository.get_settings()
+    risk = settings_repository.get_settings(scope="paper")
 
     return {
         "mode": "paper",

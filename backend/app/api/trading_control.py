@@ -647,7 +647,7 @@ async def binance_risk_status(db: Session = Depends(get_db)):
     safe = modes.exchange_safe_status(db)
     summary = await binance_summary(db=db)
     orders = await binance_orders()
-    risk = settings_repository.get_settings(db=db)
+    risk = settings_repository.get_settings(scope="binance_real", db=db)
 
     daily_pnl = summary.get("daily_pnl")
     daily_loss_used = round(-daily_pnl, 2) if isinstance(daily_pnl, (int, float)) and daily_pnl < 0 else 0.0
@@ -766,7 +766,7 @@ async def binance_decision_status(symbol: str | None = None, db: Session = Depen
 
     safe = modes.exchange_safe_status(db)
     mode = safe["active_mode"]
-    risk_settings = settings_repository.get_settings(db=db)
+    risk_settings = settings_repository.get_settings(scope="binance_real", db=db)
     confidence = pred.get("confidence")
     required_confidence = decision_engine.get("required_confidence")
 
@@ -1364,7 +1364,7 @@ async def _margin_snapshot(symbol: str, db: Session) -> dict:
 
     position = next((p for p in positions if p.symbol == symbol), None)
     available_margin = account.available_balance
-    risk_settings = settings_repository.get_settings(db=db)
+    risk_settings = settings_repository.get_settings(scope="binance_real", db=db)
     safety_buffer_usdt = risk_settings["safety_buffer_usdt"]
     safety_buffer_pct = risk_settings["safety_buffer_pct"]
 
@@ -1671,7 +1671,7 @@ async def binance_margin_calculator(symbol: str | None = None, db: Session = Dep
         return snapshot
 
     decision = await binance_decision_status(symbol=sym, db=db)
-    risk_settings = settings_repository.get_settings(db=db)
+    risk_settings = settings_repository.get_settings(scope="binance_real", db=db)
     simulation, status_checklist = _build_simulation(
         sym=sym, decision=decision, snapshot=snapshot,
         safety_buffer_usdt=risk_settings["safety_buffer_usdt"], safety_buffer_pct=risk_settings["safety_buffer_pct"],
