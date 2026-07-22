@@ -728,7 +728,9 @@ async def binance_decision_status(symbol: str | None = None, db: Session = Depen
     from app.api.portfolio import binance_summary
 
     symbol = (symbol or settings.default_symbol).upper()
-    timeframe = "5m"
+    from app.trading_horizon.current_authority import resolve_authoritative_timeframe
+    timeframe_resolution = await resolve_authoritative_timeframe(db, settings.admin_username, symbol)
+    timeframe = timeframe_resolution["execution_timeframe"]
     try:
         # `prediction()`'s current_user parameter is a FastAPI dependency
         # (Depends(_prediction_subject)) - calling the route function
@@ -866,6 +868,7 @@ async def binance_decision_status(symbol: str | None = None, db: Session = Depen
     return {
         "symbol": symbol,
         "timeframe": timeframe,
+        "execution_timeframe_source": timeframe_resolution["source"],
         "model_direction": model_direction,
         "strategy_direction": pred["direction"],
         "final_direction": final_direction,

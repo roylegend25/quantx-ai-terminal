@@ -238,6 +238,11 @@ class BinanceExecutionProvider:
             mode=self.mode, symbol=symbol, side=side, is_test=is_test,
             confidence=confidence, requested_notional=notional_usdt, leverage=leverage,
             verification_run_id=verification_run_id,
+            decision_id=decision_engine.get("decision_id"),
+            authority_id=decision_engine.get("horizon_decision_id"),
+            execution_mode=decision_engine.get("execution_mode"),
+            edge_at_entry=decision_engine.get("edge_at_entry"),
+            cycle_id=decision_engine.get("cycle_id"),
         )
         has_model = bool(decision_engine.get("active_model"))
         recorder.stage(
@@ -705,6 +710,11 @@ class BinanceExecutionProvider:
                 provider_latency_ms=provider_latency_ms,
                 verification_result=verification_result,
                 repair_attempts=repair_attempts,
+                decision_id=decision_engine.get("decision_id"),
+                authority_id=decision_engine.get("horizon_decision_id"),
+                execution_mode=decision_engine.get("execution_mode"),
+                edge_at_entry=decision_engine.get("edge_at_entry"),
+                cycle_id=decision_engine.get("cycle_id"),
             ))
             db.commit()
         except Exception:
@@ -1381,7 +1391,7 @@ class ExecutionRouter:
                               "authoritative_execution_timeframe", "engine_id", "engine_version",
                               "generated_at", "expires_at", "profile_revision", "side", "timeframe",
                               "sl", "tp", "confidence", "expected_edge", "feature_id", "regime",
-                              "strategies", "signal_time", "decision_engine"):
+                              "strategies", "signal_time", "decision_engine", "cycle_id"):
                 provider_kwargs.pop(untrusted, None)
             risk_snapshot = snapshot["risk"]
             evidence_snapshot = snapshot["evidence"]
@@ -1412,6 +1422,7 @@ class ExecutionRouter:
                 "decision_id": execution_decision.decision_id, "horizon_decision_id": kwargs["horizon_decision_id"],
                 "selected_profile": selected_profile, "execution_snapshot": snapshot,
                 "execution_mode": "automatic", "edge_at_entry": evidence_snapshot.get("expected_edge"),
+                "cycle_id": kwargs.get("cycle_id"),
                 "strategy_used": (top_sources[0].get("name") if top_sources else None) or "active_drive_v2"}
             provider_kwargs["_market_revalidation"] = lambda current_price: revalidate_snapshot_price(snapshot, current_price)
             provider_kwargs["_pre_submit_guard"] = pre_submit_guard

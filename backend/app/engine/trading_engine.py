@@ -52,27 +52,39 @@ class TradingEngine:
                 )
 
     async def _run_symbol_cycle(self, symbol: str, execution_lease_owner: str | None = None):
+        cycle_id = f"scheduler:{int(time.time() // settings.scheduler_interval_seconds)}"
+        log_event(logger, message="scheduler_cycle_started", category="scheduler", symbol=symbol, cycle_id=cycle_id)
         from app.api.timeframes import evaluate_and_issue_horizon_authority
         horizon = await evaluate_and_issue_horizon_authority(
             user_id=INTERNAL_SERVICE_SUBJECT, account_id="default", symbol=symbol,
-            evaluation_reason="scheduler",
-            idempotency_key=f"scheduler:{int(time.time() // settings.scheduler_interval_seconds)}")
+            evaluation_reason="scheduler", idempotency_key=cycle_id)
+        log_event(logger, message="decision_loaded", category="scheduler", symbol=symbol, cycle_id=cycle_id,
+                  horizon_decision_id=horizon.get("horizon_decision_id"),
+                  authority_status=horizon.get("authority_status"))
         if horizon.get("authority_status") != "persisted_authority" or not horizon.get("horizon_decision_id"):
-            log_event(logger, message="scheduler_no_trade", category="scheduler", symbol=symbol,
+            log_event(logger, message="scheduler_no_trade", category="scheduler", symbol=symbol, cycle_id=cycle_id,
                       reason="Trading Horizon authority was not issued")
+            log_event(logger, message="scheduler_cycle_completed", category="scheduler", symbol=symbol,
+                      cycle_id=cycle_id, outcome="no_authority")
             return
         log_event(
             logger,
             message="scheduler_cycle",
             category="scheduler",
             symbol=symbol,
+            cycle_id=cycle_id,
+            horizon_decision_id=horizon["horizon_decision_id"],
             direction=horizon["direction"],
             confidence=horizon.get("calibrated_confidence"),
             reason="Persisted Trading Horizon authority issued",
         )
+        log_event(logger, message="authority_granted", category="scheduler", symbol=symbol, cycle_id=cycle_id,
+                  horizon_decision_id=horizon["horizon_decision_id"], direction=horizon["direction"])
 
         # The router loads direction, timeframe, confidence, stop, target and
         # evidence from the immutable snapshot. This call carries no model output.
+        log_event(logger, message="execution_requested", category="scheduler", symbol=symbol, cycle_id=cycle_id,
+                  horizon_decision_id=horizon["horizon_decision_id"])
         result = await execution_router.open_position(
             symbol=symbol,
             clamp_to_max=True,
@@ -81,6 +93,7 @@ class TradingEngine:
             execution_lease_owner=execution_lease_owner,
             horizon_decision_id=horizon["horizon_decision_id"],
             user_id=horizon["user_id"],
+            cycle_id=cycle_id,
         )
 
         log_event(
@@ -88,6 +101,8 @@ class TradingEngine:
             message="scheduler_execution_result",
             category="scheduler",
             symbol=symbol,
+            cycle_id=cycle_id,
+            horizon_decision_id=horizon["horizon_decision_id"],
             mode=result.mode,
             reason=result.reason if not result.ok else None,
         )
@@ -95,6 +110,11 @@ class TradingEngine:
             _record_candidate(symbol, "TRADE_APPROVED", "Order accepted",
                               direction=horizon["direction"],
                               confidence=horizon.get("calibrated_confidence"), mode=result.mode)
+            stage_event = "paper_order_accepted" if result.mode == modes.MODE_PAPER else "order_accepted"
+            log_event(logger, message=stage_event, category="scheduler", symbol=symbol, cycle_id=cycle_id,
+                      horizon_decision_id=horizon["horizon_decision_id"], mode=result.mode)
+            log_event(logger, message="position_opened", category="scheduler", symbol=symbol, cycle_id=cycle_id,
+                      horizon_decision_id=horizon["horizon_decision_id"], mode=result.mode)
         else:
             reason = result.reason or "Execution failed"
             lower = reason.lower()
@@ -103,3 +123,7 @@ class TradingEngine:
                        else "EXECUTION_FAILED")
             _record_candidate(symbol, outcome, reason, direction=horizon["direction"],
                               confidence=horizon.get("calibrated_confidence"), mode=result.mode)
+            log_event(logger, message="execution_failed", category="scheduler", symbol=symbol, cycle_id=cycle_id,
+                      horizon_decision_id=horizon["horizon_decision_id"], mode=result.mode, reason=reason)
+        log_event(logger, message="scheduler_cycle_completed", category="scheduler", symbol=symbol,
+                  cycle_id=cycle_id, horizon_decision_id=horizon["horizon_decision_id"], outcome=result.mode if result.ok else "blocked")

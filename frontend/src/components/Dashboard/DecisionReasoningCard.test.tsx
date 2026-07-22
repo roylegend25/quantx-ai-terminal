@@ -90,6 +90,40 @@ describe("DecisionReasoningCard", () => {
     expect(screen.getByText("macd momentum")).toBeInTheDocument();
   });
 
+  it("does not show 'approved for paper execution' when the current pipeline disagrees (candidate blocked upstream)", () => {
+    render(
+      <DecisionReasoningCard
+        decision={makeDecision()}
+        interval="4h"
+        currentPipeline={{ timeframe: "4h", execution_status: "confidence_blocked" }}
+      />
+    );
+    expect(screen.queryByText(/approved for paper execution/i)).not.toBeInTheDocument();
+  });
+
+  it("shows the authoritative-timeframe mismatch notice when the chart interval differs from the resolved pipeline timeframe", () => {
+    render(
+      <DecisionReasoningCard
+        decision={makeDecision()}
+        interval="4h"
+        currentPipeline={{ timeframe: "15m", execution_status: "no_trade" }}
+      />
+    );
+    expect(screen.getByText(/Showing 4h/)).toBeInTheDocument();
+    expect(screen.getByText(/authoritative execution timeframe is 15m/)).toBeInTheDocument();
+  });
+
+  it("shows 'approved for paper execution' when the current pipeline confirms the same timeframe is approved", () => {
+    render(
+      <DecisionReasoningCard
+        decision={makeDecision()}
+        interval="15m"
+        currentPipeline={{ timeframe: "15m", execution_status: "approved_for_paper_execution" }}
+      />
+    );
+    expect(screen.getByText(/approved for paper execution/i)).toBeInTheDocument();
+  });
+
   it("shows a star badge next to a shadow indicator recommended for reactivation", () => {
     render(
       <DecisionReasoningCard

@@ -23,25 +23,47 @@ type Props = {
    *  below so the two are never conflated. Omit/null on the Paper tab,
    *  where "trade allowed" already accurately describes what happens. */
   executionOutcome?: ExecutionOutcome;
+  /** The dashboard's currently-selected chart interval (e.g. "4h") -
+   *  compared against currentPipeline.timeframe so a non-authoritative
+   *  interval's own eligible_for_execution verdict is never mistaken for
+   *  real execution approval. */
+  interval?: string;
+  /** GET /api/trading/pipeline/current (see useCurrentPipeline) - the one
+   *  authoritative source for whether this decision is actually approved
+   *  for paper execution. decision.trade_allowed alone is NEVER sufficient:
+   *  it only reflects the freely-chosen chart interval's own gate, which
+   *  may not be the timeframe the scheduler will ever actually execute. */
+  currentPipeline?: any;
 };
 
-/** Green: approved for paper execution (every Active Drive V2 gate -
- *  evidence, margin, calibrated confidence, edge - passed). Red: a
+/** Green: approved for paper execution - now requires BOTH the selected
+ *  interval's own gate passing AND the unified current-pipeline API
+ *  reporting execution_status === "approved_for_paper_execution" /
+ *  "approved_for_execution" for the SAME authoritative timeframe. Red: a
  *  directional LONG/SHORT candidate exists but a downstream gate blocked
- *  it before execution (the legacy engine can report this combination;
- *  Active Drive V2 folds a blocked candidate back to NO_TRADE, so this
- *  path is legacy-engine-only). Yellow/"waiting": either no decision has
- *  loaded yet, or the verdict is a genuine NO_TRADE abstention - both
- *  render the real reason text below, never a bare "waiting". */
-function overallState(decision: any): "allowed" | "blocked" | "waiting" {
+ *  it before execution. Yellow/"waiting": either no decision has loaded
+ *  yet, or the verdict is a genuine NO_TRADE abstention - both render the
+ *  real reason text below, never a bare "waiting". */
+function overallState(decision: any, currentPipeline: any, interval?: string): "allowed" | "blocked" | "waiting" {
   if (!decision) return "waiting";
-  if (decision.trade_allowed) return "allowed";
+  const samplingSameTimeframe = !currentPipeline || !interval || currentPipeline.timeframe === interval;
+  const pipelineApproved =
+    !currentPipeline ||
+    (currentPipeline.execution_status === "approved_for_paper_execution" ||
+      currentPipeline.execution_status === "approved_for_execution" ||
+      currentPipeline.execution_status === "execution_pending" ||
+      currentPipeline.execution_status === "paper_position_open" ||
+      currentPipeline.execution_status === "position_open");
+  if (decision.trade_allowed && samplingSameTimeframe && pipelineApproved) return "allowed";
   if (decision.final_direction === "LONG" || decision.final_direction === "SHORT") return "blocked";
   return "waiting";
 }
 
-function DecisionReasoningCard({ decision, regime, executionOutcome }: Props) {
-  const state = overallState(decision);
+function DecisionReasoningCard({ decision, regime, executionOutcome, interval, currentPipeline }: Props) {
+  const state = overallState(decision, currentPipeline, interval);
+  const timeframeMismatch =
+    !!currentPipeline && !!interval && currentPipeline.timeframe !== interval &&
+    (decision?.final_direction === "LONG" || decision?.final_direction === "SHORT");
   // A signal the decision engine approved, but whose live execution
   // actually failed, must never be shown as simply "allowed" - see
   // ExecutionPipelineCard for the full stage-by-stage reason.
@@ -89,6 +111,13 @@ function DecisionReasoningCard({ decision, regime, executionOutcome }: Props) {
           )}
         </div>
       </div>
+
+      {timeframeMismatch && (
+        <p className="regime-desc" style={{ opacity: 0.8 }}>
+          Showing {interval} — the authoritative execution timeframe is {currentPipeline.timeframe}. This candidate
+          is informational only; it is not what the scheduler will act on.
+        </p>
+      )}
 
       <div className="dec-kv-row">
         <div>

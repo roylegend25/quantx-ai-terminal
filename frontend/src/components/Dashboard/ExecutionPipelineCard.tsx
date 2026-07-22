@@ -44,9 +44,90 @@ const STAGE_DISPLAY_ORDER = [
   "protective_tp_submitted", "protective_sl_submitted", "protection_confirmed",
 ];
 
+const CURRENT_STAGE_LABELS: Record<string, string> = {
+  evaluating: "Evaluating",
+  no_trade: "No Trade",
+  confidence_blocked: "Confidence Blocked",
+  trade_levels_pending: "Trade Levels Pending",
+  edge_blocked: "Edge Blocked",
+  authority_blocked: "Authority Blocked",
+  stale: "Stale",
+  expired: "Expired",
+  approved_for_paper_execution: "Approved For Paper Execution",
+  approved_for_execution: "Approved For Execution",
+  execution_pending: "Execution Pending",
+  execution_failed: "Execution Failed",
+  paper_position_open: "Paper Position Opened",
+  position_open: "Position Opened",
+};
+
+function CurrentDecisionPipeline({ currentPipeline, loading, errored, onRefresh }: {
+  currentPipeline: any; loading?: boolean; errored?: boolean; onRefresh: () => void | Promise<void>;
+}) {
+  if (errored) {
+    return (
+      <div className="regime-focus blocked" style={{ marginBottom: 12 }}>
+        <span className="tile-label">Current Decision Pipeline unavailable</span>
+        <p className="regime-desc">Could not read the current pipeline state. Try refreshing.</p>
+        <div className="controls" style={{ marginTop: 10 }}>
+          <button className="mini-btn" onClick={() => onRefresh()}>Refresh</button>
+        </div>
+      </div>
+    );
+  }
+  if (loading && !currentPipeline) {
+    return (
+      <div className="regime-focus" style={{ marginBottom: 12 }}>
+        <span className="tile-label">Current Decision Pipeline</span>
+        <p className="regime-desc">Loading…</p>
+      </div>
+    );
+  }
+  if (!currentPipeline) return null;
+
+  const blockedStates = new Set([
+    "no_trade", "confidence_blocked", "trade_levels_pending", "edge_blocked",
+    "authority_blocked", "stale", "expired", "execution_failed",
+  ]);
+  const isBlocked = blockedStates.has(currentPipeline.current_stage);
+  const isApproved = !isBlocked && currentPipeline.current_stage !== "evaluating";
+
+  return (
+    <div className={`regime-focus ${isBlocked ? "blocked" : isApproved ? "allowed" : ""}`} style={{ marginBottom: 12 }}>
+      <span className="tile-label">
+        Current Decision Pipeline — decision {currentPipeline.decision_id ? `#${currentPipeline.decision_id.slice(0, 8)}` : "none yet"}
+        {currentPipeline.stale && (
+          <span className="badge" style={{ marginLeft: 8, fontSize: 10 }}>
+            <Clock size={10} style={{ verticalAlign: "-1px" }} /> Stale
+          </span>
+        )}
+      </span>
+      <b className={`tile-value ${isBlocked ? "red" : isApproved ? "green" : ""}`}>
+        {CURRENT_STAGE_LABELS[currentPipeline.current_stage] || currentPipeline.current_stage}
+      </b>
+      {currentPipeline.final_block_reason && (
+        <p className="regime-desc">Reason: {currentPipeline.final_block_reason}</p>
+      )}
+      {!currentPipeline.decision_id && (
+        <p className="regime-desc">
+          No execution request created for the current decision — no decision has been evaluated yet for {currentPipeline.timeframe}.
+        </p>
+      )}
+      <p className="regime-desc" style={{ opacity: 0.75 }}>
+        Timeframe: {currentPipeline.timeframe} ({currentPipeline.timeframe_source?.replaceAll("_", " ")})
+        {currentPipeline.updated_at ? ` · Updated ${fmtLocalDateTime(currentPipeline.updated_at)}` : ""}
+      </p>
+    </div>
+  );
+}
+
 type Props = {
   symbol: string;
   pipeline: any;
+  currentPipeline?: any;
+  currentPipelineLoading?: boolean;
+  currentPipelineErrored?: boolean;
+  onRefreshCurrentPipeline?: () => void | Promise<void>;
   simulation?: any;
   statusChecklist?: any;
   loading?: boolean;
@@ -62,7 +143,8 @@ type Props = {
 };
 
 export default function ExecutionPipelineCard({
-  symbol, pipeline, simulation, statusChecklist, loading, errored, onRefresh, showToast, activeMode,
+  symbol, pipeline, currentPipeline, currentPipelineLoading, currentPipelineErrored, onRefreshCurrentPipeline,
+  simulation, statusChecklist, loading, errored, onRefresh, showToast, activeMode,
 }: Props) {
   const isPaperMode = activeMode !== "BINANCE_LIVE";
   const [logsOpen, setLogsOpen] = useState(false);
@@ -157,6 +239,17 @@ export default function ExecutionPipelineCard({
 
   return (
     <div>
+      <CurrentDecisionPipeline
+        currentPipeline={currentPipeline}
+        loading={currentPipelineLoading}
+        errored={currentPipelineErrored}
+        onRefresh={onRefreshCurrentPipeline || onRefresh}
+      />
+
+      <div className="card-title" style={{ fontSize: 13, marginBottom: 8, opacity: 0.75 }}>
+        Previous Execution — Binance Real (historical order attempts only; paper trades never appear here)
+      </div>
+
       {/* -------- Section 11: Professional status banner -------- */}
       {statusChecklist && (
         <div className={`regime-focus ${statusChecklist.overall === "READY" ? "allowed" : "blocked"}`} style={{ marginBottom: 12 }}>

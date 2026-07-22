@@ -24,7 +24,7 @@ LEGACY_ADDITIVE_COLUMNS = {
         "maintenance_margin_rate": "FLOAT", "liquidation_price": "FLOAT", "trailing_stop": "FLOAT",
         "realized_pnl": "FLOAT", "updated_at": "DATETIME",
         "decision_id": "VARCHAR", "authority_id": "VARCHAR", "execution_mode": "VARCHAR",
-        "edge_at_entry": "FLOAT",
+        "edge_at_entry": "FLOAT", "cycle_id": "VARCHAR",
     },
     "prediction_features": {"target": "FLOAT", "stop": "FLOAT", "latency_ms": "FLOAT"},
     "mlops_models": {
@@ -40,6 +40,12 @@ LEGACY_ADDITIVE_COLUMNS = {
         "exit_order_id": "BIGINT", "exit_reason": "TEXT", "provider_used": "VARCHAR",
         "provider_response": "JSON", "provider_latency_ms": "FLOAT", "verification_result": "VARCHAR",
         "repair_attempts": "INTEGER DEFAULT 0",
+        "decision_id": "VARCHAR", "authority_id": "VARCHAR", "execution_mode": "VARCHAR",
+        "edge_at_entry": "FLOAT", "cycle_id": "VARCHAR",
+    },
+    "binance_execution_attempts": {
+        "decision_id": "VARCHAR", "authority_id": "VARCHAR", "execution_mode": "VARCHAR",
+        "edge_at_entry": "FLOAT", "cycle_id": "VARCHAR",
     },
     "exchange_positions": {
         "protection_provider": "VARCHAR", "tp_algo_id": "BIGINT", "sl_algo_id": "BIGINT",
@@ -195,6 +201,29 @@ def _migrate_indicator_execution_mode_columns(bind=engine):
     return changed
 
 
+def _migrate_execution_provenance_columns(bind=engine):
+    """decision_id/authority_id/execution_mode/edge_at_entry/cycle_id on
+    trades, binance_bot_trades, binance_execution_attempts (Decision/
+    Execution Pipeline link). trades already carried the first four; this
+    adds cycle_id there and all five to the two real-order tables, which
+    had this provenance available in-memory (execution_router.py's
+    decision_engine dict) but never persisted. Additive/nullable - existing
+    rows predate this and honestly stay NULL rather than a fabricated
+    backfill. Must ship in the same release as the models.py change: this
+    is part of check_schema_compatibility()'s required-columns set as soon
+    as the ORM model changes, so a deploy without this migration would make
+    issue_horizon_authority start raising TRADING_HORIZON_MIGRATION_REQUIRED
+    on every cycle."""
+    changed = _add_missing_columns(bind, "trades", {"cycle_id": LEGACY_ADDITIVE_COLUMNS["trades"]["cycle_id"]})
+    changed += _add_missing_columns(bind, "binance_bot_trades", {
+        key: value for key, value in LEGACY_ADDITIVE_COLUMNS["binance_bot_trades"].items()
+        if key in ("decision_id", "authority_id", "execution_mode", "edge_at_entry", "cycle_id")
+    })
+    changed += _add_missing_columns(bind, "binance_execution_attempts",
+                                    LEGACY_ADDITIVE_COLUMNS["binance_execution_attempts"])
+    return changed
+
+
 def _migrate_prediction_ledger_symbol_generated_index(bind=engine):
     """Composite index backing the Prediction Results dashboard's "latest N
     for symbol" query. Without it, SQLite applies the single-column symbol
@@ -235,6 +264,7 @@ def initialize_schema(bind=engine):
         _migrate_active_drive_edge_columns,
         _migrate_prediction_ledger_symbol_generated_index,
         _migrate_indicator_execution_mode_columns,
+        _migrate_execution_provenance_columns,
     )
     for migrate in legacy_stages:
         migrate(bind)
@@ -491,6 +521,7 @@ def init_db():
     _migrate_resolution_formula_columns()
     _migrate_resolver_fair_claim_index()
     _migrate_indicator_execution_mode_columns()
+    _migrate_execution_provenance_columns()
     upgrade_risk_settings_scope()
     inspector = inspect(engine)
     if "trading_control" in inspector.get_table_names():

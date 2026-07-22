@@ -24,6 +24,7 @@ import LiquidationHeatmapCard from "../components/Dashboard/LiquidationHeatmapCa
 import OrderBookCard from "../components/Dashboard/OrderBookCard";
 import RecentTradesCard from "../components/Dashboard/RecentTradesCard";
 import { useExecutionPipeline } from "../hooks/useExecutionPipeline";
+import { useCurrentPipeline } from "../hooks/useCurrentPipeline";
 import { useMarginCalculator } from "../hooks/useMarginCalculator";
 import { useBinanceAccount } from "../hooks/useBinanceAccount";
 import { AutomaticExecutionBanner, useTradingStatus } from "../components/Trading/TradingShared";
@@ -41,6 +42,8 @@ export default function DashboardPage(props: Props) {
   const liveActive = tradingStatus?.active_mode === "BINANCE_LIVE";
   const { pipeline, loading: pipelineLoading, errored: pipelineErrored, reload: reloadPipeline } =
     useExecutionPipeline(symbol);
+  const { pipeline: currentPipeline, loading: currentPipelineLoading, errored: currentPipelineErrored,
+    reload: reloadCurrentPipeline } = useCurrentPipeline(symbol);
   const { data: marginData, loading: marginLoading, errored: marginErrored, reload: reloadMargin } =
     useMarginCalculator(symbol, liveActive);
   const { positions: binancePositions, positionRows: binancePositionRows } = useBinanceAccount(props.showToast);
@@ -106,7 +109,13 @@ export default function DashboardPage(props: Props) {
         </Card>
 
         <Card title="Why Bot Decided This">
-          <DecisionReasoningCard decision={decisionEngine} regime={prediction?.regime} executionOutcome={executionOutcome} />
+          <DecisionReasoningCard
+            decision={decisionEngine}
+            regime={prediction?.regime}
+            executionOutcome={executionOutcome}
+            interval={props.interval}
+            currentPipeline={currentPipeline}
+          />
         </Card>
 
         <Card title="Current Decision Contributors">
@@ -122,6 +131,10 @@ export default function DashboardPage(props: Props) {
         <ExecutionPipelineCard
           symbol={symbol}
           pipeline={pipeline}
+          currentPipeline={currentPipeline}
+          currentPipelineLoading={currentPipelineLoading}
+          currentPipelineErrored={currentPipelineErrored}
+          onRefreshCurrentPipeline={reloadCurrentPipeline}
           simulation={marginData?.simulation}
           statusChecklist={marginData?.status_checklist}
           loading={pipelineLoading}

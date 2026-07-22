@@ -55,6 +55,7 @@ class Trade(Base):
     authority_id = Column(String, nullable=True, index=True)  # TradingHorizonDecision.id consumed to open this trade
     execution_mode = Column(String, nullable=True)  # "automatic" (Trading Horizon) | "manual" (direct API open)
     edge_at_entry = Column(Float, nullable=True)  # net_expected_edge from the authorizing decision at entry time
+    cycle_id = Column(String, nullable=True, index=True)  # scheduler cycle key that produced this entry, if automatic
 
 
 class PredictionFeature(Base):
@@ -1407,6 +1408,16 @@ class BinanceBotTrade(Base):
     verification_result = Column(String, nullable=True)
     repair_attempts = Column(Integer, default=0)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    # --- decision/authority provenance (Decision/Execution Pipeline link) -
+    # all nullable: this data already existed in-memory in the same
+    # decision_engine dict execution_router.py builds for paper trades, it
+    # was simply never persisted onto this table. Rows written before this
+    # existed honestly stay NULL rather than a fabricated backfill.
+    decision_id = Column(String, nullable=True, index=True)
+    authority_id = Column(String, nullable=True, index=True)
+    execution_mode = Column(String, nullable=True)
+    edge_at_entry = Column(Float, nullable=True)
+    cycle_id = Column(String, nullable=True, index=True)
 
 
 class TradingAuditLog(Base):
@@ -1495,6 +1506,13 @@ class BinanceExecutionAttempt(Base):
     order_id = Column(BigInteger, nullable=True)
     latency_ms = Column(Float, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    # --- decision/authority provenance (Decision/Execution Pipeline link) -
+    # all nullable, same rationale as BinanceBotTrade above.
+    decision_id = Column(String, nullable=True, index=True)
+    authority_id = Column(String, nullable=True, index=True)
+    execution_mode = Column(String, nullable=True)
+    edge_at_entry = Column(Float, nullable=True)
+    cycle_id = Column(String, nullable=True, index=True)
 
 
 class LiveVerificationRun(Base):

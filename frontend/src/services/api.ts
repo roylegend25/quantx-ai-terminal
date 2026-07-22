@@ -497,6 +497,7 @@ export const api = {
   binanceExecutionPipeline: (symbol?: string) =>
     getJson(`/api/trading/binance/execution-pipeline${symbol ? `?symbol=${symbol}` : ""}`),
   binanceExecutionLogs: (limit = 100) => getJson(`/api/trading/binance/execution-logs?limit=${limit}`),
+  currentPipeline: (symbol: string) => getJson(`/api/trading/pipeline/current?symbol=${symbol}`),
   binanceTestOrder: (body: { symbol?: string; confirm: boolean }) =>
     postJson("/api/trading/binance/test-order", {
       headers: { "Content-Type": "application/json" },

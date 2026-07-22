@@ -146,7 +146,10 @@ class PipelineRecorder:
 
     def __init__(self, *, mode: str, symbol: str, side: str | None, is_test: bool = False,
                 confidence: float | None = None, requested_notional: float | None = None,
-                leverage: float | None = None, verification_run_id: str | None = None):
+                leverage: float | None = None, verification_run_id: str | None = None,
+                decision_id: str | None = None, authority_id: str | None = None,
+                execution_mode: str | None = None, edge_at_entry: float | None = None,
+                cycle_id: str | None = None):
         self._start = time.perf_counter()
         self.mode = mode
         self.symbol = symbol
@@ -161,6 +164,15 @@ class PipelineRecorder:
         self.margin_required: float | None = None
         self.order_id: int | None = None
         self.stages: list[dict] = []
+        # Decision/Execution Pipeline provenance - same values already
+        # carried in execution_router.py's decision_engine dict for the
+        # paper path; here so a real-order attempt (accepted or not) can be
+        # traced back to the exact decision/authority that produced it.
+        self.decision_id = decision_id
+        self.authority_id = authority_id
+        self.execution_mode = execution_mode
+        self.edge_at_entry = edge_at_entry
+        self.cycle_id = cycle_id
         self.stage(STAGE_SIGNAL_GENERATED, STATUS_SUCCESS)
 
     def stage(self, name: str, status: str, reason: str | None = None) -> None:
@@ -193,6 +205,11 @@ class PipelineRecorder:
                 exchange_response=exchange_response,
                 order_id=self.order_id,
                 latency_ms=latency_ms,
+                decision_id=self.decision_id,
+                authority_id=self.authority_id,
+                execution_mode=self.execution_mode,
+                edge_at_entry=self.edge_at_entry,
+                cycle_id=self.cycle_id,
             ))
             db.commit()
         except Exception:

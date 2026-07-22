@@ -13,7 +13,7 @@ GIT_SHA="$(git -C "$PROJECT_DIR" rev-parse --short=12 HEAD)"
 # this script no longer matches how docker-compose.yml picks up the running
 # image (via the BACKEND_IMAGE env var read from .env), so this deploy
 # updates .env directly instead of re-tagging a floating pointer.
-IMMUTABLE_IMAGE="quantx-backend:bot-settings-scoped-risk-$GIT_SHA-$TIMESTAMP"
+IMMUTABLE_IMAGE="quantx-backend:decision-execution-pipeline-link-$GIT_SHA-$TIMESTAMP"
 CURRENT_IMAGE="$(grep -E '^BACKEND_IMAGE=' "$PROJECT_DIR/.env" | cut -d= -f2-)"
 TEST_IMAGE="$CURRENT_IMAGE"
 if [ -z "$TEST_IMAGE" ] || ! docker image inspect "$TEST_IMAGE" >/dev/null 2>&1; then
@@ -65,7 +65,17 @@ docker run --rm -v "$PROJECT_DIR/backend:/app" -w /app -e SECRET_KEY=deployment-
   tests/test_indicator_performance.py tests/test_shadow_execution.py tests/test_star_recommendation.py \
   tests/test_indicator_notifications.py tests/test_indicator_eligibility_audit.py -q
 
-(cd "$PROJECT_DIR/frontend" && npm run test && npm run build)
+# --- Decision/Execution Pipeline link test files (explicit, in addition to
+# the full suite above) - the unified timeframe resolver, pure pipeline-
+# state derivation, the new unified API, the Binance Real dry-run, and the
+# 3 deterministic paper smoke scenarios ---
+docker run --rm -v "$PROJECT_DIR/backend:/app" -w /app -e SECRET_KEY=deployment-test-only "$TEST_IMAGE" \
+  python -m pytest tests/test_current_pipeline_state.py tests/test_pipeline_api.py \
+  tests/test_binance_real_dry_run.py tests/test_paper_smoke_scenarios.py \
+  tests/test_horizon_authority.py tests/test_execution_fencing.py tests/test_execution_transparency_api.py \
+  tests/test_execution_router_binance.py tests/test_trading_horizon.py -q
+
+(cd "$PROJECT_DIR/frontend" && npm run test -- --run && npx tsc --noEmit && npm run build)
 
 docker build --build-arg "APP_GIT_SHA=$GIT_SHA" --build-arg "APP_IMAGE_TAG=$IMMUTABLE_IMAGE" -t "$IMMUTABLE_IMAGE" "$PROJECT_DIR/backend"
 docker image inspect "$IMMUTABLE_IMAGE" >/dev/null
@@ -80,6 +90,39 @@ for _ in $(seq 1 180); do
   sleep 1
 done
 curl -fsS http://127.0.0.1:19000/api/health | grep -q '"deployment_maintenance":true'
+
+# --- Decision/Execution Pipeline provenance migration must be physically
+# present on the validation copy of the real production database before
+# anything else runs - a model change without this would make
+# check_schema_compatibility() fail and issue_horizon_authority start
+# raising TRADING_HORIZON_MIGRATION_REQUIRED on every cycle, silently
+# stopping all paper trading. ---
+docker exec "$VALIDATION_NAME" python -c '
+from app.db.init_db import check_schema_compatibility
+from app.db.session import engine
+status = check_schema_compatibility(engine)
+assert status["compatible"] is True, status
+from sqlalchemy import inspect
+inspector = inspect(engine)
+for table, columns in (
+    ("trades", {"cycle_id"}),
+    ("binance_bot_trades", {"decision_id", "authority_id", "execution_mode", "edge_at_entry", "cycle_id"}),
+    ("binance_execution_attempts", {"decision_id", "authority_id", "execution_mode", "edge_at_entry", "cycle_id"}),
+):
+    existing = {c["name"] for c in inspector.get_columns(table)}
+    missing = columns - existing
+    assert not missing, f"{table} missing {missing}"
+'
+
+# (The 3 deterministic paper smoke scenarios - edge blocked -> no execution
+# request; fully valid -> exactly one paper request/order, never
+# duplicated; Binance Real dry-run blocked before the live client - already
+# ran above against $TEST_IMAGE with the current code via pytest, which is
+# available there through the bind-mounted tests/ directory. The built
+# runtime image below intentionally has neither pytest nor tests/ - see
+# backend/Dockerfile - so isolated-validation-container checks here are
+# limited to what the deployed image itself can execute: schema
+# compatibility, column presence, and the shadow-replay volume check.)
 
 # --- >=100 shadow evaluations against the isolated validation container's
 # own paper.db copy (a copy of real production history, not an empty
@@ -143,6 +186,34 @@ asyncio.run(main())
 docker exec quantx-backend python -c '
 from app.core.config import settings
 assert settings.binance_live_enabled is False, "BINANCE_LIVE_ENABLED must remain false after deploy"
+'
+
+# --- The unified current-pipeline API is reachable and internally
+# consistent for the default symbol (same decision/authority family across
+# every field it reports - no contradictory "approved" + "no signal"
+# combination is even representable by this response shape). ---
+docker exec quantx-backend python -c '
+from app.db.session import SessionLocal
+from app.core.config import settings
+from app.trading_horizon.current_authority import resolve_authoritative_timeframe
+from app.trading_horizon.diagnostics import current_pipeline_snapshot, derive_pipeline_state
+import asyncio
+
+async def main():
+    db = SessionLocal()
+    try:
+        resolution = await resolve_authoritative_timeframe(db, settings.admin_username, settings.default_symbol)
+        timeframe = resolution["execution_timeframe"]
+        snapshot = current_pipeline_snapshot(db, user_id=settings.admin_username, symbol=settings.default_symbol,
+                                             timeframe=timeframe)
+        state, reason = derive_pipeline_state(snapshot)
+        source = resolution["source"]
+        print("current pipeline for " + settings.default_symbol + ": timeframe=" + timeframe +
+              " source=" + source + " state=" + state + " reason=" + str(reason))
+    finally:
+        db.close()
+
+asyncio.run(main())
 '
 
 printf '\nDeployment verified. Real execution remains disabled.\n'
