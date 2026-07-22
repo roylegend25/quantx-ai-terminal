@@ -82,6 +82,7 @@ docker run --rm -v "$PROJECT_DIR/backend:/app" -w /app -e SECRET_KEY=deployment-
 docker run --rm -v "$PROJECT_DIR/backend:/app" -w /app -e SECRET_KEY=deployment-test-only "$TEST_IMAGE" \
   python -m pytest tests/test_legacy_engine_gated.py tests/test_v2_performance_batching.py \
   tests/test_authority_ttl_scheduler_gap.py tests/test_dashboard_concurrent_fanout.py \
+  tests/test_history_counts_cache_and_index.py \
   tests/test_active_drive_v2.py tests/test_forecast_points.py tests/test_prediction_multi_symbol.py -q
 
 (cd "$PROJECT_DIR/frontend" && npm run test -- --run && npx tsc --noEmit && npm run build)
