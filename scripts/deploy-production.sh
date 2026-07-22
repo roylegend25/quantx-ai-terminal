@@ -46,7 +46,25 @@ docker exec quantx-backend python -c 'from app.core.config import settings; from
 
 docker exec quantx-backend python -c 'from app.trading.execution_router import router; r=router._blocked("open_position"); assert r and not r.ok'
 
-cp "$DATA_DIR/paper.db" "$BACKUP_DIR/paper.db"
+# A plain `cp` of paper.db while quantx-backend is actively writing to it
+# (scheduler/resolver cycles) is not atomic with respect to SQLite's own
+# transaction boundaries - it can capture a page-level-valid but logically
+# inconsistent snapshot (e.g. an index reflecting a slightly different
+# point in time than its table), which still passes PRAGMA integrity_check
+# (that only verifies b-tree structure) but can fail a real cross-table/
+# index consistency check later. Use SQLite's own online backup API
+# instead, which is consistent by construction even against a live,
+# actively-written source database.
+docker exec quantx-backend python -c '
+import sqlite3
+src = sqlite3.connect("file:/app/data/paper.db?mode=ro", uri=True)
+dst = sqlite3.connect("/tmp/deploy_backup_paper.db")
+src.backup(dst)
+dst.close()
+src.close()
+'
+docker cp quantx-backend:/tmp/deploy_backup_paper.db "$BACKUP_DIR/paper.db"
+docker exec quantx-backend rm -f /tmp/deploy_backup_paper.db
 chmod 600 "$BACKUP_DIR/paper.db"
 docker run --rm -v "$BACKUP_DIR:/backup:ro" python:3.12-slim python -c 'import sqlite3; db=sqlite3.connect("/backup/paper.db"); result=db.execute("PRAGMA integrity_check").fetchone()[0]; assert result == "ok", result'
 cp "$BACKUP_DIR/paper.db" "$VALIDATION_DATA/paper.db"
