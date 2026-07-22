@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../services/api";
+import { usePolledResource } from "./usePolledResource";
 
 const POLL_MS = 8000;
 
@@ -46,33 +46,16 @@ export interface CurrentPipeline {
  *  (never the dashboard's freely-chosen chart interval, never a hardcoded
  *  timeframe). This is what the Dashboard's Execution Pipeline card reads;
  *  useExecutionPipeline stays scoped to the Binance Live tab's real-order
- *  attempt transparency. */
+ *  attempt transparency.
+ *
+ *  Backed by usePolledResource: one shared fetch loop per symbol (not per
+ *  mounted component), visibility-aware, with exponential error backoff. */
 export function useCurrentPipeline(symbol: string, pollMs = POLL_MS) {
-  const [pipeline, setPipeline] = useState<CurrentPipeline | null>(null);
-  const [errored, setErrored] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const busyRef = useRef(false);
-
-  const reload = useCallback(async () => {
-    if (busyRef.current || !symbol) return;
-    busyRef.current = true;
-    try {
-      const r = await api.currentPipeline(symbol);
-      setPipeline(r);
-      setErrored(false);
-    } catch {
-      setErrored(true);
-    } finally {
-      busyRef.current = false;
-      setLoading(false);
-    }
-  }, [symbol]);
-
-  useEffect(() => {
-    reload();
-    const id = window.setInterval(reload, pollMs);
-    return () => window.clearInterval(id);
-  }, [reload, pollMs]);
-
-  return { pipeline, loading, errored, reload };
+  const key = symbol ? `current-pipeline:${symbol}` : null;
+  const { data, loading, errored, reload } = usePolledResource<CurrentPipeline>(
+    key,
+    () => api.currentPipeline(symbol),
+    { normalPollMs: pollMs }
+  );
+  return { pipeline: data, loading, errored, reload };
 }
