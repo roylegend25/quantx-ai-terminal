@@ -6,14 +6,47 @@ v2.py::evaluate()) produces IDENTICAL results to the old per-candidate
 calls, using a query count that stays flat regardless of candidate count."""
 from datetime import datetime, timezone
 
+import pytest
 from sqlalchemy import event
 
 from app.core.config import settings
+from app.db.models import PredictionLedger, PredictionResolution
 from app.db.session import SessionLocal, engine
 from app.decision_engine.repository import performance, performance_batch
 from app.decision_engine.v2 import ActiveDriveV2Engine
 
 from tests.test_active_drive_v2 import _seed_resolved_predictions, legacy
+
+_SOURCE_NAME_PREFIXES = ("batch-check-", "flat-check-")
+
+
+def _delete_seeded_rows():
+    """These tests seed real PredictionLedger/PredictionResolution rows
+    (see _seed_resolved_predictions) - other tests elsewhere assert the
+    ledger tables are empty at specific points, so leaving rows behind
+    corrupts test isolation depending on file/run order. Clean up both
+    before and after every test in this file."""
+    db = SessionLocal()
+    try:
+        prediction_ids = [
+            row.prediction_id for prefix in _SOURCE_NAME_PREFIXES
+            for row in db.query(PredictionLedger).filter(PredictionLedger.source_name.like(f"{prefix}%")).all()
+        ]
+        if prediction_ids:
+            db.query(PredictionResolution).filter(PredictionResolution.prediction_id.in_(prediction_ids)).delete(
+                synchronize_session=False)
+            db.query(PredictionLedger).filter(PredictionLedger.prediction_id.in_(prediction_ids)).delete(
+                synchronize_session=False)
+            db.commit()
+    finally:
+        db.close()
+
+
+@pytest.fixture(autouse=True)
+def _clean_seeded_rows():
+    _delete_seeded_rows()
+    yield
+    _delete_seeded_rows()
 
 
 def _count_queries(fn):
