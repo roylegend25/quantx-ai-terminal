@@ -45,3 +45,17 @@ def clean_tables():
     finally:
         db.close()
     yield
+
+
+@pytest.fixture(autouse=True)
+def reset_prediction_provider_failure_cooldown():
+    # A test that exercises a live-provider failure sets this module-level
+    # timestamp for real (see app/api/prediction.py's
+    # _PROVIDER_FAILURE_COOLDOWN_SECONDS short-circuit); without resetting it
+    # here, a later test running within that same 10s window that expects a
+    # genuine live fetch attempt would silently get routed to cached data
+    # instead - purely a test-ordering artifact, not production behavior.
+    from app.api import prediction as prediction_module
+    prediction_module._provider_last_failure_at = None
+    yield
+    prediction_module._provider_last_failure_at = None

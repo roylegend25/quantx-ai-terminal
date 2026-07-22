@@ -1,3 +1,4 @@
+import asyncio
 import math
 import time
 from datetime import timezone
@@ -51,6 +52,14 @@ MTF_NO_TRADE_PENALTY = 10.0
 # frontend/src/components/Dashboard/PredictionGauge.tsx (CYCLE_SECONDS).
 PREDICTION_CACHE_TTL_SECONDS = 60
 _prediction_cache: dict[tuple[str, str], dict] = {}
+
+# Request coalescing: concurrent requests for the same (user, engine, symbol,
+# interval) that land after the cache has expired share one in-flight
+# compute+persist instead of each independently recomputing features and
+# persisting its own ActiveDriveDecision row for the same cycle - this is
+# what previously caused both duplicate decision rows and 15-30s concurrency
+# spikes under concurrent dashboard reads.
+_prediction_inflight: dict[tuple, "asyncio.Task"] = {}
 
 # Below this many candles, EMA/RSI/ATR/Bollinger haven't seen enough data to
 # mean anything (a cold-started symbol, a gap in history) - the ensemble
@@ -487,12 +496,33 @@ def prediction_history(
 CACHE_FRESHNESS_INTERVALS = 3
 
 
+# While the live provider is in an observed-failing window, skip straight to
+# the cached fallback instead of paying another full 15s timeout per
+# request - a real Binance outage previously meant every single prediction
+# request blocked on its own doomed live attempt before falling back.
+_PROVIDER_FAILURE_COOLDOWN_SECONDS = 10
+_provider_last_failure_at: float | None = None
+
+
 async def _fetch_candles_with_fallback(symbol: str, interval: str, limit: int) -> tuple[list[dict], dict]:
     """Live Binance klines, falling back to the validated market_candles
     store when the provider is unreachable. Returns (candles, provenance).
     Cached candles are handed to the exact same pipeline - compute_features'
     staleness check and the data-quality gate decide whether they are still
     tradable, so a provider outage can never fabricate a fresh signal."""
+    global _provider_last_failure_at
+    if (
+        _provider_last_failure_at is not None
+        and time.time() - _provider_last_failure_at < _PROVIDER_FAILURE_COOLDOWN_SECONDS
+    ):
+        cached = load_cached_candles(symbol, interval, limit=limit)
+        return (
+            [
+                {"time": c["time"], "open": c["open"], "high": c["high"], "low": c["low"], "close": c["close"], "volume": c["volume"]}
+                for c in cached
+            ],
+            {"source": "cached_db", "provider_ok": False, "provider_error": "provider_recently_failed_skipping_live_attempt"},
+        )
     try:
         fetch_limit = min(1500, max(limit, 1000))
         async with httpx.AsyncClient(timeout=15) as client:
@@ -522,8 +552,10 @@ async def _fetch_candles_with_fallback(symbol: str, interval: str, limit: int) -
                 store_candles(candle_db, symbol, interval, "binance_futures", clean, report["quality_score"])
             finally:
                 candle_db.close()
+        _provider_last_failure_at = None
         return candles[-limit:], {"source": "binance_live", "provider_ok": True, "provider_error": None}
     except (httpx.HTTPError, ValueError) as exc:
+        _provider_last_failure_at = time.time()
         cached = load_cached_candles(symbol, interval, limit=limit)
         return (
             [
@@ -675,6 +707,24 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
     if cached and time.time() - cached["computed_at"] / 1000 < PREDICTION_CACHE_TTL_SECONDS:
         return cached["response"]
 
+    # Coalesce concurrent requests for the same key onto one compute+persist -
+    # a second caller awaits the first's in-flight task instead of racing it
+    # with its own candle fetch/feature build/ActiveDriveDecision persist.
+    existing = _prediction_inflight.get(cache_key)
+    if existing is not None:
+        return await existing
+
+    task = asyncio.ensure_future(_compute_and_persist_prediction(
+        symbol, interval, active_engine, current_user, limit, start, cache_key,
+    ))
+    _prediction_inflight[cache_key] = task
+    try:
+        return await task
+    finally:
+        _prediction_inflight.pop(cache_key, None)
+
+
+async def _compute_and_persist_prediction(symbol, interval, active_engine, current_user, limit, start, cache_key):
     with span("prediction", symbol=symbol, interval=interval):
         candles, provenance = await _fetch_candles_with_fallback(symbol, interval, limit)
         data_quality = _data_quality_block(symbol, interval, provenance, candles)
