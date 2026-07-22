@@ -59,8 +59,12 @@ from app.trading.execution_pipeline import (
     classify_gate_failure,
 )
 from app.trading_horizon.idempotency import durable_intents
-from app.trading_horizon.authority import HorizonAuthorityError, validate_horizon_decision
 from app.trading_horizon.sizing import PositionSizingError, calculate_position_size
+from app.decision_engine.execution_gate import (
+    ExecutionGateError,
+    build_risk_approval_snapshot,
+    validate_decision_for_consumption,
+)
 PAPER_API = "http://127.0.0.1:8000"
 
 
@@ -90,6 +94,30 @@ def revalidate_snapshot_price(snapshot: dict, current_price: float) -> str | Non
             return "DECISION_PRICE_DRIFT_EXCEEDED"
     risk = snapshot.get("risk", {})
     stop, target, direction = risk.get("stop_price"), risk.get("target_price"), snapshot.get("direction")
+    if isinstance(stop, (int, float)) and isinstance(target, (int, float)):
+        valid = stop < current_price < target if direction == "LONG" else target < current_price < stop
+        if not valid:
+            return "ENTRY_NO_LONGER_VALID"
+    return None
+
+
+DEFAULT_MAX_SLIPPAGE_BPS = 50
+
+
+def revalidate_decision_price(decision, current_price: float) -> str | None:
+    """Same guarantee as revalidate_snapshot_price(), reading directly from
+    a persisted ActiveDriveDecision instead of a separate Horizon snapshot
+    dict - current price may veto an approved decision; it never creates a
+    replacement one."""
+    reference = decision.entry_price
+    if not isinstance(reference, (int, float)) or reference <= 0:
+        return "ENTRY_NO_LONGER_VALID"
+    if not isinstance(current_price, (int, float)) or current_price <= 0:
+        return "ENTRY_NO_LONGER_VALID"
+    drift_bps = abs(current_price - reference) / reference * 10_000
+    if drift_bps > DEFAULT_MAX_SLIPPAGE_BPS:
+        return "DECISION_PRICE_DRIFT_EXCEEDED"
+    stop, target, direction = decision.stop_price, decision.target_price, decision.signal
     if isinstance(stop, (int, float)) and isinstance(target, (int, float)):
         valid = stop < current_price < target if direction == "LONG" else target < current_price < stop
         if not valid:
@@ -1331,41 +1359,36 @@ class ExecutionRouter:
             if kwargs.get("execution_lease_owner") != execution_lease.owner or not await execution_lease.owns():
                 return RouterResult(ok=False, mode=modes.effective_mode(), action="open_position",
                                     reason="EXECUTION_LEASE_NOT_HELD")
-        required = ("horizon_decision_id", "symbol", "user_id")
+        required = ("decision_id", "symbol", "user_id")
         if any(kwargs.get(field) is None for field in required):
-            return RouterResult(ok=False, mode=modes.effective_mode(), action="open_position", reason="HORIZON_AUTHORITY_REQUIRED")
+            return RouterResult(ok=False, mode=modes.effective_mode(), action="open_position", reason="V2_DECISION_REQUIRED")
         symbol = str(kwargs["symbol"]).upper()
         db = SessionLocal()
         try:
-            persisted = validate_horizon_decision(db, horizon_decision_id=kwargs["horizon_decision_id"],
+            persisted = validate_decision_for_consumption(db, decision_id=kwargs["decision_id"],
                 user_id=kwargs["user_id"], symbol=symbol)
-            if kwargs.get("side") is not None and str(kwargs["side"]).upper() != persisted.final_direction:
+            if kwargs.get("side") is not None and str(kwargs["side"]).upper() != persisted.signal:
                 return RouterResult(ok=False, mode=modes.effective_mode(), action="open_position",
-                                    reason="HORIZON_DECISION_DIRECTION_MISMATCH")
-            if kwargs.get("timeframe") is not None and kwargs["timeframe"] != persisted.authoritative_execution_timeframe:
+                                    reason="DECISION_DIRECTION_MISMATCH")
+            if kwargs.get("timeframe") is not None and kwargs["timeframe"] != persisted.timeframe:
                 return RouterResult(ok=False, mode=modes.effective_mode(), action="open_position",
                                     reason="TIMEFRAME_NOT_EXECUTION_AUTHORITY")
-            authority_tf = persisted.authoritative_execution_timeframe
-            direction = persisted.final_direction
+            authority_tf = persisted.timeframe
+            direction = persisted.signal
             engine_version = persisted.engine_version
-            selected_profile = persisted.selected_profile
-            snapshot = persisted.execution_snapshot
-            execution_decision = persisted.execution_decision
-            risk_approval = snapshot.get("risk_approval")
-            if not isinstance(risk_approval, dict):
-                return RouterResult(ok=False, mode=modes.effective_mode(), action="open_position",
-                                    reason="RISK_POLICY_UNAVAILABLE")
+            execution_decision = persisted
+            risk_approval = build_risk_approval_snapshot(db, persisted)
             sizing = calculate_position_size(db, user_id=owner(kwargs["user_id"]), symbol=symbol,
                 risk_approval=risk_approval, mode=modes.effective_mode(),
                 requested_notional=kwargs.get("notional_usdt"))
-        except HorizonAuthorityError as exc:
+        except ExecutionGateError as exc:
             return RouterResult(ok=False, mode=modes.effective_mode(), action="open_position", reason=str(exc))
         except PositionSizingError as exc:
             return RouterResult(ok=False, mode=modes.effective_mode(), action="open_position", reason=str(exc))
         finally:
             db.close()
         authority = {"user_id": owner(kwargs["user_id"]), "symbol": symbol, "engine": "active_drive_v2",
-                     "profile_decision_id": kwargs["horizon_decision_id"], "execution_timeframe": authority_tf,
+                     "profile_decision_id": kwargs["decision_id"], "execution_timeframe": authority_tf,
                      "direction": direction}
         claimed, claim_reason, lease = await durable_intents.acquire(authority, kwargs.get("idempotency_key"))
         if not claimed or lease is None:
@@ -1377,54 +1400,51 @@ class ExecutionRouter:
                 return False
             verify_db = SessionLocal()
             try:
-                validate_horizon_decision(verify_db, horizon_decision_id=kwargs["horizon_decision_id"],
+                validate_decision_for_consumption(verify_db, decision_id=kwargs["decision_id"],
                     user_id=kwargs["user_id"], symbol=symbol,
                     consume_key=lease.idempotency_key)
                 return await durable_intents.owns(lease)
-            except HorizonAuthorityError:
+            except ExecutionGateError:
                 return False
             finally:
                 verify_db.close()
         try:
             provider_kwargs = dict(kwargs)
-            for untrusted in ("horizon_decision", "profile_decision_id", "selected_trading_profile",
+            for untrusted in ("decision_id", "profile_decision_id", "selected_trading_profile",
                               "authoritative_execution_timeframe", "engine_id", "engine_version",
                               "generated_at", "expires_at", "profile_revision", "side", "timeframe",
                               "sl", "tp", "confidence", "expected_edge", "feature_id", "regime",
                               "strategies", "signal_time", "decision_engine", "cycle_id"):
                 provider_kwargs.pop(untrusted, None)
-            risk_snapshot = snapshot["risk"]
-            evidence_snapshot = snapshot["evidence"]
             provider_kwargs["notional_usdt"] = sizing["final_approved_notional_usd"]
             provider_kwargs["position_sizing"] = sizing
             provider_kwargs["side"] = direction
             provider_kwargs["timeframe"] = authority_tf
-            provider_kwargs["sl"] = risk_snapshot.get("stop_price")
-            provider_kwargs["tp"] = risk_snapshot.get("target_price")
-            provider_kwargs["confidence"] = evidence_snapshot.get("directional_confidence")
-            provider_kwargs["regime"] = evidence_snapshot.get("market_regime")
-            # SQLite drops tzinfo on read even though generated_at is always
-            # written as UTC-aware (see TradingHorizonDecision), so a naive
-            # result here still means UTC, not local time - the same class
-            # of bug fixed in decision_engine/v2.py's _current_edge(). Left
-            # naive, PaperExecutionProvider's signal-age check
+            provider_kwargs["sl"] = persisted.stop_price
+            provider_kwargs["tp"] = persisted.target_price
+            provider_kwargs["confidence"] = (persisted.confidence * 100 if persisted.confidence is not None
+                                             and persisted.confidence <= 1 else persisted.confidence)
+            provider_kwargs["regime"] = (persisted.decision_payload or {}).get("market_regime", {}).get("label") \
+                if isinstance((persisted.decision_payload or {}).get("market_regime"), dict) else None
+            # SQLite drops tzinfo on read even though created_at is always
+            # written as UTC-aware, so a naive result here still means UTC,
+            # not local time - the same class of bug fixed in
+            # decision_engine/v2.py's _current_edge(). Left naive,
+            # PaperExecutionProvider's signal-age check
             # (execution_engine.submit_order) raises TypeError subtracting
-            # an aware "now" from it, which silently failed every paper
-            # order for a persisted authority (never surfaced by tests
-            # because none previously ran a synthetic order all the way
-            # through the real paper engine with a real persisted decision).
-            signal_time = persisted.generated_at
+            # an aware "now" from it, which would silently fail every paper
+            # order for an approved decision.
+            signal_time = persisted.created_at
             if signal_time is not None and signal_time.tzinfo is None:
                 signal_time = signal_time.replace(tzinfo=timezone.utc)
             provider_kwargs["signal_time"] = signal_time
             top_sources = (execution_decision.decision_payload or {}).get("top_supporting_sources") or []
             provider_kwargs["decision_engine"] = {"engine": "active_drive_v2", "engine_version": engine_version,
-                "decision_id": execution_decision.decision_id, "horizon_decision_id": kwargs["horizon_decision_id"],
-                "selected_profile": selected_profile, "execution_snapshot": snapshot,
-                "execution_mode": "automatic", "edge_at_entry": evidence_snapshot.get("expected_edge"),
-                "cycle_id": kwargs.get("cycle_id"),
+                "decision_id": execution_decision.decision_id, "horizon_decision_id": execution_decision.decision_id,
+                "execution_mode": "automatic", "edge_at_entry": persisted.expected_edge,
+                "cycle_id": kwargs.get("cycle_id") or persisted.cycle_id,
                 "strategy_used": (top_sources[0].get("name") if top_sources else None) or "active_drive_v2"}
-            provider_kwargs["_market_revalidation"] = lambda current_price: revalidate_snapshot_price(snapshot, current_price)
+            provider_kwargs["_market_revalidation"] = lambda current_price: revalidate_decision_price(persisted, current_price)
             provider_kwargs["_pre_submit_guard"] = pre_submit_guard
             # PAPER-only one-shot validation guard (see
             # app.trading.paper_validation_guard): structurally a no-op in

@@ -54,76 +54,96 @@ class TradingEngine:
     async def _run_symbol_cycle(self, symbol: str, execution_lease_owner: str | None = None):
         cycle_id = f"scheduler:{int(time.time() // settings.scheduler_interval_seconds)}"
         log_event(logger, message="scheduler_cycle_started", category="scheduler", symbol=symbol, cycle_id=cycle_id)
-        from app.api.timeframes import evaluate_and_issue_horizon_authority
-        horizon = await evaluate_and_issue_horizon_authority(
-            user_id=INTERNAL_SERVICE_SUBJECT, account_id="default", symbol=symbol,
-            evaluation_reason="scheduler", idempotency_key=cycle_id)
+
+        # Trading Horizon removal: the scheduler used to call
+        # evaluate_and_issue_horizon_authority(), which ran a multi-timeframe
+        # fan-out and issued a separate authority object. It now resolves
+        # ONE configured execution timeframe (static profile lookup, no live
+        # evaluation) and calculates Active Drive V2 exactly once for that
+        # (symbol, timeframe) - the persisted decision IS the authority (see
+        # app.decision_engine.execution_gate).
+        from app.db.session import SessionLocal
+        from app.decision_engine.profiles import resolve_execution_timeframe
+        from app.decision_engine.repository import get_setting
+        from app.api.prediction import prediction as active_drive_prediction
+
+        setting_db = SessionLocal()
+        try:
+            setting = get_setting(setting_db, INTERNAL_SERVICE_SUBJECT)
+            execution_tf = resolve_execution_timeframe(setting.trading_profile)
+        finally:
+            setting_db.close()
+
+        response = await active_drive_prediction(symbol, interval=execution_tf, current_user=INTERNAL_SERVICE_SUBJECT)
+        decision_engine = (response or {}).get("decision_engine") or {}
+        decision_id = decision_engine.get("decision_id")
+        signal = decision_engine.get("final_signal") or decision_engine.get("signal") or "NO_TRADE"
+        confidence = decision_engine.get("directional_confidence")
         log_event(logger, message="decision_loaded", category="scheduler", symbol=symbol, cycle_id=cycle_id,
-                  horizon_decision_id=horizon.get("horizon_decision_id"),
-                  authority_status=horizon.get("authority_status"))
-        if horizon.get("authority_status") != "persisted_authority" or not horizon.get("horizon_decision_id"):
+                  decision_id=decision_id, signal=signal)
+
+        # Re-read the persisted decision rather than trusting the in-memory
+        # response dict's eligible_for_execution: execution_approved is set
+        # by execution_gate.finalize_decision_for_execution() AFTER persist,
+        # and additionally factors in the portfolio risk gate - a decision
+        # can be model-eligible but still correctly risk-blocked.
+        from app.db.models import ActiveDriveDecision
+        check_db = SessionLocal()
+        try:
+            persisted_row = check_db.get(ActiveDriveDecision, decision_id) if decision_id else None
+            execution_approved = bool(persisted_row and persisted_row.execution_approved)
+            final_block_reason = persisted_row.final_block_reason if persisted_row else None
+        finally:
+            check_db.close()
+
+        if not decision_id or signal not in ("LONG", "SHORT") or not execution_approved:
             log_event(logger, message="scheduler_no_trade", category="scheduler", symbol=symbol, cycle_id=cycle_id,
-                      reason="Trading Horizon authority was not issued")
+                      decision_id=decision_id, reason=final_block_reason or "No execution-approved V2 decision this cycle")
             log_event(logger, message="scheduler_cycle_completed", category="scheduler", symbol=symbol,
-                      cycle_id=cycle_id, outcome="no_authority")
+                      cycle_id=cycle_id, decision_id=decision_id, outcome="no_trade")
             return
+
         log_event(
-            logger,
-            message="scheduler_cycle",
-            category="scheduler",
-            symbol=symbol,
-            cycle_id=cycle_id,
-            horizon_decision_id=horizon["horizon_decision_id"],
-            direction=horizon["direction"],
-            confidence=horizon.get("calibrated_confidence"),
-            reason="Persisted Trading Horizon authority issued",
+            logger, message="scheduler_cycle", category="scheduler", symbol=symbol, cycle_id=cycle_id,
+            decision_id=decision_id, direction=signal, confidence=confidence,
+            reason="Execution-approved Active Drive V2 decision persisted",
         )
         log_event(logger, message="authority_granted", category="scheduler", symbol=symbol, cycle_id=cycle_id,
-                  horizon_decision_id=horizon["horizon_decision_id"], direction=horizon["direction"])
+                  decision_id=decision_id, direction=signal)
 
-        # The router loads direction, timeframe, confidence, stop, target and
-        # evidence from the immutable snapshot. This call carries no model output.
         log_event(logger, message="execution_requested", category="scheduler", symbol=symbol, cycle_id=cycle_id,
-                  horizon_decision_id=horizon["horizon_decision_id"])
+                  decision_id=decision_id)
         result = await execution_router.open_position(
             symbol=symbol,
             clamp_to_max=True,
             order_type=OrderType.IOC,
             automated_execution=True,
             execution_lease_owner=execution_lease_owner,
-            horizon_decision_id=horizon["horizon_decision_id"],
-            user_id=horizon["user_id"],
+            decision_id=decision_id,
+            user_id=INTERNAL_SERVICE_SUBJECT,
             cycle_id=cycle_id,
         )
 
         log_event(
-            logger,
-            message="scheduler_execution_result",
-            category="scheduler",
-            symbol=symbol,
-            cycle_id=cycle_id,
-            horizon_decision_id=horizon["horizon_decision_id"],
-            mode=result.mode,
-            reason=result.reason if not result.ok else None,
+            logger, message="scheduler_execution_result", category="scheduler", symbol=symbol, cycle_id=cycle_id,
+            decision_id=decision_id, mode=result.mode, reason=result.reason if not result.ok else None,
         )
         if result.ok:
-            _record_candidate(symbol, "TRADE_APPROVED", "Order accepted",
-                              direction=horizon["direction"],
-                              confidence=horizon.get("calibrated_confidence"), mode=result.mode)
+            _record_candidate(symbol, "TRADE_APPROVED", "Order accepted", direction=signal,
+                              confidence=confidence, mode=result.mode)
             stage_event = "paper_order_accepted" if result.mode == modes.MODE_PAPER else "order_accepted"
             log_event(logger, message=stage_event, category="scheduler", symbol=symbol, cycle_id=cycle_id,
-                      horizon_decision_id=horizon["horizon_decision_id"], mode=result.mode)
+                      decision_id=decision_id, mode=result.mode)
             log_event(logger, message="position_opened", category="scheduler", symbol=symbol, cycle_id=cycle_id,
-                      horizon_decision_id=horizon["horizon_decision_id"], mode=result.mode)
+                      decision_id=decision_id, mode=result.mode)
         else:
             reason = result.reason or "Execution failed"
             lower = reason.lower()
             outcome = ("BLOCKED_BY_BALANCE" if any(x in lower for x in ("balance", "margin", "notional"))
                        else "BLOCKED_BY_EXCHANGE" if result.mode != modes.MODE_PAPER
                        else "EXECUTION_FAILED")
-            _record_candidate(symbol, outcome, reason, direction=horizon["direction"],
-                              confidence=horizon.get("calibrated_confidence"), mode=result.mode)
+            _record_candidate(symbol, outcome, reason, direction=signal, confidence=confidence, mode=result.mode)
             log_event(logger, message="execution_failed", category="scheduler", symbol=symbol, cycle_id=cycle_id,
-                      horizon_decision_id=horizon["horizon_decision_id"], mode=result.mode, reason=reason)
+                      decision_id=decision_id, mode=result.mode, reason=reason)
         log_event(logger, message="scheduler_cycle_completed", category="scheduler", symbol=symbol,
-                  cycle_id=cycle_id, horizon_decision_id=horizon["horizon_decision_id"], outcome=result.mode if result.ok else "blocked")
+                  cycle_id=cycle_id, decision_id=decision_id, outcome=result.mode if result.ok else "blocked")

@@ -116,7 +116,7 @@ def test_inactive_engine_decision_rejected_before_provider(monkeypatch):
     result = asyncio.run(router.open_position(symbol="BTCUSDT", side="LONG", notional_usdt=10,
         decision_engine={"engine":"active_drive_v1", "engine_version":"1.0.0", "eligible_for_execution":True,
             "generated_at":datetime.now(timezone.utc).isoformat()}))
-    assert result.reason == "HORIZON_AUTHORITY_REQUIRED"
+    assert result.reason == "V2_DECISION_REQUIRED"
     assert called is False
 
 

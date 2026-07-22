@@ -96,7 +96,6 @@ async def current_pipeline(symbol: str, db: Session = Depends(get_db)):
     state, reason = derive_pipeline_state(snapshot)
 
     decision = snapshot["decision"]
-    authority = snapshot["authority"]
     execution_intent = snapshot["execution_intent"]
     order = snapshot["order"]
     payload = (decision.decision_payload or {}) if decision is not None else {}
@@ -127,7 +126,7 @@ async def current_pipeline(symbol: str, db: Session = Depends(get_db)):
 
     timestamps = [t for t in (
         decision.created_at if decision is not None else None,
-        authority.created_at if authority is not None else None,
+        decision.updated_at if decision is not None else None,
         execution_intent.completed_at if execution_intent is not None else None,
         getattr(order, "updated_at", None) if order is not None else None,
     ) if t is not None]
@@ -143,8 +142,8 @@ async def current_pipeline(symbol: str, db: Session = Depends(get_db)):
 
     return {
         "decision_id": decision.decision_id if decision is not None else None,
-        "cycle_id": getattr(order, "cycle_id", None) if order is not None else None,
-        "authority_id": authority.id if authority is not None else None,
+        "cycle_id": decision.cycle_id if decision is not None else None,
+        "authority_id": decision.decision_id if decision is not None else None,
         "execution_request_id": execution_intent.id if execution_intent is not None else None,
         "order_id": order_id,
         "position_id": position_id,
@@ -163,15 +162,15 @@ async def current_pipeline(symbol: str, db: Session = Depends(get_db)):
         "expected_edge": decision.expected_edge if decision is not None else None,
         "edge_block_reason": decision.edge_block_reason if decision is not None else None,
         "authority_status": (
-            "not_issued" if authority is None
+            "not_issued" if decision is None or decision.execution_approved is None
             else "expired" if state in (STATE_STALE, STATE_EXPIRED)
             else "blocked" if state == STATE_AUTHORITY_BLOCKED
-            else "granted"
+            else "granted" if decision.execution_approved else "blocked"
         ),
         "authority_block_reason": reason if state == STATE_AUTHORITY_BLOCKED else None,
-        "risk_allowed": True if authority is not None else None,
-        "risk_reason": None,
-        "execution_mode": execution_mode or ("automatic" if authority is not None else None),
+        "risk_allowed": decision.risk_allowed if decision is not None else None,
+        "risk_reason": decision.risk_reason if decision is not None else None,
+        "execution_mode": execution_mode or ("automatic" if decision is not None and decision.execution_approved else None),
         "execution_status": state,
         "current_stage": state,
         "completed_stages": completed_stages,

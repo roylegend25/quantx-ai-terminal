@@ -1,5 +1,4 @@
 import pytest
-import asyncio
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session
 
@@ -141,21 +140,6 @@ def test_normal_init_checks_but_does_not_mutate_base_revision_database(tmp_path,
         init_db()
     after={column["name"] for column in inspect(old).get_columns("trading_horizon_decisions")}
     assert before==after and "issuance_fingerprint" not in after
-
-
-def test_scheduler_issuance_fails_closed_before_prediction_on_incompatible_schema(monkeypatch):
-    from app.api import timeframes
-    monkeypatch.setattr("app.db.init_db.check_schema_compatibility",
-                        lambda bind=None:{"compatible":False})
-    async def forbidden(*args,**kwargs):
-        raise AssertionError("prediction/provider work must not start")
-    monkeypatch.setattr("app.api.prediction.prediction",forbidden)
-    result=asyncio.run(timeframes.evaluate_and_issue_horizon_authority(
-        user_id="migration-user",account_id="default",symbol="BTCUSDT",
-        evaluation_reason="scheduler",idempotency_key="migration-test"))
-    assert result["authority_status"]=="preview_blocked"
-    assert result["blocking_reasons"][0]["code"]=="TRADING_HORIZON_MIGRATION_REQUIRED"
-    assert result["horizon_decision_id"] is None
 
 
 def test_recorded_horizon_revisions_do_not_hide_missing_legacy_columns(tmp_path):

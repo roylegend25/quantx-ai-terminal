@@ -1,17 +1,23 @@
 """One authoritative, read-only view of "what is the current decision/
 execution pipeline doing right now" for a symbol - derived entirely from
-existing persisted tables (ActiveDriveDecision, TradingHorizonDecision,
-TradingHorizonTimeframeLink, ExecutionIntentAudit, Trade, BinanceBotTrade).
+existing persisted tables (ActiveDriveDecision, ExecutionIntentAudit,
+Trade, BinanceBotTrade).
+
+Trading Horizon removal: this used to also read TradingHorizonDecision (a
+separate "authority" object). ActiveDriveDecision now carries its own
+execution_approved/valid_until/risk_allowed/final_block_reason (see
+app.decision_engine.execution_gate) - the single persisted decision IS
+the authority, so there is nothing left to join against.
 
 This is deliberately a pure function, not a new state-machine table: every
 transition it reports is already a real, timestamped, reason-coded row
-written by the real gates (decision engine, horizon authority issuance,
-execution router). Adding a second write path here would let the "state"
-drift from what the gates actually did - a derivation function cannot
-drift, because it has no state of its own.
+written by the real gates (decision engine, execution gate, execution
+router). Adding a second write path here would let the "state" drift from
+what the gates actually did - a derivation function cannot drift, because
+it has no state of its own.
 
 Used by GET /api/trading/pipeline/current (app.api.pipeline) and by
-`binance_decision_status`'s resolved timeframe (both now share the same
+`binance_decision_status`'s resolved timeframe (both share the same
 timeframe resolution via app.trading_horizon.current_authority)."""
 from __future__ import annotations
 
@@ -19,13 +25,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from app.db.models import (
-    ActiveDriveDecision,
-    BinanceBotTrade,
-    ExecutionIntentAudit,
-    Trade,
-    TradingHorizonDecision,
-)
+from app.db.models import ActiveDriveDecision, BinanceBotTrade, ExecutionIntentAudit, Trade
 from app.decision_engine.repository import owner
 from app.trading import modes
 
@@ -60,31 +60,24 @@ def current_pipeline_snapshot(db: Session, *, user_id: str, symbol: str, timefra
         .order_by(ActiveDriveDecision.created_at.desc())
         .first()
     )
-    authority = (
-        db.query(TradingHorizonDecision)
-        .filter(TradingHorizonDecision.user_id == normalized_user, TradingHorizonDecision.symbol == symbol,
-                TradingHorizonDecision.authoritative_execution_timeframe == timeframe)
-        .order_by(TradingHorizonDecision.generated_at.desc())
-        .first()
-    )
     execution_intent = None
     order_row = None
-    if authority is not None:
+    if decision is not None:
         execution_intent = (
             db.query(ExecutionIntentAudit)
-            .filter(ExecutionIntentAudit.profile_decision_id == authority.id)
+            .filter(ExecutionIntentAudit.profile_decision_id == decision.decision_id)
             .order_by(ExecutionIntentAudit.id.desc())
             .first()
         )
         mode = modes.effective_mode(db)
         if mode == modes.MODE_PAPER:
             order_row = (
-                db.query(Trade).filter(Trade.authority_id == authority.id)
+                db.query(Trade).filter(Trade.authority_id == decision.decision_id)
                 .order_by(Trade.id.desc()).first()
             )
         else:
             order_row = (
-                db.query(BinanceBotTrade).filter(BinanceBotTrade.authority_id == authority.id)
+                db.query(BinanceBotTrade).filter(BinanceBotTrade.authority_id == decision.decision_id)
                 .order_by(BinanceBotTrade.id.desc()).first()
             )
 
@@ -93,7 +86,6 @@ def current_pipeline_snapshot(db: Session, *, user_id: str, symbol: str, timefra
         "timeframe": timeframe,
         "user_id": normalized_user,
         "decision": decision,
-        "authority": authority,
         "execution_intent": execution_intent,
         "order": order_row,
         "effective_mode": modes.effective_mode(db),
@@ -134,28 +126,28 @@ def derive_pipeline_state(snapshot: dict) -> tuple[str, str]:
     if not payload.get("recommended_stop") or not payload.get("recommended_target"):
         return STATE_TRADE_LEVELS_PENDING, "Trade levels (stop/target) are not available for this decision."
 
-    authority: TradingHorizonDecision | None = snapshot.get("authority")
-    if authority is None:
-        return STATE_AUTHORITY_BLOCKED, "No Trading Horizon authority has been issued for this decision yet."
-
     now = datetime.now(timezone.utc)
-    authority_blockers = authority.blocking_reasons or []
-    if authority_blockers:
-        return STATE_AUTHORITY_BLOCKED, authority_blockers[0]["message"] if isinstance(authority_blockers[0], dict) else str(authority_blockers[0])
-    if not authority.execution_eligible or not authority.readiness:
-        return STATE_AUTHORITY_BLOCKED, "Trading Horizon authority did not pass every mandatory issuance gate."
+
+    if decision.risk_allowed is False:
+        return STATE_AUTHORITY_BLOCKED, decision.risk_reason or "Portfolio risk gate blocked this decision."
+
+    if decision.execution_approved is not True:
+        return STATE_AUTHORITY_BLOCKED, decision.final_block_reason or "Decision did not pass every mandatory execution gate."
 
     execution_intent = snapshot.get("execution_intent")
     order_row = snapshot.get("order")
 
-    if _aware(authority.expires_at) <= now and execution_intent is None:
-        return STATE_EXPIRED, f"Authority expired at {authority.expires_at.isoformat()} without being consumed."
+    valid_until = decision.valid_until
+    if valid_until is not None:
+        valid_until = _aware(valid_until)
+        if valid_until <= now and execution_intent is None:
+            return STATE_EXPIRED, f"Decision expired at {valid_until.isoformat()} without being consumed."
 
     mode = snapshot.get("effective_mode")
     approved_state = STATE_APPROVED_FOR_PAPER_EXECUTION if mode == modes.MODE_PAPER else STATE_APPROVED_FOR_EXECUTION
 
     if execution_intent is None:
-        return approved_state, "Authority granted; awaiting the next scheduler cycle to request execution."
+        return approved_state, "Decision approved; awaiting the next scheduler cycle to request execution."
 
     if execution_intent.status == "ACTIVE":
         return STATE_EXECUTION_PENDING, "Execution request is in flight."

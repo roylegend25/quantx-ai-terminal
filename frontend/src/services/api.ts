@@ -117,8 +117,6 @@ export const api = {
   hyperliquidLargeTrades: (coins = "BTC,ETH", minNotional = 50000) =>
     getJson(`/api/market/hyperliquid/large-trades?coins=${encodeURIComponent(coins)}&min_notional=${minNotional}`),
   timeframes: (symbol: string) => getJson(`/api/timeframes/${symbol}`),
-  tradingHorizon: (symbol: string, chartTimeframe?: string) =>
-    getJson(`/api/timeframes/${encodeURIComponent(symbol)}/horizon${chartTimeframe ? `?chart_timeframe=${encodeURIComponent(chartTimeframe)}` : ""}`),
   tradingProfile: () => getJson("/api/bot/trading-profile"),
   updateTradingProfile: (body: { trading_profile: string; strict_timeframe_unanimity: boolean; auto_profile_enabled: boolean; expected_revision: number }) =>
     patchJson("/api/bot/trading-profile", body),

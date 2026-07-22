@@ -7,11 +7,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import app.api.bot as bot_module
-from app.api.timeframes import can_persist_horizon_authority
 from app.core.config import settings
 from app.core.security import create_internal_service_token
-from app.db.session import SessionLocal
-from app.db.models import UserBotSetting
 from app.decision_engine.repository import is_available
 from app.decision_engine.types import DecisionEngineType
 
@@ -46,26 +43,3 @@ def test_get_decision_engine_reports_v1_as_unavailable():
     engines = {e["id"]: e for e in r.json()["available_engines"]}
     assert engines["active_drive_v1"]["available"] is False
     assert engines["active_drive_v2"]["available"] is True
-
-
-def test_horizon_authority_never_persistable_for_v1_even_if_forcibly_selected(monkeypatch):
-    """Defense in depth: even bypassing the API and writing active_drive_v1
-    directly into UserBotSetting, the automated Trading Horizon authority
-    path still refuses to treat it as authoritative."""
-    db = SessionLocal()
-    try:
-        row = db.get(UserBotSetting, "legacy-gate-test-user") or UserBotSetting(user_id="legacy-gate-test-user")
-        row.decision_engine = "active_drive_v1"
-        db.add(row)
-        db.commit()
-    finally:
-        db.close()
-
-    ok, reason = can_persist_horizon_authority(
-        "active_drive_v1",
-        {"required_timeframes": ["5m"], "structural_bias_timeframe": "4h", "symbol": "BTCUSDT"},
-        {"5m": {"decision_id": "x", "engine": "active_drive_v1", "engine_version": "1.0.0",
-                "symbol": "BTCUSDT", "timeframe": "5m"}},
-    )
-    assert ok is False
-    assert reason == "ACTIVE_DRIVE_V2_NOT_AUTHORITATIVE"

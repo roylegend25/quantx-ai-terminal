@@ -8,11 +8,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.db.models import (
-    ActiveDriveDecision, ExecutionIntentAudit, Portfolio, Trade,
-    TradingHorizonDecision, TradingHorizonTimeframeLink, UserBotSetting,
-)
+from app.db.models import ActiveDriveDecision, ExecutionIntentAudit, Portfolio, Trade, UserBotSetting
 from app.db.session import SessionLocal
+from app.decision_engine.execution_gate import finalize_decision_for_execution
 from app.trading import modes
 from app.trading_horizon.diagnostics import (
     STATE_APPROVED_FOR_PAPER_EXECUTION, STATE_AUTHORITY_BLOCKED, STATE_CONFIDENCE_BLOCKED,
@@ -21,7 +19,7 @@ from app.trading_horizon.diagnostics import (
     current_pipeline_snapshot, derive_pipeline_state,
 )
 
-from tests.test_horizon_authority import authority as authority_kwargs, persisted_decision, setup_user
+from tests.test_horizon_authority import setup_user
 
 USER = "pipeline-test-user"
 SYMBOL = "BTCUSDT"
@@ -45,7 +43,8 @@ def _decision(**overrides) -> ActiveDriveDecision:
         decision_id=f"{USER}-{datetime.now(timezone.utc).timestamp()}", user_id=USER, engine="active_drive_v2",
         engine_version="2.2.0", symbol=SYMBOL, timeframe=TF, signal="LONG", confidence=0.8,
         expected_edge=0.02, edge_supported=True, eligible_for_execution=True, blocking_reasons=[],
-        decision_payload={"recommended_stop": 100.0, "recommended_target": 120.0, "required_confidence": 0.7},
+        decision_payload={"recommended_stop": 100.0, "recommended_target": 120.0, "required_confidence": 0.7,
+                         "reference_price": 110.0},
         shadow=False,
     )
     defaults.update(overrides)
@@ -58,30 +57,33 @@ def _decision(**overrides) -> ActiveDriveDecision:
     return row
 
 
+def _approved_decision(**overrides) -> ActiveDriveDecision:
+    """A genuinely execution_approved decision - replaces the old Horizon-
+    era persisted_decision() fixture. Built directly via _decision() +
+    finalize_decision_for_execution() (the single-authoritative-decision
+    replacement for Trading Horizon authority issuance)."""
+    row = _decision(**overrides)
+    db = SessionLocal()
+    try:
+        finalized = finalize_decision_for_execution(db, row.decision_id)
+        # Force every attribute to load while the session is still open -
+        # finalize's own commit() expires them, and the caller needs a
+        # usable, detached object after this session closes.
+        db.refresh(finalized)
+        for column in ActiveDriveDecision.__table__.columns:
+            getattr(finalized, column.name)
+        db.expunge(finalized)
+        return finalized
+    finally:
+        db.close()
+
+
 def _snapshot():
     db = SessionLocal()
     try:
         return current_pipeline_snapshot(db, user_id=USER, symbol=SYMBOL, timeframe=TF)
     finally:
         db.close()
-
-
-def _patch_trade_levels(decision: dict) -> None:
-    """persisted_decision()'s synthetic frames() fixture predates trade
-    levels being part of decision_payload - the real v2.py path always
-    includes recommended_stop/recommended_target, so this patches the
-    execution-timeframe's persisted row the same way a real decision would
-    already have them, without touching its decision_id/identity."""
-    db = SessionLocal()
-    link = db.query(TradingHorizonTimeframeLink).filter_by(
-        horizon_decision_id=decision["profile_decision_id"], role="execution").first()
-    row = db.get(ActiveDriveDecision, link.decision_id)
-    payload = dict(row.decision_payload or {})
-    payload["recommended_stop"] = 100.0
-    payload["recommended_target"] = 120.0
-    row.decision_payload = payload
-    db.commit()
-    db.close()
 
 
 def test_no_decision_yet_is_evaluating():
@@ -138,94 +140,74 @@ def test_eligible_with_levels_but_no_authority_is_authority_blocked():
 
 
 def test_fully_approved_paper_decision_reports_approved_for_paper_execution():
-    decision, values = persisted_decision(user=USER, return_inputs=True)
-    _patch_trade_levels(decision)
-    snapshot_row = _snapshot_for_profile_timeframe(decision)
-    state, reason = derive_pipeline_state(snapshot_row)
+    _approved_decision()
+    state, reason = derive_pipeline_state(_snapshot())
     assert state == STATE_APPROVED_FOR_PAPER_EXECUTION
 
 
 def test_execution_pending_when_intent_active():
-    decision, _ = persisted_decision(user=USER, return_inputs=True)
-    _patch_trade_levels(decision)
+    decision = _approved_decision()
     db = SessionLocal()
     db.add(ExecutionIntentAudit(
         idempotency_key="dry-run-active", scope_key="scope", user_id=USER, symbol=SYMBOL,
-        engine="active_drive_v2", profile_decision_id=decision["profile_decision_id"],
-        execution_timeframe=decision["execution_timeframe"], direction=decision["direction"], status="ACTIVE",
+        engine="active_drive_v2", profile_decision_id=decision.decision_id,
+        execution_timeframe=TF, direction=decision.signal, status="ACTIVE",
     ))
     db.commit()
     db.close()
-    snapshot_row = _snapshot_for_profile_timeframe(decision)
-    state, reason = derive_pipeline_state(snapshot_row)
+    state, reason = derive_pipeline_state(_snapshot())
     assert state == STATE_EXECUTION_PENDING
 
 
 def test_execution_failed_reports_exact_router_reason_not_generic():
-    decision, _ = persisted_decision(user=USER, return_inputs=True)
-    _patch_trade_levels(decision)
+    decision = _approved_decision()
     db = SessionLocal()
     db.add(ExecutionIntentAudit(
         idempotency_key="dry-run-failed", scope_key="scope", user_id=USER, symbol=SYMBOL,
-        engine="active_drive_v2", profile_decision_id=decision["profile_decision_id"],
-        execution_timeframe=decision["execution_timeframe"], direction=decision["direction"], status="TERMINAL",
+        engine="active_drive_v2", profile_decision_id=decision.decision_id,
+        execution_timeframe=TF, direction=decision.signal, status="TERMINAL",
         result={"ok": False, "reason": "below_min_notional"},
     ))
     db.commit()
     db.close()
-    snapshot_row = _snapshot_for_profile_timeframe(decision)
-    state, reason = derive_pipeline_state(snapshot_row)
+    state, reason = derive_pipeline_state(_snapshot())
     assert state == STATE_EXECUTION_FAILED
     assert reason == "below_min_notional"
     assert reason != "Model has not produced an actionable signal"
 
 
 def test_paper_position_open_when_order_linked():
-    decision, _ = persisted_decision(user=USER, return_inputs=True)
-    _patch_trade_levels(decision)
+    decision = _approved_decision()
     db = SessionLocal()
-    link = db.query(TradingHorizonTimeframeLink).filter_by(
-        horizon_decision_id=decision["profile_decision_id"], role="execution").first()
     db.add(ExecutionIntentAudit(
         idempotency_key="dry-run-ok", scope_key="scope", user_id=USER, symbol=SYMBOL,
-        engine="active_drive_v2", profile_decision_id=decision["profile_decision_id"],
-        execution_timeframe=decision["execution_timeframe"], direction=decision["direction"], status="TERMINAL",
+        engine="active_drive_v2", profile_decision_id=decision.decision_id,
+        execution_timeframe=TF, direction=decision.signal, status="TERMINAL",
         result={"ok": True, "mode": "PAPER", "action": "open_position"},
     ))
-    db.add(Trade(symbol=SYMBOL, side=decision["direction"], entry=100.0, qty=1.0, status="OPEN",
-                 authority_id=decision["profile_decision_id"], decision_id=link.decision_id,
+    db.add(Trade(symbol=SYMBOL, side=decision.signal, entry=100.0, qty=1.0, status="OPEN",
+                 authority_id=decision.decision_id, decision_id=decision.decision_id,
                  execution_mode="automatic", user_id=USER))
     db.commit()
     db.close()
-    snapshot_row = _snapshot_for_profile_timeframe(decision)
-    state, reason = derive_pipeline_state(snapshot_row)
+    state, reason = derive_pipeline_state(_snapshot())
     assert state == STATE_PAPER_POSITION_OPEN
 
 
 def test_historical_authority_never_leaks_into_a_newer_snapshot():
-    """An old, already-consumed authority's order must never be reported as
-    belonging to a brand-new authority for the same symbol/timeframe."""
-    old_decision, _ = persisted_decision(user=USER, return_inputs=True)
-    _patch_trade_levels(old_decision)
+    """An old, already-consumed decision's order must never be reported as
+    belonging to a brand-new decision for the same symbol/timeframe."""
+    old_decision = _approved_decision()
     db = SessionLocal()
-    db.add(Trade(symbol=SYMBOL, side=old_decision["direction"], entry=90.0, qty=1.0, status="CLOSED",
-                 authority_id=old_decision["profile_decision_id"], user_id=USER))
+    db.add(Trade(symbol=SYMBOL, side=old_decision.signal, entry=90.0, qty=1.0, status="CLOSED",
+                 authority_id=old_decision.decision_id, user_id=USER))
     db.commit()
     db.close()
 
-    new_decision, _ = persisted_decision(user=USER, return_inputs=True)
-    _patch_trade_levels(new_decision)
-    assert new_decision["profile_decision_id"] != old_decision["profile_decision_id"]
-    snapshot_row = _snapshot_for_profile_timeframe(new_decision)
+    new_decision = _approved_decision()
+    assert new_decision.decision_id != old_decision.decision_id
+    snapshot_row = _snapshot()
     assert snapshot_row["order"] is None
     assert snapshot_row["execution_intent"] is None
     state, reason = derive_pipeline_state(snapshot_row)
     assert state == STATE_APPROVED_FOR_PAPER_EXECUTION
-
-
-def _snapshot_for_profile_timeframe(decision: dict) -> dict:
-    db = SessionLocal()
-    try:
-        return current_pipeline_snapshot(db, user_id=USER, symbol=SYMBOL, timeframe=decision["execution_timeframe"])
-    finally:
-        db.close()
