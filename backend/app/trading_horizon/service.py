@@ -14,6 +14,7 @@ from typing import Iterable
 from numbers import Number
 
 from app.core.config import settings
+from app.timeframes.canonical import TIMEFRAME_CAPABILITIES
 
 # Soft confirmation penalties (PAPER mode only - see _confirm_higher_timeframes).
 # Bounded well below a value that could ever push a passing primary signal's
@@ -286,7 +287,24 @@ def build_horizon_decision(
         blockers.append(f"Expected edge {expected_edge:.2%} is below the {profile.minimum_edge:.2%} profile minimum")
 
     now = now or datetime.now(timezone.utc)
-    expires_at = now + timedelta(seconds=120)
+    # Stage 1 performance audit root cause: this was a flat 120s regardless
+    # of execution_timeframe, while the scheduler only reissues authority
+    # every settings.scheduler_interval_seconds (300s) - a 180s gap every
+    # cycle with no valid persisted authority, during which any dashboard
+    # poll (2-8s intervals) fell back to a ~60-85s, 6-timeframe evaluation
+    # cascade. valid_until is now tied to the execution timeframe's own
+    # candle duration (a principled freshness bound - a 5m decision's
+    # evidence is meaningfully current for one 5m bar, not an arbitrary
+    # constant) with a floor of scheduler_interval_seconds + 30s buffer, so
+    # the scheduler's next cycle always lands before the previous authority
+    # expires. This is a longer window, not a looser one: nothing else
+    # about the edge/confidence/risk gates that produced the decision
+    # changes - only how long the resulting authority remains consumable
+    # before requiring a fresh evaluation.
+    execution_candle_ms = (TIMEFRAME_CAPABILITIES.get(profile.execution_timeframe) or
+                           TIMEFRAME_CAPABILITIES["5m"]).fixed_duration_ms or 0
+    valid_seconds = max(execution_candle_ms // 1000, settings.scheduler_interval_seconds + 30)
+    expires_at = now + timedelta(seconds=valid_seconds)
     invalidation_price = None
     if price is not None and atr is not None and direction in {"LONG", "SHORT"}:
         invalidation_price = price - profile.stop_atr * atr if direction == "LONG" else price + profile.stop_atr * atr

@@ -3,7 +3,7 @@ from math import isfinite
 from app.core.config import settings
 from app.db.models import PredictionLedger, PredictionResolution
 from app.decision_engine.eligibility import SHADOW_STATUSES, STATUS_MANUALLY_DISABLED, batch_lookup as _eligibility_batch_lookup
-from app.decision_engine.repository import performance
+from app.decision_engine.repository import performance_batch
 from app.decision_engine.sources import quant_votes, strategy_votes
 from app.decision_engine.types import DecisionEngineType
 from app.risk import settings_repository as risk_settings_repository
@@ -211,9 +211,9 @@ class ActiveDriveV2Engine:
     def health(self):return {"status":"healthy","failure_policy":"NO_TRADE"}
     def capabilities(self):return ["ml_strategy_quant","bounded_points","bayesian_shrinkage","family_caps","append_only_ledger","no_trade","snapshot_diagnostics"]
 
-    def _candidate(self,db,context,source_type,family,name,version,vote,evidence,shadow=False,eligibility=None):
+    def _candidate(self,db,context,source_type,family,name,version,vote,evidence,shadow=False,eligibility=None,perf=None):
         direction=vote.get("direction","NO_TRADE"); raw=bounded(vote.get("confidence"),0,100)/100; regime=regime_for(context)
-        perf=performance(db,context["user_id"],name,version,context["symbol"],context["timeframe"],regime["label"]); sample=min(1.,perf["resolved"]/max(1,settings.active_drive_min_resolved_samples))
+        sample=min(1.,perf["resolved"]/max(1,settings.active_drive_min_resolved_samples))
         hist=bounded(perf["shrunk_accuracy"]/.5,.6,1.2); recent=bounded(perf["recent_shrunk_accuracy"]/.5,.75,1.15); calibration=.8 if perf["resolved"]<settings.active_drive_min_resolved_samples else 1.
         reliability=bounded((.65+.35*sample)*hist*recent*calibration,.35,1.); sign=1. if direction=="LONG" else -1. if direction=="SHORT" else 0.; base=sign*raw*10; points=base*reliability
         if perf["resolved"]<settings.active_drive_min_resolved_samples:points=max(-2.5,min(2.5,points))
@@ -252,11 +252,28 @@ class ActiveDriveV2Engine:
         identities+=[(name,"2.1.0",context["symbol"],context["timeframe"]) for name,_,_,_ in quant_vote_list]
         if champion.get("used"):identities.append((champion.get("model_name") or "champion_ml",champion.get("version") or "unknown",context["symbol"],context["timeframe"]))
         eligibility_map=_eligibility_batch_lookup(db,identities,settings_scope)
-        for name,vote in legacy_strategies:candidates.append(self._candidate(db,context,"strategy",LEGACY_FAMILIES.get(name,"strategy"),name,"1.0.0",vote,{"reason":vote.get("reason")},eligibility=eligibility_map.get((name,"1.0.0",context["symbol"],context["timeframe"]))))
-        for name,family,vote in strategy_vote_list:candidates.append(self._candidate(db,context,"strategy",family,name,"2.1.0",vote,{"reason":vote["reason"]},eligibility=eligibility_map.get((name,"2.1.0",context["symbol"],context["timeframe"]))))
-        if champion.get("used"):candidates.append(self._candidate(db,context,"ml","tree_ml",champion.get("model_name") or "champion_ml",champion.get("version") or "unknown",champion,{"model_id":champion.get("model_id")},eligibility=eligibility_map.get((champion.get("model_name") or "champion_ml",champion.get("version") or "unknown",context["symbol"],context["timeframe"]))))
-        for name,family in SHADOW_MODELS:candidates.append(self._candidate(db,context,"ml",family,name,"shadow-1",{"direction":"NO_TRADE","confidence":0,"reason":"Shadow source; no validated inference this cycle"},{"capability":"shadow"},True))
-        for name,family,vote,evidence in quant_vote_list:candidates.append(self._candidate(db,context,"quant",family,name,"2.1.0",vote,evidence,eligibility=eligibility_map.get((name,"2.1.0",context["symbol"],context["timeframe"]))))
+        # Batch performance lookup (see app.decision_engine.repository.
+        # performance_batch) - one (or two, with the regime fallback) query
+        # for every candidate's evidence bucket instead of one query pair
+        # per candidate (Stage 1 performance audit: ~30-35 candidates meant
+        # ~40-80 round trips here alone). Includes the 8 hardcoded
+        # SHADOW_MODELS identities too, since their performance is still
+        # tracked (star-recommendation/reactivation) even though their
+        # points are always zeroed.
+        perf_regime=regime_for(context)["label"]
+        perf_identities=[(name,"1.0.0") for name,_ in legacy_strategies]
+        perf_identities+=[(name,"2.1.0") for name,_,_ in strategy_vote_list]
+        perf_identities+=[(name,"2.1.0") for name,_,_,_ in quant_vote_list]
+        perf_identities+=[(name,"shadow-1") for name,_ in SHADOW_MODELS]
+        if champion.get("used"):perf_identities.append((champion.get("model_name") or "champion_ml",champion.get("version") or "unknown"))
+        perf_map=performance_batch(db,context["user_id"],perf_identities,context["symbol"],context["timeframe"],perf_regime)
+        for name,vote in legacy_strategies:candidates.append(self._candidate(db,context,"strategy",LEGACY_FAMILIES.get(name,"strategy"),name,"1.0.0",vote,{"reason":vote.get("reason")},eligibility=eligibility_map.get((name,"1.0.0",context["symbol"],context["timeframe"])),perf=perf_map[(name,"1.0.0")]))
+        for name,family,vote in strategy_vote_list:candidates.append(self._candidate(db,context,"strategy",family,name,"2.1.0",vote,{"reason":vote["reason"]},eligibility=eligibility_map.get((name,"2.1.0",context["symbol"],context["timeframe"])),perf=perf_map[(name,"2.1.0")]))
+        if champion.get("used"):
+            champion_name=champion.get("model_name") or "champion_ml"; champion_version=champion.get("version") or "unknown"
+            candidates.append(self._candidate(db,context,"ml","tree_ml",champion_name,champion_version,champion,{"model_id":champion.get("model_id")},eligibility=eligibility_map.get((champion_name,champion_version,context["symbol"],context["timeframe"])),perf=perf_map[(champion_name,champion_version)]))
+        for name,family in SHADOW_MODELS:candidates.append(self._candidate(db,context,"ml",family,name,"shadow-1",{"direction":"NO_TRADE","confidence":0,"reason":"Shadow source; no validated inference this cycle"},{"capability":"shadow"},True,perf=perf_map[(name,"shadow-1")]))
+        for name,family,vote,evidence in quant_vote_list:candidates.append(self._candidate(db,context,"quant",family,name,"2.1.0",vote,evidence,eligibility=eligibility_map.get((name,"2.1.0",context["symbol"],context["timeframe"])),perf=perf_map[(name,"2.1.0")]))
         raw_family={}
         # Never substitute zero for an excluded (SHADOW/DISABLED) candidate's
         # score: it is omitted from the sum entirely, not added as 0 - a

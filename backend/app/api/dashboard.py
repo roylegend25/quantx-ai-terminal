@@ -1,3 +1,4 @@
+import asyncio
 from datetime import timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException
 import httpx
@@ -15,9 +16,14 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 BINANCE_FAPI = "https://fapi.binance.com"
 
 async def symbol_snapshot(client: httpx.AsyncClient, symbol: str):
-    ticker = await client.get(f"{BINANCE_FAPI}/fapi/v1/ticker/24hr", params={"symbol": symbol})
-    funding = await client.get(f"{BINANCE_FAPI}/fapi/v1/premiumIndex", params={"symbol": symbol})
-    oi = await client.get(f"{BINANCE_FAPI}/fapi/v1/openInterest", params={"symbol": symbol})
+    # These 3 calls are independent read-only GETs against different
+    # endpoints - previously sequential (Stage 1 performance audit measured
+    # ~1.7s for 6 total across both symbols), now concurrent.
+    ticker, funding, oi = await asyncio.gather(
+        client.get(f"{BINANCE_FAPI}/fapi/v1/ticker/24hr", params={"symbol": symbol}),
+        client.get(f"{BINANCE_FAPI}/fapi/v1/premiumIndex", params={"symbol": symbol}),
+        client.get(f"{BINANCE_FAPI}/fapi/v1/openInterest", params={"symbol": symbol}),
+    )
 
     ticker.raise_for_status()
     funding.raise_for_status()
@@ -33,8 +39,7 @@ async def symbol_snapshot(client: httpx.AsyncClient, symbol: str):
 @router.get("")
 async def dashboard():
     async with httpx.AsyncClient(timeout=15) as client:
-        btc = await symbol_snapshot(client, "BTCUSDT")
-        eth = await symbol_snapshot(client, "ETHUSDT")
+        btc, eth = await asyncio.gather(symbol_snapshot(client, "BTCUSDT"), symbol_snapshot(client, "ETHUSDT"))
 
     risk = settings_repository.get_settings(scope="paper")
 

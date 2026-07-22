@@ -112,3 +112,92 @@ def performance(db: Session, user_id: str, source_name: str, source_version: str
             "average_win_return": sum(winning_returns)/len(winning_returns) if winning_returns else None,
             "average_loss_return": sum(losing_returns)/len(losing_returns) if losing_returns else None,
             "resolved_at_latest": latest_resolved_at.isoformat() if latest_resolved_at else None}
+
+
+def _performance_from_rows(rows: list, evidence_scope: str) -> dict:
+    """Same bucket-shaped stats performance() computes from its own
+    per-source query - factored out so performance_batch() can compute it
+    from a pre-grouped, already-fetched row list instead."""
+    n = len(rows)
+    wins = sum(1 for row, _ in rows if row.correct is True)
+    directional = [(row, direction) for row, direction in rows if row.correct is not None]
+    directional_n = len(directional)
+    accuracy = wins / directional_n if directional_n else None
+    posterior = (wins + 10.0) / (directional_n + 20.0)
+    recent = rows[:20]
+    recent_wins = sum(1 for row, _ in recent if row.correct is True)
+    recent_directional = [(row, direction) for row, direction in recent if row.correct is not None]
+    recent_posterior = (recent_wins + 10.0) / (len(recent_directional) + 20.0)
+    realized = [r for r in (_signed_return(row.actual_return, direction) for row, direction in rows) if r is not None]
+    realized_edge = sum(realized) / len(realized) if realized else None
+    winning_returns = [r for r in (_signed_return(row.actual_return, direction) for row, direction in rows if row.correct is True) if r is not None]
+    losing_returns = [r for r in (_signed_return(row.actual_return, direction) for row, direction in rows if row.correct is False) if r is not None]
+    tier = "trusted" if n >= 100 else "eligible" if n >= 50 else "early_evidence" if n >= 20 else "insufficient_evidence"
+    latest_resolved_at = rows[0][0].resolved_at if rows and rows[0][0].resolved_at else None
+    return {"resolved": n, "accuracy": accuracy, "evidence_scope": evidence_scope,
+            "recent_accuracy": recent_wins / len(recent_directional) if recent_directional else None,
+            "shrunk_accuracy": posterior, "recent_shrunk_accuracy": recent_posterior,
+            "realized_edge": realized_edge, "tier": tier, "directional_resolved": directional_n,
+            "neutral_resolved": n - directional_n,
+            "average_win_return": sum(winning_returns)/len(winning_returns) if winning_returns else None,
+            "average_loss_return": sum(losing_returns)/len(losing_returns) if losing_returns else None,
+            "resolved_at_latest": latest_resolved_at.isoformat() if latest_resolved_at else None}
+
+
+_EMPTY_PERFORMANCE = _performance_from_rows([], "source_symbol_timeframe")
+
+
+def performance_batch(db: Session, user_id: str, identities: list[tuple[str, str]], symbol: str,
+                      timeframe: str, regime: str | None) -> dict[tuple[str, str], dict]:
+    """Same evidence-hierarchy semantics as performance() (regime bucket,
+    falling back to the all-regime bucket only when the regime bucket alone
+    can't meet the minimum sample requirement), computed for every
+    (source_name, source_version) identity active_drive_v2 needs to score
+    in one evaluate() call, via at most 2 SQL round trips total instead of
+    up to 2 per candidate (Stage 1 performance audit: ~30-35 candidates per
+    request meant ~40-80 round trips here alone).
+
+    Every source shares the same generation cadence (persist() writes
+    exactly one PredictionLedger row per candidate per cycle - see
+    ledger.py), so the most recent len(identities)*100 rows, grouped by
+    identity, reproduce each identity's own most-recent-100 bucket exactly
+    (matching performance()'s per-source .limit(100))."""
+    if not identities:
+        return {}
+    owner_id = owner(user_id)
+    fetch_limit = max(500, len(identities) * 100)
+
+    def bucket_all(with_regime: bool):
+        q = db.query(PredictionResolution, PredictionLedger.direction, PredictionLedger.source_name,
+                     PredictionLedger.source_version).join(
+            PredictionLedger, PredictionResolution.prediction_id == PredictionLedger.prediction_id
+        ).filter(
+            PredictionLedger.user_id == owner_id,
+            PredictionLedger.engine == "active_drive_v2",
+            PredictionLedger.symbol == symbol,
+            PredictionLedger.timeframe == timeframe,
+        )
+        if with_regime and regime:
+            q = q.filter(PredictionLedger.market_regime == regime)
+        grouped: dict[tuple[str, str], list] = {}
+        for resolution, direction, source_name, source_version in q.order_by(
+                PredictionResolution.resolved_at.desc()).limit(fetch_limit).all():
+            grouped.setdefault((source_name, source_version), []).append((resolution, direction))
+        return grouped
+
+    by_regime = bucket_all(with_regime=True)
+    needs_fallback = bool(regime) and any(
+        len(by_regime.get(ident, [])) < settings.active_drive_min_resolved_samples for ident in identities
+    )
+    by_all = bucket_all(with_regime=False) if needs_fallback else {}
+
+    results: dict[tuple[str, str], dict] = {}
+    for ident in identities:
+        rows_regime = by_regime.get(ident, [])[:100]
+        rows_all = by_all.get(ident, [])[:100]
+        if regime and len(rows_regime) < settings.active_drive_min_resolved_samples and len(rows_all) > len(rows_regime):
+            results[ident] = _performance_from_rows(rows_all, "source_symbol_timeframe")
+        else:
+            results[ident] = _performance_from_rows(
+                rows_regime, "source_symbol_timeframe_regime" if regime else "source_symbol_timeframe")
+    return results
