@@ -80,6 +80,15 @@ LEGACY_ADDITIVE_COLUMNS = {
         "configuration_scope": "VARCHAR", "configuration_version": "INTEGER",
         "active_indicators": "JSON", "shadow_indicators": "JSON", "disabled_indicators": "JSON",
         "exclusion_reasons": "JSON",
+        # Single-authoritative-decision fields (Trading Horizon extraction -
+        # see app.decision_engine.execution_gate). All additive/nullable;
+        # pre-existing decisions predate this and stay NULL rather than a
+        # fabricated backfill.
+        "cycle_id": "VARCHAR", "confidence_threshold": "FLOAT", "entry_price": "FLOAT",
+        "target_price": "FLOAT", "stop_price": "FLOAT", "actionable": "BOOLEAN",
+        "risk_allowed": "BOOLEAN", "risk_reason": "VARCHAR", "execution_approved": "BOOLEAN",
+        "final_block_reason": "VARCHAR", "valid_from": "DATETIME", "valid_until": "DATETIME",
+        "updated_at": "DATETIME",
     },
     "signal_candidates": {
         "execution_mode": "VARCHAR", "eligibility_status": "VARCHAR",

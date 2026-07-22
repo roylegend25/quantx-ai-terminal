@@ -193,10 +193,53 @@ class ActiveDriveDecision(Base):
     shadow_indicators = Column(JSON, nullable=True)
     disabled_indicators = Column(JSON, nullable=True)
     exclusion_reasons = Column(JSON, nullable=True)
+    # --- single-authoritative-decision fields (Trading Horizon extraction) -
+    # all additive/nullable. Everything an execution needs now lives on
+    # this one row instead of a separate TradingHorizonDecision authority:
+    # trade levels, the confidence/edge thresholds actually enforced,
+    # portfolio-risk-gate outcome, the final execution-approval verdict,
+    # and the validity window this decision may be consumed within. See
+    # app.decision_engine.execution_gate.finalize_decision_for_execution(),
+    # which populates risk_allowed/risk_reason/execution_approved/
+    # final_block_reason/valid_from/valid_until immediately after persist().
+    cycle_id = Column(String, nullable=True, index=True)
+    confidence_threshold = Column(Float, nullable=True)
+    entry_price = Column(Float, nullable=True)
+    target_price = Column(Float, nullable=True)
+    stop_price = Column(Float, nullable=True)
+    actionable = Column(Boolean, nullable=True)
+    risk_allowed = Column(Boolean, nullable=True)
+    risk_reason = Column(String, nullable=True)
+    execution_approved = Column(Boolean, nullable=True, index=True)
+    final_block_reason = Column(String, nullable=True)
+    valid_from = Column(DateTime, nullable=True)
+    valid_until = Column(DateTime, nullable=True, index=True)
+    updated_at = Column(DateTime, nullable=True)
+
+
+class ActiveDriveDecisionConsumption(Base):
+    """Exactly-once execution consumption marker for a V2 decision -
+    replaces TradingHorizonConsumption now that decisions are directly
+    authoritative. decision_id as the primary key makes a second
+    consumption attempt for the same decision an IntegrityError, the same
+    atomicity guarantee the Horizon-era table provided."""
+    __tablename__ = "active_drive_decision_consumptions"
+    decision_id = Column(String, ForeignKey("active_drive_decisions.decision_id"), primary_key=True)
+    idempotency_key = Column(String, nullable=False, unique=True)
+    consumed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class TradingHorizonDecision(Base):
-    """Immutable, server-issued authority for one possible new entry."""
+    """DEPRECATED (historical only) - superseded by ActiveDriveDecision's
+    own execution_approved/valid_from/valid_until/risk_allowed fields (see
+    app.decision_engine.execution_gate). No new rows are written here as
+    of the Horizon-removal migration; this table and its two companions
+    below remain solely so existing rows stay queryable for audit/history.
+    Planned archival: export to cold storage and drop once the retention
+    window for financial audit records has passed - do not drop while any
+    audit/compliance requirement still references these rows.
+
+    Immutable, server-issued authority for one possible new entry."""
     __tablename__ = "trading_horizon_decisions"
     id = Column(String, primary_key=True)
     # Historical authorities created before the fingerprint migration remain
@@ -226,7 +269,10 @@ class TradingHorizonDecision(Base):
 
 
 class TradingHorizonTimeframeLink(Base):
-    """Immutable proof linking horizon authority to persisted V2 decisions."""
+    """DEPRECATED (historical only) - see TradingHorizonDecision. No new
+    rows written as of the Horizon-removal migration.
+
+    Immutable proof linking horizon authority to persisted V2 decisions."""
     __tablename__ = "trading_horizon_timeframe_links"
     __table_args__ = (
         UniqueConstraint("horizon_decision_id", "timeframe", "role", name="uq_horizon_timeframe_role"),
@@ -246,6 +292,9 @@ class TradingHorizonTimeframeLink(Base):
 
 
 class TradingHorizonConsumption(Base):
+    """DEPRECATED (historical only) - superseded by
+    ActiveDriveDecisionConsumption. No new rows written as of the
+    Horizon-removal migration."""
     __tablename__ = "trading_horizon_consumptions"
     horizon_decision_id = Column(String, ForeignKey("trading_horizon_decisions.id"), primary_key=True)
     idempotency_key = Column(String, nullable=False, unique=True)

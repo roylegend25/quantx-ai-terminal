@@ -44,7 +44,7 @@ def persist(db, user_id: str, result: dict, reference_price: float | None, featu
         edge_supported=result.get("current_edge_supported", result.get("edge_supported")), edge_block_reason=result.get("edge_block_reason"),
         edge_sample_size=result.get("edge_sample_size"), edge_source=result.get("edge_source"),
         eligible_for_execution=result.get("eligible_for_execution", False), blocking_reasons=result.get("blocking_reasons", []),
-        decision_payload=decision_payload, shadow=shadow, created_at=now,
+        decision_payload=decision_payload, shadow=shadow, created_at=now, cycle_id=cycle_id,
         point_margin=result.get("point_margin"), required_point_margin=result.get("required_point_margin"),
         point_margin_pass=result.get("point_margin_pass"), configuration_scope=result.get("configuration_scope"),
         configuration_version=result.get("configuration_version"), active_indicators=result.get("active_indicators"),
@@ -70,4 +70,12 @@ def persist(db, user_id: str, result: dict, reference_price: float | None, featu
             target_horizon_seconds=horizon, resolution_deadline=deadline, feature_snapshot_hash=fingerprint, generated_at=now,
             lifecycle_status="PENDING", execution_mode=candidate.get("execution_mode")))
     db.commit()
+    if result["engine"] == "active_drive_v2" and not shadow:
+        # Stamps validity window + runs the portfolio risk gate directly on
+        # this persisted decision (see decision_engine.execution_gate) - the
+        # single-authoritative-decision replacement for Trading Horizon's
+        # separate authority issuance. Never for shadow decisions, which
+        # are informational-only and must never become execution_approved.
+        from app.decision_engine.execution_gate import finalize_decision_for_execution
+        finalize_decision_for_execution(db, decision_id)
     return decision_id
