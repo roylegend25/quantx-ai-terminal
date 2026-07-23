@@ -317,13 +317,28 @@ print("execution_lease_held=" + str(execution_lease.held) + " (expected False wh
 # (BTC/ETH auto-resolution, dual-priority queues) - checked via an
 # internal-service-signed request against the actual server process, not
 # a fresh docker-exec subprocess (whose in-memory STATUS would always be
-# empty). ---
-docker exec quantx-backend python -c '
+# empty).
+#
+# Retried with backoff, not single-shot: this is a single-process uvicorn
+# server on a memory-constrained host, and immediately after
+# --force-recreate it is also absorbing a burst of real reconnecting
+# dashboard traffic. Both endpoints are synchronous-DB routes served
+# through Starlette's threadpool, so a real (bounded, ~9s measured
+# against the live ~280k-row ledger) query can queue behind that burst
+# for longer than a single 10s timeout without the resolver itself being
+# stuck - a prior deploy attempt failed closed exactly this way while the
+# swap had actually succeeded cleanly. This loop gives the fresh
+# container a fair chance to drain that startup burst; it does not change
+# what is asserted (queues running == True) or treat a genuinely stuck
+# resolver as acceptable - if it is still failing after the last attempt,
+# the deploy still fails closed. ---
+for attempt in 1 2 3 4; do
+  if docker exec quantx-backend python -c '
 import httpx
 from app.core.security import create_internal_service_token
 token = create_internal_service_token()
 r = httpx.get("http://127.0.0.1:8000/api/predictions/resolver/health",
-              headers={"Authorization": "Bearer " + token}, timeout=10)
+              headers={"Authorization": "Bearer " + token}, timeout=25)
 r.raise_for_status()
 health = r.json()
 # "healthy" reflects a data/provider condition (overdue-resolution backlog)
@@ -333,13 +348,22 @@ health = r.json()
 # restarting cleanly) and is asserted.
 print("resolver health=" + str(health))
 r2 = httpx.get("http://127.0.0.1:8000/api/predictions/lifecycle-health",
-               headers={"Authorization": "Bearer " + token}, timeout=10)
+               headers={"Authorization": "Bearer " + token}, timeout=25)
 r2.raise_for_status()
 lifecycle = r2.json()
 assert lifecycle["queues"]["recent"]["running"] is True, lifecycle
 assert lifecycle["queues"]["historical"]["running"] is True, lifecycle
 print("resolver queues running=" + str({k: v["running"] for k, v in lifecycle["queues"].items()}))
-'
+'; then
+    break
+  fi
+  if [ "$attempt" = "4" ]; then
+    echo "resolver/health and lifecycle-health did not respond successfully after 4 attempts - not transient startup contention, aborting." >&2
+    exit 1
+  fi
+  echo "resolver-health check attempt $attempt did not complete in time - retrying (fresh container may still be draining a post-restart traffic burst)." >&2
+  sleep 5
+done
 
 printf '\nDeployment verified. Real execution remains disabled.\n'
 printf 'Production URL: https://www.quantxterminal.com\n'
