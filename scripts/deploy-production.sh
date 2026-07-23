@@ -81,7 +81,17 @@ done
 docker cp quantx-backend:/tmp/deploy_backup_paper.db "$BACKUP_DIR/paper.db"
 docker exec quantx-backend rm -f /tmp/deploy_backup_paper.db
 chmod 600 "$BACKUP_DIR/paper.db"
-docker run --rm -v "$BACKUP_DIR:/backup:ro" python:3.12-slim python -c 'import sqlite3; db=sqlite3.connect("/backup/paper.db"); result=db.execute("PRAGMA integrity_check").fetchone()[0]; assert result == "ok", result'
+# Mounted read-write, not :ro: the backed-up copy inherits paper.db's
+# journal_mode (WAL, since the Section 4 perf fix) via SQLite's own
+# online backup API, which copies full page/header state including that
+# setting. Opening a WAL-mode database - even for a read-only PRAGMA -
+# requires SQLite to create the -wal/-shm companion files alongside it;
+# a :ro mount blocks that and fails the open entirely with "unable to
+# open database file", not a real integrity problem. This is a throwaway
+# temp copy in $BACKUP_DIR, not the live database, so write access here
+# is safe - worst case SQLite leaves its own journal/wal/shm files next
+# to the copy.
+docker run --rm -v "$BACKUP_DIR:/backup" python:3.12-slim python -c 'import sqlite3; db=sqlite3.connect("/backup/paper.db"); result=db.execute("PRAGMA integrity_check").fetchone()[0]; assert result == "ok", result'
 cp "$BACKUP_DIR/paper.db" "$VALIDATION_DATA/paper.db"
 
 # .env backup (holds BACKEND_IMAGE, the rollback pointer this script edits below).
