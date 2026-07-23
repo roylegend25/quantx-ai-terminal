@@ -7,10 +7,25 @@ IS_SQLITE = DATABASE_URL.startswith("sqlite")
 
 connect_args = {"check_same_thread": False} if IS_SQLITE else {}
 
+# SQLAlchemy's QueuePool defaults (pool_size=5, max_overflow=10, so 15
+# connections total, pool_timeout=30s) were sized for a lightly-loaded
+# service, not this app's real concurrent dashboard traffic (a single
+# pageview fires a dozen-plus simultaneous API calls, each opening its
+# own session). Under WAL mode SQLite explicitly supports many concurrent
+# readers - the 15-connection cap was an artificial SQLAlchemy-level
+# bottleneck, not a real SQLite limit. Exhausting it made unrelated
+# requests (resolver/health, lifecycle-health, prediction lookups) queue
+# for a free connection for up to pool_timeout, which is indistinguishable
+# from the query itself being slow until you check engine.pool.status()
+# mid-incident - measured live: requests completing at 27-30s, right at
+# the default 30s pool_timeout, while the query underneath took ~5-9s.
 engine = create_engine(
     DATABASE_URL,
     connect_args=connect_args,
     pool_pre_ping=True,
+    pool_size=20,
+    max_overflow=20,
+    pool_timeout=30,
 )
 
 if IS_SQLITE:
