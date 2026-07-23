@@ -8,7 +8,7 @@ connection while it walks every row.
 """
 from datetime import datetime, timezone
 
-from sqlalchemy import case, func, or_
+from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session
 
 from app.data_sources import symbol_map
@@ -91,35 +91,63 @@ def catchup_progress(db: Session) -> dict:
         not_terminally_voided,
         or_(PredictionLedger.unresolved_status.is_(None), PredictionLedger.unresolved_status != "permanent_data_gap"),
     )
-    total_due = base.filter(PredictionLedger.resolution_deadline <= now).count()
-    total_overdue = base.filter(PredictionLedger.resolution_deadline <= now, PredictionLedger.resolver_attempts > 0).count()
+
+    # The anti-join above (LEFT JOIN + IS NULL) forces a full scan of
+    # prediction_ledger - unavoidable to compute "still unresolved" without a
+    # dedicated indexed column. What *is* avoidable is re-running that same
+    # scan once per .count()/.first() call: the code below used to issue 9
+    # separate executions of it (total_due, total_overdue, delayed,
+    # permanently_failed, 2x per symbol x2, oldest) which measured at 30+
+    # seconds against the live ~280k-row ledger - well past the deploy
+    # health-check timeout. Collapsing each independent shape into a single
+    # grouped conditional-aggregation query does the same classification in
+    # one scan instead of many.
+    due_case = case((PredictionLedger.resolution_deadline <= now, 1), else_=0)
+    overdue_case = case(
+        (and_(PredictionLedger.resolution_deadline <= now, PredictionLedger.resolver_attempts > 0), 1), else_=0
+    )
+    oldest_due_case = case((PredictionLedger.resolution_deadline <= now, PredictionLedger.resolution_deadline))
+    due_overdue_rows = (
+        base.with_entities(
+            PredictionLedger.symbol,
+            func.sum(due_case),
+            func.sum(overdue_case),
+            func.min(oldest_due_case),
+        )
+        .group_by(PredictionLedger.symbol)
+        .all()
+    )
+    total_due = sum(row[1] or 0 for row in due_overdue_rows)
+    total_overdue = sum(row[2] or 0 for row in due_overdue_rows)
+    oldest_deadlines = [row[3] for row in due_overdue_rows if row[3] is not None]
+    oldest_deadline = min(oldest_deadlines) if oldest_deadlines else None
+    per_symbol = {sym: {"due": 0, "overdue": 0} for sym in ("BTCUSDT", "ETHUSDT")}
+    for sym, due, overdue, _ in due_overdue_rows:
+        if sym in per_symbol:
+            per_symbol[sym] = {"due": due or 0, "overdue": overdue or 0}
+
     processed = db.query(func.count(PredictionLedger.prediction_id)).filter(
         PredictionLedger.symbol.in_(("BTCUSDT", "ETHUSDT")), PredictionLedger.resolver_attempts > 0
     ).scalar() or 0
     resolved_total = db.query(func.count(PredictionResolution.id)).join(
         PredictionLedger, PredictionResolution.prediction_id == PredictionLedger.prediction_id
     ).filter(PredictionLedger.symbol.in_(("BTCUSDT", "ETHUSDT"))).scalar() or 0
-    delayed = all_unresolved.filter(PredictionLedger.symbol.in_(("BTCUSDT", "ETHUSDT")),
-                          PredictionLedger.unresolved_status.in_(("resolver_delayed", "secondary_provider_pending",
-                                                                  "primary_provider_unavailable", "primary_market_data_gap"))).count()
-    permanently_failed = all_unresolved.filter(PredictionLedger.symbol.in_(("BTCUSDT", "ETHUSDT")),
-                                     PredictionLedger.unresolved_status == "permanent_data_gap").count()
 
-    per_symbol = {}
-    for sym in ("BTCUSDT", "ETHUSDT"):
-        sym_base = base.filter(PredictionLedger.symbol == sym)
-        per_symbol[sym] = {
-            "due": sym_base.filter(PredictionLedger.resolution_deadline <= now).count(),
-            "overdue": sym_base.filter(PredictionLedger.resolution_deadline <= now, PredictionLedger.resolver_attempts > 0).count(),
-        }
-
-    oldest = (
-        base.filter(PredictionLedger.resolution_deadline <= now)
-        .order_by(PredictionLedger.resolution_deadline)
-        .with_entities(PredictionLedger.resolution_deadline)
+    delayed_case = case(
+        (PredictionLedger.unresolved_status.in_(
+            ("resolver_delayed", "secondary_provider_pending", "primary_provider_unavailable", "primary_market_data_gap")
+        ), 1), else_=0
+    )
+    permanent_case = case((PredictionLedger.unresolved_status == "permanent_data_gap", 1), else_=0)
+    delayed, permanently_failed = (
+        all_unresolved.filter(PredictionLedger.symbol.in_(("BTCUSDT", "ETHUSDT")))
+        .with_entities(func.sum(delayed_case), func.sum(permanent_case))
         .first()
     )
-    oldest_age_seconds = (now - oldest[0].replace(tzinfo=timezone.utc)).total_seconds() if oldest and oldest[0] else None
+    delayed = delayed or 0
+    permanently_failed = permanently_failed or 0
+
+    oldest_age_seconds = (now - oldest_deadline.replace(tzinfo=timezone.utc)).total_seconds() if oldest_deadline else None
 
     status = resolver_scheduler.status()
     last_stats = status.get("last_stats") or {}

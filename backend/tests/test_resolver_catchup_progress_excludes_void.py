@@ -11,9 +11,10 @@ those rows to a terminal state and would never touch them again."""
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import event
 
 from app.db.models import PredictionLedger, PredictionResolution
-from app.db.session import SessionLocal
+from app.db.session import SessionLocal, engine
 from app.decision_engine import outcome, resolver_status
 
 PREFIX = "catchup-void-test-"
@@ -85,3 +86,33 @@ def test_void_row_does_not_count_toward_oldest_overdue_age(db):
     # it isn't pinned to the multi-year-old VOID row's deadline.
     if progress["oldest_overdue_age_seconds"] is not None:
         assert progress["oldest_overdue_age_seconds"] < 999999 * 60
+
+
+def test_catchup_progress_does_not_rescan_the_unresolved_antijoin_per_field(db):
+    """Regression guard: catchup_progress() used to build the unresolved
+    LEFT JOIN (prediction_ledger anti-joined against prediction_resolutions)
+    once, then re-execute filtered variants of it via ~9 separate
+    .count()/.first() calls (total_due, total_overdue, delayed,
+    permanently_failed, due+overdue x2 symbols, oldest). Each re-execution
+    re-scans the full ledger table; measured against the live ~280k-row
+    production table this took 30+ seconds and blew past the deploy
+    health-check's 10s timeout. The fix collapses this to two grouped
+    conditional-aggregation queries. This test fails if that collapse
+    regresses back to a per-field query, independent of table size."""
+    statements = []
+
+    def _count(conn, cursor, statement, parameters, context, executemany):
+        if "prediction_ledger" in statement.lower() and "prediction_resolutions" in statement.lower():
+            statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _count)
+    try:
+        resolver_status.catchup_progress(db)
+    finally:
+        event.remove(engine, "before_cursor_execute", _count)
+
+    # Two anti-join query shapes: (1) the grouped due/overdue/oldest
+    # aggregate over `base`, (2) the delayed/permanently_failed aggregate
+    # over `all_unresolved`. Allow a little headroom without permitting a
+    # regression back to the old ~9-query shape.
+    assert len(statements) <= 3, f"expected <=3 anti-join queries, got {len(statements)}:\n" + "\n---\n".join(statements)
