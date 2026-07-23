@@ -96,8 +96,14 @@ def _compute_catchup_progress() -> dict:
 @router.get("/resolver/health")
 def resolver_health():
     progress = _resolver_health_cache.get_or_compute(_compute_catchup_progress)
-    healthy = progress["last_error"] is None and progress["oldest_overdue_age_seconds"] is not None and \
-        (progress["oldest_overdue_age_seconds"] < 86400 or progress["total_overdue"] == 0)
+    # total_overdue == 0 is checked first and short-circuits: with zero
+    # backlog, oldest_overdue_age_seconds is None (there is nothing overdue
+    # to time), which used to make this whole expression false - reporting
+    # unhealthy for the single best state the resolver can be in.
+    healthy = progress["last_error"] is None and (
+        progress["total_overdue"] == 0
+        or (progress["oldest_overdue_age_seconds"] is not None and progress["oldest_overdue_age_seconds"] < 86400)
+    )
     return {**progress, "healthy": bool(healthy), "provider_health": resolver_status.provider_health()}
 
 
