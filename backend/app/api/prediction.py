@@ -756,14 +756,15 @@ async def _compute_and_persist_prediction(symbol, interval, active_engine, curre
         # Stage 1 performance audit: this used to unconditionally call
         # evaluate_all_timeframes() here - 10 fresh concurrent Binance klines
         # requests plus a full legacy ensemble/feature recompute per
-        # timeframe, purely to produce a confidence nudge (consensus is only
-        # ever read by ActiveDriveV1Adapter, never by ActiveDriveV2Engine -
-        # see v2.py, which reads legacy["strategies"]/["features"] but never
-        # legacy["confidence"]/["direction"]). Active Drive V1 is disabled in
-        # production (see archive/quantx-classic, core/config.py
-        # active_drive_v1_available default), so this consensus fan-out no
-        # longer has any consumer in the production critical path - removing
-        # it cut ~2s and 10 external calls off every cold prediction.
+        # timeframe, purely to produce a confidence nudge (consensus was only
+        # ever read by the legacy ensemble decision engine, never by
+        # ActiveDriveV2Engine - see v2.py, which reads
+        # legacy["strategies"]/["features"] but never
+        # legacy["confidence"]/["direction"]). That legacy engine has since
+        # been removed from Premium X Dark entirely (it now lives in the
+        # standalone QuantX Classic repository), so this consensus fan-out
+        # has no consumer at all in this codebase - removing it cut ~2s and
+        # 10 external calls off every cold prediction.
         pred = make_prediction(features, market_context, None, data_quality=data_quality)
         legacy_decision = pred["decision_engine"]
         rr = None
