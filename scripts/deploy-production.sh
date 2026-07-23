@@ -103,6 +103,15 @@ docker run --rm -v "$PROJECT_DIR/backend:/app" -w /app -e SECRET_KEY=deployment-
   tests/test_history_counts_cache_and_index.py \
   tests/test_active_drive_v2.py tests/test_forecast_points.py tests/test_prediction_multi_symbol.py -q
 
+# --- Final Consolidation Phase test files (explicit, in addition to the
+# full suite above) - Horizon safety extraction onto ActiveDriveDecision,
+# Horizon removal proof (AST-based repo-wide sweep), single-authoritative-
+# decision request coalescing, SQLite WAL/busy_timeout tuning ---
+docker run --rm -v "$PROJECT_DIR/backend:/app" -w /app -e SECRET_KEY=deployment-test-only "$TEST_IMAGE" \
+  python -m pytest tests/test_execution_gate.py tests/test_execution_router_v2_decisions.py \
+  tests/test_horizon_not_invoked_in_production.py tests/test_prediction_request_coalescing.py \
+  tests/test_sqlite_wal_tuning.py -q
+
 (cd "$PROJECT_DIR/frontend" && npm run test -- --run && npx tsc --noEmit && npm run build)
 
 docker build --build-arg "APP_GIT_SHA=$GIT_SHA" --build-arg "APP_IMAGE_TAG=$IMMUTABLE_IMAGE" -t "$IMMUTABLE_IMAGE" "$PROJECT_DIR/backend"
@@ -246,6 +255,58 @@ async def main():
         db.close()
 
 asyncio.run(main())
+'
+
+# --- SQLite WAL mode + busy_timeout are actually active on the running
+# production engine (Section 4 performance fix - readers/writers no longer
+# serialize behind SQLite's default rollback-journal locking) ---
+docker exec quantx-backend python -c '
+from sqlalchemy import text
+from app.db.session import engine, IS_SQLITE
+if IS_SQLITE:
+    with engine.connect() as connection:
+        mode = connection.execute(text("PRAGMA journal_mode")).scalar()
+        timeout = connection.execute(text("PRAGMA busy_timeout")).scalar()
+        assert mode.lower() == "wal", "expected WAL journal_mode, got " + str(mode)
+        assert timeout == 5000, "expected busy_timeout=5000, got " + str(timeout)
+        print("sqlite journal_mode=" + mode + " busy_timeout=" + str(timeout))
+'
+
+# --- Exactly one scheduler instance holds the Redis-fenced execution lease
+# (single-instance fencing) - waits out the startup grace period rather
+# than racing it. ---
+for _ in $(seq 1 60); do
+  docker exec quantx-backend python -c 'from app.deployment.lease import execution_lease; import sys; sys.exit(0 if execution_lease.held else 1)' && break
+  sleep 1
+done
+docker exec quantx-backend python -c 'from app.deployment.lease import execution_lease; assert execution_lease.held, "scheduler did not acquire its execution lease - single-instance fencing not confirmed"'
+
+# --- Resolver is live and healthy on the running production process
+# (BTC/ETH auto-resolution, dual-priority queues) - checked via an
+# internal-service-signed request against the actual server process, not
+# a fresh docker-exec subprocess (whose in-memory STATUS would always be
+# empty). ---
+docker exec quantx-backend python -c '
+import httpx
+from app.core.security import create_internal_service_token
+token = create_internal_service_token()
+r = httpx.get("http://127.0.0.1:8000/api/predictions/resolver/health",
+              headers={"Authorization": "Bearer " + token}, timeout=10)
+r.raise_for_status()
+health = r.json()
+# "healthy" reflects a data/provider condition (overdue-resolution backlog)
+# that can be legitimately red for reasons unrelated to this deploy -
+# reported for visibility, not hard-gated here. The queues-running check
+# below is what this deploy step can actually cause/fix (the worker loops
+# restarting cleanly) and is asserted.
+print("resolver health=" + str(health))
+r2 = httpx.get("http://127.0.0.1:8000/api/predictions/lifecycle-health",
+               headers={"Authorization": "Bearer " + token}, timeout=10)
+r2.raise_for_status()
+lifecycle = r2.json()
+assert lifecycle["queues"]["recent"]["running"] is True, lifecycle
+assert lifecycle["queues"]["historical"]["running"] is True, lifecycle
+print("resolver queues running=" + str({k: v["running"] for k, v in lifecycle["queues"].items()}))
 '
 
 printf '\nDeployment verified. Real execution remains disabled.\n'
