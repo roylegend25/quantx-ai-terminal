@@ -178,6 +178,9 @@ describe("BotSettingsPage - Binance Live Trading tab", () => {
 });
 
 describe("BotSettingsPage - Decision Engine tab", () => {
+  // Active Drive V1 has been removed from Premium X Dark entirely (it now
+  // lives only in the standalone QuantX Classic repository) - the backend's
+  // available_engines list never includes it, so it must never appear here.
   const engineState = {
     active_engine: "active_drive_v2", automatic_fallback: false, compare_engines_shadow: false,
     resolved_history_count: 0, last_decision: { final_signal: "NO_TRADE", long_points: 4, short_points: 2,
@@ -185,31 +188,19 @@ describe("BotSettingsPage - Decision Engine tab", () => {
       data_status: "live", blocking_reasons: ["Expected edge is not yet supported"] }, last_switch: null,
     available_engines: [
       { id:"active_drive_v2", name:"Active Drive V2", version:"2.0.0", available:true, selected:true, health:"healthy" },
-      { id:"active_drive_v1", name:"Active Drive V1", version:"1.0.0", available:true, selected:false, health:"healthy", legacy:true },
     ],
   };
   beforeEach(() => {
     (api.decisionEngine as ReturnType<typeof vi.fn>).mockResolvedValue(engineState);
-    (api.switchDecisionEngine as ReturnType<typeof vi.fn>).mockResolvedValue({...engineState, active_engine:"active_drive_v1",
-      available_engines: engineState.available_engines.map(e => ({...e, selected:e.id === "active_drive_v1"}))});
   });
-  it("shows V2 selected and V1 as mutually exclusive legacy rollback", async () => {
-    render(<BotSettingsPage {...(appDataProps as any)} />);
+  it("shows V2 as the sole engine, with no Active Drive V1 or legacy rollback UI anywhere", async () => {
+    const { container } = render(<BotSettingsPage {...(appDataProps as any)} />);
     await userEvent.click(screen.getByRole("tab", {name:"Decision Engine"}));
     expect(await screen.findByRole("radio", {name:/Active Drive V2/})).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByRole("radio", {name:/Active Drive V1/})).toHaveAttribute("aria-checked", "false");
-    expect(screen.getByText("Legacy rollback")).toBeInTheDocument();
+    expect(screen.queryByText(/Active Drive V1/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Legacy rollback")).not.toBeInTheDocument();
+    expect(container.textContent).not.toMatch(/active_drive_v1/i);
     expect(screen.getByText("LONG points").parentElement?.textContent).toContain("4");
-  });
-  it("confirms a V1 switch before the authenticated API call", async () => {
-    render(<BotSettingsPage {...(appDataProps as any)} />);
-    await userEvent.click(screen.getByRole("tab", {name:"Decision Engine"}));
-    await userEvent.click(await screen.findByRole("radio", {name:/Active Drive V1/}));
-    expect(screen.getByRole("dialog", {name:"Confirm engine switch"})).toBeInTheDocument();
-    expect(api.switchDecisionEngine).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole("checkbox", {name:/I acknowledge/}));
-    await userEvent.click(screen.getByRole("button", {name:"Confirm engine switch"}));
-    expect(api.switchDecisionEngine).toHaveBeenCalledWith("active_drive_v1");
   });
 });
 

@@ -27,18 +27,39 @@ def legacy(direction="LONG", confidence=80):
         "risk": {"allowed": True, "reason": "ok"}}
 
 
-def test_v2_is_default_and_v1_remains_available():
+def test_v2_is_default_and_sole_registered_engine():
     db = SessionLocal()
     try:
         row = get_setting(db, "new-user")
         assert row.decision_engine == "active_drive_v2"
-        assert set(decision_engine_router.engines) == {DecisionEngineType.ACTIVE_DRIVE_V1, DecisionEngineType.ACTIVE_DRIVE_V2}
+        # Active Drive V1 has been removed from Premium X Dark entirely (see
+        # the standalone QuantX Classic repository) - V2 is the only engine
+        # the router can ever dispatch to.
+        assert set(decision_engine_router.engines) == {DecisionEngineType.ACTIVE_DRIVE_V2}
+    finally: db.close()
+
+
+def test_a_stored_v1_setting_falls_back_to_v2_instead_of_crashing():
+    """Defense in depth: a UserBotSetting row that predates V1's removal (or
+    a restored backup) must never KeyError every prediction request for
+    that user - get_active_engine() fails safe to V2."""
+    db = SessionLocal()
+    try:
+        set_engine(db, "stale-v1-user", DecisionEngineType.ACTIVE_DRIVE_V1, "migration")
+        assert get_setting(db, "stale-v1-user").decision_engine == "active_drive_v1"
+        engine = decision_engine_router.get_active_engine(db, "stale-v1-user")
+        assert engine.name == DecisionEngineType.ACTIVE_DRIVE_V2
     finally: db.close()
 
 
 def test_switch_is_atomic_and_audited():
     db = SessionLocal()
     try:
+        # DecisionEngineType.ACTIVE_DRIVE_V1 is retained only so a legacy
+        # stored value still parses (see test above) - used here purely as
+        # an arbitrary "different value" to exercise the generic
+        # switch/audit-trail plumbing, independent of whether that engine
+        # has a registered implementation.
         set_engine(db, "switch-user", DecisionEngineType.ACTIVE_DRIVE_V1, "switch-user")
         assert get_setting(db, "switch-user").decision_engine == "active_drive_v1"
         audit = db.query(DecisionEngineChange).filter_by(user_id="switch-user").one()

@@ -2,7 +2,6 @@ from __future__ import annotations
 from app.core.config import settings
 from app.decision_engine.repository import get_setting, owner
 from app.decision_engine.types import DecisionEngineType
-from app.decision_engine.v1 import ActiveDriveV1Adapter
 from app.decision_engine.v2 import ActiveDriveV2Engine
 from app.monitoring.logging import get_logger
 
@@ -10,10 +9,25 @@ logger = get_logger("quantx.decision_engine")
 
 class DecisionEngineRouter:
     def __init__(self):
-        self.engines = {DecisionEngineType.ACTIVE_DRIVE_V1: ActiveDriveV1Adapter(), DecisionEngineType.ACTIVE_DRIVE_V2: ActiveDriveV2Engine()}
+        # Active Drive V1 has no registered implementation here - it was
+        # removed from Premium X Dark and now lives only in the standalone
+        # QuantX Classic repository (see the Remove Classic From Premium X
+        # Dark task). DecisionEngineType.ACTIVE_DRIVE_V1 is kept only so a
+        # historical setting/decision value still parses.
+        self.engines = {DecisionEngineType.ACTIVE_DRIVE_V2: ActiveDriveV2Engine()}
     def get_active_engine(self, db, user_id):
         selected = DecisionEngineType(get_setting(db, user_id).decision_engine)
-        return self.engines[selected]
+        engine = self.engines.get(selected)
+        if engine is None:
+            # Defense in depth: a stored setting that predates V1's removal
+            # (or a restored backup) must fail safe to V2, never crash every
+            # prediction request for that user.
+            logger.error(
+                f"decision_engine_unavailable_falling_back_to_v2 requested={selected.value}",
+                extra={"category": "decision_engine"},
+            )
+            engine = self.engines[DecisionEngineType.ACTIVE_DRIVE_V2]
+        return engine
     def evaluate(self, db, user_id, context):
         engine = self.get_active_engine(db, user_id)
         try:

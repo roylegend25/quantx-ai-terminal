@@ -8,7 +8,12 @@ from app.decision_engine.types import DecisionEngineType
 DEFAULT_ENGINE = DecisionEngineType(settings.default_decision_engine)
 
 def is_available(engine: DecisionEngineType) -> bool:
-    return settings.active_drive_v2_enabled if engine == DecisionEngineType.ACTIVE_DRIVE_V2 else settings.active_drive_v1_available
+    # Active Drive V1 has been removed from Premium X Dark entirely (see the
+    # standalone QuantX Classic repository) - it can never be available
+    # here regardless of any legacy setting.
+    if engine == DecisionEngineType.ACTIVE_DRIVE_V1:
+        return False
+    return settings.active_drive_v2_enabled
 
 def owner(user_id: str) -> str:
     return settings.admin_username if user_id == "internal-scheduler" else user_id

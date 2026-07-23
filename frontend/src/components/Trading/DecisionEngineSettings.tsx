@@ -3,7 +3,7 @@ import { BrainCircuit, CheckCircle2, History, ShieldCheck, X } from "lucide-reac
 import { api } from "../../services/api";
 import { formatMarketRegime, pct01 } from "../../lib/activeDrive";
 
-type EngineId = "active_drive_v1" | "active_drive_v2";
+type EngineId = "active_drive_v2";
 type Props = { showToast: (message: string, type?: any) => void };
 
 export default function DecisionEngineSettings({ showToast }: Props) {
@@ -32,9 +32,9 @@ export default function DecisionEngineSettings({ showToast }: Props) {
           className={`engine-choice ${engine.selected ? "selected" : ""} ${!engine.available ? "unavailable" : ""}`}
           onClick={() => { if (!engine.selected && engine.available) { setAcknowledged(false); setPending(engine.id); } }}>
           <span className="engine-choice-head"><BrainCircuit size={19}/><b>{engine.name}</b>{engine.selected && <CheckCircle2 size={18}/>}</span>
-          <span className={`chip ${engine.id === "active_drive_v2" ? "green" : "yellow"}`}>{engine.id === "active_drive_v2" ? "Recommended" : "Legacy rollback"}</span>
+          <span className="chip green">Recommended</span>
           <small>v{engine.version} · {engine.health}{!engine.available ? " · Disabled in production" : ""}</small>
-          <span>{engine.id === "active_drive_v2" ? "Multi-model, multi-strategy, quant scoring with conservative evidence weighting." : "Archived legacy engine (see archive/quantx-classic) - disabled in production and cannot be selected here."}</span>
+          <span>Multi-model, multi-strategy, quant scoring with conservative evidence weighting.</span>
         </button>)}
       </div>
       <label className="engine-shadow-toggle"><input type="checkbox" checked={state.compare_engines_shadow}
@@ -44,7 +44,7 @@ export default function DecisionEngineSettings({ showToast }: Props) {
     <section className="engine-detail-panel">
       <div className="card-title">Authoritative Decision Status</div>
       <div className="engine-metric-grid">
-        <Metric label="Current engine" value={state.active_engine === "active_drive_v2" ? "Active Drive V2" : "Legacy V1"}/>
+        <Metric label="Current engine" value="Active Drive V2"/>
         <Metric label="Last signal" value={last?.final_signal || "No decision yet"}/>
         <Metric label="Engine health" value={last?.health || "healthy"}/>
         <Metric label="Data status" value={last?.data_status?.stale ? "Cached / stale" : last?.data_status?.source || last?.data_status || "—"}/>
@@ -64,8 +64,8 @@ export default function DecisionEngineSettings({ showToast }: Props) {
     </section>
     {pending && <div className="engine-confirm-backdrop" role="dialog" aria-modal="true" aria-label="Confirm engine switch">
       <div className="engine-confirm-sheet"><button className="engine-confirm-close" onClick={() => setPending(null)}><X size={18}/></button>
-        <h3>Switch to {pending === "active_drive_v2" ? "Active Drive V2" : "Active Drive V1"}?</h3>
-        <p>{pending === "active_drive_v2" ? "Active Drive V2 will become the authoritative decision engine." : "You are switching to the legacy Active Drive V1 engine."} Existing positions and protective TP/SL orders will not be modified.</p>
+        <h3>Switch to Active Drive V2?</h3>
+        <p>Active Drive V2 will become the authoritative decision engine. Existing positions and protective TP/SL orders will not be modified.</p>
         <label className="engine-ack"><input type="checkbox" checked={acknowledged} onChange={e => setAcknowledged(e.target.checked)}/> I acknowledge this applies only to future decisions.</label>
         <button disabled={busy || !acknowledged} onClick={confirm}>{busy ? "Switching…" : "Confirm engine switch"}</button>
       </div>

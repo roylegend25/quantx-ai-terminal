@@ -34,16 +34,12 @@ class Settings(BaseSettings):
     default_symbol: str = "BTCUSDT"
     default_interval: str = "5m"
 
-    # Active Drive V2 rollout: V2 authoritative by default, V1 retained for manual rollback.
+    # Active Drive V2 rollout: the sole decision engine in Premium X Dark.
+    # The legacy ensemble-based engine (formerly Active Drive V1) has been
+    # removed entirely - see the standalone QuantX Classic repository.
     active_drive_v2_enabled: bool = True
-    # Legacy engine, disabled by default - see archive/quantx-classic for the
-    # archived reference implementation. Only enable for a documented manual
-    # rollback; it must never be the default in any environment.
-    active_drive_v1_available: bool = False
     default_decision_engine: str = "active_drive_v2"
-    active_drive_v1_shadow_mode: bool = False
     active_drive_v2_shadow_only: bool = False
-    active_drive_automatic_v1_fallback: bool = False
     active_drive_min_total_evidence: float = 8.0
     active_drive_min_point_margin: float = 4.0
     active_drive_min_confidence: float = 0.60

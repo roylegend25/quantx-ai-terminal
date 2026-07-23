@@ -102,7 +102,7 @@ export default function BotSettingsPage(props: AppData) {
       <Card title="Bot Settings" full right={<div className="bot-settings-tabs"><PaperLiveTabs active={tab === "engine" ? "paper" : tab} onChange={setTab} /><button role="tab" aria-selected={tab === "engine"} className={tab === "engine" ? "mode-toggle-btn on paper" : "mode-toggle-btn"} onClick={() => setTab("engine")}>Decision Engine</button></div>}>
         <p className="regime-desc">
           {tab === "engine"
-            ? "Choose the single authoritative server-side decision engine. V2 is the default; V1 remains available for manual rollback."
+            ? "Active Drive V2 is the single authoritative server-side decision engine."
             : tab === "paper"
             ? "Global bot lifecycle controls (start/pause/stop, mode switch). Confidence threshold, max open positions and strategy settings live on the Risk Management page."
             : "Live bot settings for real Binance Futures trading: user-editable risk limits (shared with Paper), server-protected limits (admin-only), and API key status. Keys are never exposed here."}

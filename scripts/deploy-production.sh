@@ -213,8 +213,10 @@ asyncio.run(main())
 '
 docker exec quantx-backend python -c '
 from app.core.config import settings
+from app.decision_engine.router import decision_engine_router
+from app.decision_engine.types import DecisionEngineType
 assert settings.binance_live_enabled is False, "BINANCE_LIVE_ENABLED must remain false after deploy"
-assert settings.active_drive_v1_available is False, "Active Drive V1 (legacy, archived at archive/quantx-classic) must stay disabled in production"
+assert DecisionEngineType.ACTIVE_DRIVE_V1 not in decision_engine_router.engines, "Active Drive V1 (legacy - now the standalone QuantX Classic repository) must have no registered engine in Premium X Dark"
 assert settings.default_decision_engine == "active_drive_v2", "Active Drive V2 must remain the default/only production decision engine"
 '
 
