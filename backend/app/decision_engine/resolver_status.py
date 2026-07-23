@@ -59,8 +59,38 @@ def unresolved_reason_summary(db: Session, symbol: str | None = None) -> dict:
 
 
 def catchup_progress(db: Session) -> dict:
+    """total_due/total_overdue (and the "healthy" flag derived from them in
+    the /resolver/health route) must count only predictions still genuinely
+    actionable by the resolver - a row already terminally classified
+    VOID_DATA_GAP/VOID_INVALID_PREDICTION (lifecycle_status) or
+    permanent_data_gap (the legacy unresolved_status marker) has already
+    reached a terminal state; the resolver will never attempt it again
+    (see resolver.py's UNRESOLVED_STATUSES/_claim_rows_fair, which both
+    exclude permanent_data_gap from claiming). Counting those rows as
+    "overdue" here previously reported a large, alarming backlog
+    (thousands of rows) that was actually a correct, honest historical
+    market-data gap, not a stuck resolver - lifecycle_health() below
+    already excluded them correctly; this brings catchup_progress()/
+    resolver_health() in line with it."""
     now = datetime.now(timezone.utc)
-    base = db.query(PredictionLedger).outerjoin(PredictionResolution, PredictionResolution.prediction_id == PredictionLedger.prediction_id).filter(PredictionResolution.id.is_(None))
+    not_terminally_voided = or_(
+        PredictionLedger.lifecycle_status.is_(None),
+        PredictionLedger.lifecycle_status.notin_(outcome.VOID_STATUSES),
+    )
+    # All unresolved rows regardless of terminal status - delayed/
+    # permanently_failed below deliberately need to see the
+    # permanent_data_gap rows themselves, not have them excluded.
+    all_unresolved = db.query(PredictionLedger).outerjoin(
+        PredictionResolution, PredictionResolution.prediction_id == PredictionLedger.prediction_id
+    ).filter(PredictionResolution.id.is_(None))
+    # Still genuinely actionable: excludes rows already terminally voided
+    # (VOID_DATA_GAP/VOID_INVALID_PREDICTION/permanent_data_gap) - this is
+    # what total_due/total_overdue/per-symbol/oldest_overdue below, and the
+    # "healthy" flag derived from them, should count.
+    base = all_unresolved.filter(
+        not_terminally_voided,
+        or_(PredictionLedger.unresolved_status.is_(None), PredictionLedger.unresolved_status != "permanent_data_gap"),
+    )
     total_due = base.filter(PredictionLedger.resolution_deadline <= now).count()
     total_overdue = base.filter(PredictionLedger.resolution_deadline <= now, PredictionLedger.resolver_attempts > 0).count()
     processed = db.query(func.count(PredictionLedger.prediction_id)).filter(
@@ -69,10 +99,10 @@ def catchup_progress(db: Session) -> dict:
     resolved_total = db.query(func.count(PredictionResolution.id)).join(
         PredictionLedger, PredictionResolution.prediction_id == PredictionLedger.prediction_id
     ).filter(PredictionLedger.symbol.in_(("BTCUSDT", "ETHUSDT"))).scalar() or 0
-    delayed = base.filter(PredictionLedger.symbol.in_(("BTCUSDT", "ETHUSDT")),
+    delayed = all_unresolved.filter(PredictionLedger.symbol.in_(("BTCUSDT", "ETHUSDT")),
                           PredictionLedger.unresolved_status.in_(("resolver_delayed", "secondary_provider_pending",
                                                                   "primary_provider_unavailable", "primary_market_data_gap"))).count()
-    permanently_failed = base.filter(PredictionLedger.symbol.in_(("BTCUSDT", "ETHUSDT")),
+    permanently_failed = all_unresolved.filter(PredictionLedger.symbol.in_(("BTCUSDT", "ETHUSDT")),
                                      PredictionLedger.unresolved_status == "permanent_data_gap").count()
 
     per_symbol = {}
