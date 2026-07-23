@@ -55,14 +55,29 @@ docker exec quantx-backend python -c 'from app.trading.execution_router import r
 # index consistency check later. Use SQLite's own online backup API
 # instead, which is consistent by construction even against a live,
 # actively-written source database.
-docker exec quantx-backend python -c '
+#
+# Retried up to 3 times: since WAL mode was enabled (Section 4 perf fix),
+# a read-only URI-mode connection can rarely lose a race against SQLite's
+# own automatic WAL checkpoint (a normal, transient event, not a data
+# problem) and fail with "unable to open database file" - observed once
+# in practice, succeeded instantly on retry with no other symptom.
+for attempt in 1 2 3; do
+  if docker exec quantx-backend python -c '
 import sqlite3
 src = sqlite3.connect("file:/app/data/paper.db?mode=ro", uri=True)
 dst = sqlite3.connect("/tmp/deploy_backup_paper.db")
 src.backup(dst)
 dst.close()
 src.close()
-'
+'; then
+    break
+  fi
+  if [ "$attempt" = "3" ]; then
+    echo "SQLite backup failed 3 times - not a transient race, aborting." >&2
+    exit 1
+  fi
+  sleep 3
+done
 docker cp quantx-backend:/tmp/deploy_backup_paper.db "$BACKUP_DIR/paper.db"
 docker exec quantx-backend rm -f /tmp/deploy_backup_paper.db
 chmod 600 "$BACKUP_DIR/paper.db"
