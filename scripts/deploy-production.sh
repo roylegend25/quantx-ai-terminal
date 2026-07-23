@@ -61,6 +61,22 @@ docker image ls --format '{{.Repository}}:{{.Tag}}\t{{.CreatedAt}}' \
         docker rmi "$old_image" 2>/dev/null || true
       fi
     done
+
+# Same disk-space preflight, for backups/deploy-* : each attempt's SQLite
+# online-backup copy (paper.db, ~1-2.5GB and growing with the ledger) is
+# left behind with nothing cleaning up prior attempts' copies either -
+# this actually filled the disk to 100% mid-build once already (a real
+# "no space left on device" layer-extraction failure, not just a slow
+# build). Keep the one just created above (this attempt) plus the
+# immediately-prior attempt's, delete anything older. Some files under
+# validation-data/ are root-owned (written by a `docker run` validation
+# container) hence sudo.
+ls -1d "$PROJECT_DIR"/backups/deploy-*/ 2>/dev/null \
+  | sort \
+  | head -n -2 \
+  | while read -r old_backup_dir; do
+      sudo rm -rf "$old_backup_dir"
+    done
 docker builder prune -f >/dev/null 2>&1 || true
 
 # Defense in depth for an old image that predates the maintenance marker:
