@@ -27,9 +27,19 @@ curl -I https://www.quantxterminal.com
 
 After authenticated login, verify `GET /api/bot/decision-engine` reports `active_drive_v2`. Do not expose the bearer token in shell history or logs.
 
-## Ordinary engine rollback
+## Engine rollback
 
-Use Bot Settings → Decision Engine → Active Drive V1 → acknowledge → confirm. This changes only future decisions. It does not change positions, orders, balances, TP/SL, or historical records. A code/database rollback is not required for an ordinary engine switch.
+Active Drive V1 (the legacy ensemble-based engine) has been removed from
+Premium X Dark entirely - there is no longer an in-app "switch to V1" option
+in Bot Settings → Decision Engine. Active Drive V2 is the only engine this
+application ships. `DecisionEngineType.ACTIVE_DRIVE_V1` remains defined only
+so a historical stored setting/decision row still parses; selecting it is
+rejected with HTTP 409, and it never appears in `GET /api/bot/decision-engine`'s
+`available_engines` list.
+
+An emergency rollback to the legacy engine now means deploying the standalone
+QuantX Classic repository as its own separate service, not flipping a setting
+in this application. See that repository's own README.md/DEPLOYMENT.md.
 
 ## Code rollback
 
