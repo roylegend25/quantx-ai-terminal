@@ -90,7 +90,7 @@ function nextDelayMs<T>(entry: Entry<T>): number {
   return entry.normalPollMs;
 }
 
-function fetchOnce<T>(key: string, entry: Entry<T>): Promise<void> {
+function fetchOnce<T>(entry: Entry<T>): Promise<void> {
   if (entry.inFlight) return entry.inFlight; // coalesce concurrent triggers
   entry.inFlight = (async () => {
     try {
@@ -109,29 +109,29 @@ function fetchOnce<T>(key: string, entry: Entry<T>): Promise<void> {
   return entry.inFlight;
 }
 
-function scheduleNext<T>(key: string, entry: Entry<T>) {
+function scheduleNext<T>(entry: Entry<T>) {
   if (entry.timerId != null) window.clearTimeout(entry.timerId);
   entry.timerId = window.setTimeout(async () => {
-    await fetchOnce(key, entry);
-    scheduleNext(key, entry);
+    await fetchOnce(entry);
+    scheduleNext(entry);
   }, nextDelayMs(entry));
 }
 
-function ensureStarted<T>(key: string, entry: Entry<T>) {
+function ensureStarted<T>(entry: Entry<T>) {
   if (entry.visibilityHandler) return; // already running for this key
-  fetchOnce(key, entry).then(() => scheduleNext(key, entry));
+  fetchOnce(entry).then(() => scheduleNext(entry));
   if (typeof document !== "undefined") {
     entry.visibilityHandler = () => {
       if (entry.inFlight) return; // let the in-flight request land, it will reschedule itself
       if (document.visibilityState === "visible") {
         // wake up immediately instead of waiting out the hidden-tab interval
         if (entry.timerId != null) window.clearTimeout(entry.timerId);
-        fetchOnce(key, entry).then(() => scheduleNext(key, entry));
+        fetchOnce(entry).then(() => scheduleNext(entry));
       } else {
         // becoming hidden: re-arm the pending timer against the (now
         // longer) hidden interval instead of leaving the short visible-rate
         // timer to fire once more before the slowdown takes effect.
-        scheduleNext(key, entry);
+        scheduleNext(entry);
       }
     };
     document.addEventListener("visibilitychange", entry.visibilityHandler);
@@ -150,7 +150,7 @@ export function usePolledResource<T>(
   useEffect(() => {
     if (!key) return;
     const entry = getEntry<T>(key, fetchFn, options);
-    ensureStarted(key, entry);
+    ensureStarted(entry);
     const handler = (s: ResourceState<T>) => setState(s);
     entry.subscribers.add(handler);
     setState(entry.state); // pick up a result that landed before this mount
@@ -165,7 +165,7 @@ export function usePolledResource<T>(
 
   const reload = useCallback(() => {
     if (!key) return Promise.resolve();
-    return fetchOnce(key, getEntry<T>(key, fetchFn, options));
+    return fetchOnce(getEntry<T>(key, fetchFn, options));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
