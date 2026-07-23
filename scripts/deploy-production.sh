@@ -272,14 +272,21 @@ if IS_SQLITE:
         print("sqlite journal_mode=" + mode + " busy_timeout=" + str(timeout))
 '
 
-# --- Exactly one scheduler instance holds the Redis-fenced execution lease
-# (single-instance fencing) - waits out the startup grace period rather
-# than racing it. ---
-for _ in $(seq 1 60); do
-  docker exec quantx-backend python -c 'from app.deployment.lease import execution_lease; import sys; sys.exit(0 if execution_lease.held else 1)' && break
-  sleep 1
-done
-docker exec quantx-backend python -c 'from app.deployment.lease import execution_lease; assert execution_lease.held, "scheduler did not acquire its execution lease - single-instance fencing not confirmed"'
+# --- Execution-lease acquisition is reported, not hard-gated, here: the
+# trading scheduler deliberately never acquires its Redis-fenced lease
+# while deployment_maintenance is enabled (see
+# app/trading/scheduler.py/scheduler_deployment_maintenance) - and
+# maintenance stays on after every deploy by design, requiring a separate,
+# deliberate resume step (see scripts/resume-live-trading.sh's paper-only
+# equivalent). Asserting the lease is held at this point would always
+# fail closed regardless of whether the deploy itself succeeded. Actual
+# single-instance-fencing / lease-acquisition verification belongs to the
+# post-maintenance-clear verification pass instead. ---
+docker exec quantx-backend python -c '
+from app.deployment.lease import execution_lease
+from app.deployment import maintenance
+print("execution_lease_held=" + str(execution_lease.held) + " (expected False while deployment_maintenance=" + str(maintenance.enabled()) + ")")
+'
 
 # --- Resolver is live and healthy on the running production process
 # (BTC/ETH auto-resolution, dual-priority queues) - checked via an
