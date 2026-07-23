@@ -8,6 +8,7 @@ trading mode/lease/execution path.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -28,6 +29,45 @@ _MANUAL_CATCHUP_MIN_INTERVAL_SECONDS = 30.0
 _catchup_running = False
 
 
+class _TTLCache:
+    """Short-lived cache for the resolver/lifecycle dashboard+health routes.
+
+    catchup_progress()/lifecycle_health() are full-scan aggregations over
+    prediction_ledger (290k+ rows and growing) - each call costs several
+    seconds regardless of how tightly the query itself is written, since
+    there is no indexed "is this row resolved" column to search on
+    instead. These are dashboard/health status views, not a trading
+    decision input, so serving a result up to `ttl_seconds` old is exactly
+    as correct as the endpoint's own "generated_at" timestamp already
+    implies - it does not change what is asserted, only how often it is
+    literally recomputed. Not thundering-herd-proof (two threads racing
+    past expiry can both recompute once) - that's an efficiency detail,
+    not a correctness one, and is a fine tradeoff for a status endpoint.
+    """
+
+    def __init__(self, ttl_seconds: float):
+        self._ttl = ttl_seconds
+        self._lock = threading.Lock()
+        self._value = None
+        self._computed_at = 0.0
+
+    def get_or_compute(self, compute_fn):
+        with self._lock:
+            if self._value is not None and (time.monotonic() - self._computed_at) < self._ttl:
+                return self._value
+        value = compute_fn()
+        with self._lock:
+            self._value = value
+            self._computed_at = time.monotonic()
+        return value
+
+
+_RESOLVER_HEALTH_CACHE_TTL_SECONDS = 15.0
+_resolver_health_cache = _TTLCache(_RESOLVER_HEALTH_CACHE_TTL_SECONDS)
+_catchup_progress_cache = _TTLCache(_RESOLVER_HEALTH_CACHE_TTL_SECONDS)
+_lifecycle_health_cache = _TTLCache(_RESOLVER_HEALTH_CACHE_TTL_SECONDS)
+
+
 async def _admin(request: Request, user: str = Depends(get_current_user)) -> str:
     if user != settings.admin_username:
         modes.audit("prediction_catchup_unauthorized_attempt", detail={"subject": user})
@@ -36,13 +76,17 @@ async def _admin(request: Request, user: str = Depends(get_current_user)) -> str
     return user
 
 
-@router.get("/resolver/health")
-def resolver_health():
+def _compute_catchup_progress() -> dict:
     db = SessionLocal()
     try:
-        progress = resolver_status.catchup_progress(db)
+        return resolver_status.catchup_progress(db)
     finally:
         db.close()
+
+
+@router.get("/resolver/health")
+def resolver_health():
+    progress = _resolver_health_cache.get_or_compute(_compute_catchup_progress)
     healthy = progress["last_error"] is None and progress["oldest_overdue_age_seconds"] is not None and \
         (progress["oldest_overdue_age_seconds"] < 86400 or progress["total_overdue"] == 0)
     return {**progress, "healthy": bool(healthy), "provider_health": resolver_status.provider_health()}
@@ -59,9 +103,13 @@ def unresolved_summary(symbol: str | None = Query(default=None)):
 
 @router.get("/catchup-progress")
 def catchup_progress():
+    return _catchup_progress_cache.get_or_compute(_compute_catchup_progress)
+
+
+def _compute_lifecycle_health() -> dict:
     db = SessionLocal()
     try:
-        return resolver_status.catchup_progress(db)
+        return resolver_status.lifecycle_health(db)
     finally:
         db.close()
 
@@ -71,11 +119,7 @@ def lifecycle_health():
     """Explicit lifecycle-status dashboard view (PENDING/RESOLVING/
     RESOLVED_*/VOID_*/RESOLUTION_ERROR_RETRYING) plus independent
     recent/historical queue worker health."""
-    db = SessionLocal()
-    try:
-        return resolver_status.lifecycle_health(db)
-    finally:
-        db.close()
+    return _lifecycle_health_cache.get_or_compute(_compute_lifecycle_health)
 
 
 @router.get("/calibration-dataset")
