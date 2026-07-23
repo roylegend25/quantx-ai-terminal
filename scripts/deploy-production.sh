@@ -40,6 +40,29 @@ mkdir -p "$BACKUP_DIR" "$VALIDATION_DATA"
 sudo touch "$MAINTENANCE_MARKER"
 sudo chmod 600 "$MAINTENANCE_MARKER"
 
+# Disk-space preflight: this host has repeatedly run this build down to
+# 1-4GB free (observed live), because each successful deploy leaves its
+# image behind and nothing ever cleaned up the ones before it. The image
+# export+unpack step alone temporarily needs several GB of headroom on
+# top of the ~5.7GB image itself - running that close to full disk risks
+# a mid-build write failure, not just a slow build. Keep the currently
+# running image (rollback target) plus the immediately-prior one (the
+# same "current + 1 prior" retention already used for manual cleanup
+# earlier this session) and drop anything older, plus dangling build
+# cache - never touches a container's live image, never removes the
+# current rollback target.
+docker image ls --format '{{.Repository}}:{{.Tag}}\t{{.CreatedAt}}' \
+  | grep '^quantx-backend:v2-only-perf-cleanup-' \
+  | sort -k2 \
+  | head -n -2 \
+  | cut -f1 \
+  | while read -r old_image; do
+      if [ "$old_image" != "$CURRENT_IMAGE" ]; then
+        docker rmi "$old_image" 2>/dev/null || true
+      fi
+    done
+docker builder prune -f >/dev/null 2>&1 || true
+
 # Defense in depth for an old image that predates the maintenance marker:
 # revoke its live authority and activate the existing persistent kill switch.
 docker exec quantx-backend python -c 'from app.core.config import settings; from app.trading import modes; settings.binance_live_enabled=False; modes.set_kill_switch(True, "deployment maintenance")'

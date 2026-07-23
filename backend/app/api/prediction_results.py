@@ -40,9 +40,19 @@ class _TTLCache:
     decision input, so serving a result up to `ttl_seconds` old is exactly
     as correct as the endpoint's own "generated_at" timestamp already
     implies - it does not change what is asserted, only how often it is
-    literally recomputed. Not thundering-herd-proof (two threads racing
-    past expiry can both recompute once) - that's an efficiency detail,
-    not a correctness one, and is a fine tradeoff for a status endpoint.
+    literally recomputed.
+
+    The lock is held for the entire compute, not just the read/write of
+    the cached value: with real concurrent dashboard traffic (several open
+    sessions each polling this same route), releasing it during compute_fn()
+    let every caller that arrived while the cache was stale kick off its
+    own independent multi-second full-table scan at once - a thundering
+    herd that competed for the same limited DB connections/CPU and made
+    each one slower than running alone, observed live turning a ~20s query
+    into requests that never completed within 40s. Serializing the
+    (rare - at most once per ttl_seconds) recompute means late arrivals
+    wait for the one in-flight computation and then share its result,
+    instead of each starting a duplicate one.
     """
 
     def __init__(self, ttl_seconds: float):
@@ -55,11 +65,10 @@ class _TTLCache:
         with self._lock:
             if self._value is not None and (time.monotonic() - self._computed_at) < self._ttl:
                 return self._value
-        value = compute_fn()
-        with self._lock:
+            value = compute_fn()
             self._value = value
             self._computed_at = time.monotonic()
-        return value
+            return value
 
 
 _RESOLVER_HEALTH_CACHE_TTL_SECONDS = 15.0
