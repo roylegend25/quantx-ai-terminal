@@ -1,0 +1,11 @@
+[Unit]
+Description=Attempt QuantX Production V2 cert renewal twice daily
+
+[Timer]
+OnCalendar=*-*-* 04:20:00
+OnCalendar=*-*-* 16:20:00
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

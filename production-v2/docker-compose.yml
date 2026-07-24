@@ -1,0 +1,100 @@
+# QuantX Production V2 — clean deployment stack.
+# 3 services (backend, redis, nginx). No Postgres: AUDIT.md confirmed no code
+# path in this repo ever opens a Postgres connection — SQLite (WAL mode) is
+# the database the app actually uses, so it's the only one shipped here.
+#
+# Build context is the repo root (".."), because the backend image needs
+# ../backend/app and the nginx image needs ../frontend for its build stage.
+# Run this file from inside production-v2/ (deploy.sh does this for you).
+
+services:
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      args:
+        APP_GIT_SHA: ${APP_GIT_SHA:-unknown}
+        APP_IMAGE_TAG: ${APP_IMAGE_TAG:-unknown}
+    image: ${BACKEND_IMAGE_PREFIX:-quantx-backend-v2}:${APP_GIT_SHA:-latest}
+    container_name: quantx-backend-v2
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_GIT_SHA: ${APP_GIT_SHA:-unknown}
+      APP_IMAGE_TAG: ${APP_IMAGE_TAG:-unknown}
+    volumes:
+      - ${DATA_DIR:-./data}:/app/data
+    ports:
+      # Loopback-only, for host-side debugging (curl/psql-equivalent access).
+      # Public traffic only ever reaches this via the nginx container below.
+      - "127.0.0.1:9100:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  redis:
+    image: redis:7-alpine
+    container_name: quantx-redis-v2
+    restart: unless-stopped
+    # Ephemeral by design (ARCHITECTURE.md): cache + rate-limit state only,
+    # nothing here needs to survive a restart.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  nginx:
+    build:
+      context: ..
+      dockerfile: production-v2/nginx/Dockerfile
+    container_name: quantx-nginx-v2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - certbot-etc:/etc/letsencrypt:ro
+      - certbot-www:/var/www/certbot:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # One-shot cert issuance/renewal — not part of the always-on stack.
+  # deploy.sh and the renewal cron both run this via:
+  #   docker compose run --rm certbot ...
+  certbot:
+    image: certbot/certbot:latest
+    container_name: quantx-certbot-v2
+    profiles: ["certbot"]
+    volumes:
+      - certbot-etc:/etc/letsencrypt
+      - certbot-www:/var/www/certbot
+
+volumes:
+  certbot-etc:
+  certbot-www:

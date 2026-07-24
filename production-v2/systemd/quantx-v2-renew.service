@@ -1,0 +1,9 @@
+[Unit]
+Description=QuantX Production V2 — Let's Encrypt certificate renewal
+After=quantx-v2.service
+Requires=quantx-v2.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=__INSTALL_DIR__/production-v2
+ExecStart=__INSTALL_DIR__/production-v2/scripts/renew-cert.sh
