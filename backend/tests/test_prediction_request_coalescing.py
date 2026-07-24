@@ -34,7 +34,7 @@ def test_concurrent_requests_for_same_key_share_one_compute_and_persist(monkeypa
 
     async def run():
         return await asyncio.gather(*[
-            prediction_module.prediction("BTCUSDT", current_user="coalesce-user")
+            prediction_module.compute_and_persist_prediction("BTCUSDT", current_user="coalesce-user")
             for _ in range(8)
         ])
 
@@ -64,14 +64,14 @@ def test_sequential_requests_after_cache_expiry_each_recompute_independently(mon
     monkeypatch.setattr(prediction_module.httpx, "AsyncClient", _FakeAsyncClient)
     monkeypatch.setattr(prediction_module.market_intelligence, "get_context", _fake_get_context)
 
-    asyncio.run(prediction_module.prediction("BTCUSDT", current_user="coalesce-user-2"))
+    asyncio.run(prediction_module.compute_and_persist_prediction("BTCUSDT", current_user="coalesce-user-2"))
     assert persist_calls["count"] == 1
 
     # Force the cache entry to look expired without waiting the full 60s TTL.
     for key in list(prediction_module._prediction_cache):
         prediction_module._prediction_cache[key]["computed_at"] -= (prediction_module.PREDICTION_CACHE_TTL_SECONDS + 5) * 1000
 
-    asyncio.run(prediction_module.prediction("BTCUSDT", current_user="coalesce-user-2"))
+    asyncio.run(prediction_module.compute_and_persist_prediction("BTCUSDT", current_user="coalesce-user-2"))
     assert persist_calls["count"] == 2
 
 

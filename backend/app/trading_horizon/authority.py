@@ -1,4 +1,16 @@
-"""Persistence and server-side verification of immutable entry authority."""
+"""ARCHIVED (main-purpose consolidation, Stage 2): Persistence and
+server-side verification of immutable entry authority.
+
+Confirmed unreachable from production - superseded by
+app.decision_engine.execution_gate's single-authoritative-decision model.
+Zero importers outside this package and its own tests
+(tests/test_horizon_authority.py); tests/test_horizon_not_invoked_in_production.py
+statically enforces that no production module may import this module or
+app.trading_horizon.service. Kept in place (not deleted) for historical
+reference and because trading_horizon_decisions/_consumptions/
+_timeframe_links still hold real historical rows this module wrote before
+being superseded - do not delete those tables' data as part of any cleanup.
+"""
 from __future__ import annotations
 
 import uuid

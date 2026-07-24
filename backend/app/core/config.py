@@ -95,6 +95,16 @@ class Settings(BaseSettings):
     atr_tp_mult: float = 3.0
 
     scheduler_interval_seconds: int = 300
+    # Main-purpose consolidation (Stage 2): the trading scheduler's own
+    # 300s cycle only ever evaluates ONE execution timeframe per symbol
+    # (see decision_engine/profiles.py resolve_execution_timeframe) - it
+    # was never responsible for keeping every configured prediction_supported
+    # timeframe's persisted decision fresh. This separate, faster loop
+    # (app.trading.scheduler.observation_loop) computes+persists (never
+    # executes) a decision for every other configured timeframe on its own
+    # candle-close cadence, so GET /api/prediction/{symbol} can be strictly
+    # read-only for any timeframe a dashboard requests.
+    observation_interval_seconds: int = 60
     position_manager_interval_seconds: int = 5
     horizon_evaluation_timeout_seconds: float = 45.0
     horizon_timeframe_timeout_seconds: float = 20.0
@@ -195,6 +205,13 @@ class Settings(BaseSettings):
     indicator_performance_interval_seconds: float = 300.0
     indicator_performance_lookback_hours: int = 24
     indicator_performance_batch_size: int = 200
+    # Main-purpose consolidation (Stage 2): re-aggregates today's and
+    # yesterday's daily_* performance snapshots on this cadence. Cheap and
+    # idempotent (upsert, never append), so recomputing both every tick is
+    # simpler and safer than trying to detect exactly when a UTC day
+    # "finalizes" - today's row stays a live-ish running total, yesterday's
+    # settles once its last due prediction resolves.
+    daily_aggregation_interval_seconds: float = 900.0
     # Starvation-free claim allocation (2026-07-21 recent-queue fairness fix):
     # pure newest-deadline-first claiming let a continuous stream of freshly-
     # matured predictions permanently starve older PENDING/RETRYING rows once

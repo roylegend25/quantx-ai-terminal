@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 import httpx
 from app.data_sources.downloader import load_candles as load_cached_candles, store_candles
 from app.data_sources.validator import MIN_USABLE_QUALITY, validate_candle_sequence
-from app.db.models import DataQualityReport, PredictionFeature
+from app.db.models import ActiveDriveDecision, DataQualityReport, PredictionFeature
 from app.db.session import SessionLocal
 from app.core.deps import get_current_user
 from app.core.config import settings
@@ -677,8 +677,7 @@ def _no_data_response(symbol: str, interval: str, data_quality: dict, active_eng
     }
 
 
-@router.get("/{symbol}")
-async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = None, limit: int = 220, current_user: str = Depends(_prediction_subject)):
+def _parse_symbol_interval(symbol: str, interval: str, timeframe: str | None) -> tuple[str, str]:
     symbol = symbol.upper()
     # `timeframe` is accepted as an alias of `interval` (and takes precedence
     # when both are given) so GET /api/prediction/{symbol}?timeframe=1h works
@@ -695,6 +694,19 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
             status_code=400,
             detail=f"Unsupported timeframe '{interval}'. Supported: {', '.join(SUPPORTED_INTERVALS_MS)}",
         )
+    return symbol, interval
+
+
+async def compute_and_persist_prediction(
+    symbol: str, interval: str = "5m", timeframe: str | None = None, limit: int = 220, current_user: str = None,
+) -> dict:
+    """The ONLY function allowed to trigger a fresh Active Drive V2
+    computation (main-purpose consolidation, Stage 2). Called by the
+    trading scheduler's execution cycle and the observation loop
+    (app.trading.scheduler) - never by an HTTP GET handler. GET
+    /api/prediction/{symbol} below is read-only against whatever this most
+    recently persisted; it must never reach this function."""
+    symbol, interval = _parse_symbol_interval(symbol, interval, timeframe)
     start = time.perf_counter()
 
     selection_db = SessionLocal()
@@ -707,7 +719,7 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
     if cached and time.time() - cached["computed_at"] / 1000 < PREDICTION_CACHE_TTL_SECONDS:
         return cached["response"]
 
-    # Coalesce concurrent requests for the same key onto one compute+persist -
+    # Coalesce concurrent callers for the same key onto one compute+persist -
     # a second caller awaits the first's in-flight task instead of racing it
     # with its own candle fetch/feature build/ActiveDriveDecision persist.
     existing = _prediction_inflight.get(cache_key)
@@ -722,6 +734,69 @@ async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = 
         return await task
     finally:
         _prediction_inflight.pop(cache_key, None)
+
+
+async def _read_persisted_prediction(symbol: str, interval: str, current_user: str) -> dict:
+    """Read-only: returns whatever compute_and_persist_prediction most
+    recently persisted for (owner, symbol, interval) - never computes.
+    Frontend GET requests must never calculate V2 (main-purpose
+    consolidation, Stage 2)."""
+    db = SessionLocal()
+    try:
+        active_engine = decision_engine_router.get_active_engine(db, current_user)
+        row = (
+            db.query(ActiveDriveDecision)
+            .filter(
+                ActiveDriveDecision.user_id == owner(current_user),
+                ActiveDriveDecision.symbol == symbol,
+                ActiveDriveDecision.timeframe == interval,
+                ActiveDriveDecision.engine == active_engine.name.value,
+                ActiveDriveDecision.shadow.is_(False),
+            )
+            .order_by(ActiveDriveDecision.created_at.desc())
+            .first()
+        )
+        if row is None:
+            # Honest "nothing computed yet" - never fabricate a decision.
+            # A real one will appear once the scheduler's observation loop
+            # reaches this (symbol, timeframe) pair.
+            return {
+                "symbol": symbol, "interval": interval, "timeframe": interval,
+                "status": "awaiting_first_computation",
+                "reason": "No Active Drive V2 decision has been computed yet for this symbol/timeframe.",
+                "direction": None, "confidence": None, "decision_engine": None,
+                "prediction": {},
+            }
+        if row.full_response_payload:
+            payload = dict(row.full_response_payload)
+            payload["status"] = "ok"
+            return payload
+        # Pre-migration row (persisted before full_response_payload existed):
+        # best-effort reconstruction from decision_payload rather than
+        # fabricating the missing forecast/chart fields.
+        engine_result = dict(row.decision_payload or {})
+        engine_result.setdefault("decision_id", row.decision_id)
+        return {
+            "symbol": symbol, "interval": interval, "timeframe": interval,
+            "status": "ok_partial_legacy_row",
+            "reason": "This decision predates full-response caching; forecast/chart fields are unavailable.",
+            "direction": row.signal, "confidence": round(row.confidence * 100, 1) if row.confidence is not None else None,
+            "decision_engine": engine_result,
+            "prediction": {},
+        }
+    finally:
+        db.close()
+
+
+@router.get("/{symbol}")
+async def prediction(symbol: str, interval: str = "5m", timeframe: str | None = None, limit: int = 220, current_user: str = Depends(_prediction_subject)):
+    """Read-only. Returns the latest Active Drive V2 decision persisted for
+    this (symbol, timeframe) - never computes one. Only
+    compute_and_persist_prediction (called from the trading scheduler's
+    execution cycle and observation loop) may trigger a fresh V2
+    evaluation - see main-purpose consolidation, Stage 2."""
+    symbol, interval = _parse_symbol_interval(symbol, interval, timeframe)
+    return await _read_persisted_prediction(symbol, interval, current_user)
 
 
 async def _compute_and_persist_prediction(symbol, interval, active_engine, current_user, limit, start, cache_key):
@@ -999,4 +1074,23 @@ async def _compute_and_persist_prediction(symbol, interval, active_engine, curre
         "prediction": pred,
     }
     _prediction_cache[cache_key] = {"computed_at": pred["computed_at"], "response": response}
+
+    # Persist the full response so GET /{symbol} can read it back instead of
+    # computing (main-purpose consolidation, Stage 2). Best-effort: a
+    # failure here must not turn a successful prediction into an error -
+    # the row already has decision_payload as a fallback for the read path.
+    decision_id = pred.get("decision_id")
+    if decision_id:
+        try:
+            persist_db = SessionLocal()
+            try:
+                persist_db.query(ActiveDriveDecision).filter(
+                    ActiveDriveDecision.decision_id == decision_id
+                ).update({"full_response_payload": response})
+                persist_db.commit()
+            finally:
+                persist_db.close()
+        except Exception:
+            pass
+
     return response

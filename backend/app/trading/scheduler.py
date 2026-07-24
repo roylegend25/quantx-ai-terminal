@@ -13,6 +13,7 @@ from app.exchanges.binance_time import BinanceProduct, binance_time
 from app.trading.safety_halt import halt_active_verification
 
 RUNNING = False
+OBSERVATION_RUNNING = False
 LAST_CYCLE_AT: str | None = None
 engine = TradingEngine()
 logger = get_logger("quantx.scheduler")
@@ -101,17 +102,88 @@ async def trading_loop():
 
         await asyncio.sleep(settings.scheduler_interval_seconds)
 
+async def _observation_cycle() -> None:
+    """Compute+persist (never execute) an Active Drive V2 decision for every
+    configured prediction_supported timeframe that's due for a fresh one -
+    not just the single execution timeframe trading_loop covers. This is
+    what lets GET /api/prediction/{symbol} be strictly read-only for any
+    timeframe a dashboard requests (main-purpose consolidation, Stage 2)."""
+    from app.core.security import INTERNAL_SERVICE_SUBJECT
+    from app.db.session import SessionLocal
+    from app.db.models import ActiveDriveDecision
+    from app.timeframes.canonical import TIMEFRAME_CAPABILITIES, calendar_month_age
+    from app.api.prediction import compute_and_persist_prediction
+    from app.decision_engine.router import decision_engine_router
+    from app.decision_engine.repository import owner
+
+    now = datetime.now(timezone.utc)
+    now_ms = int(now.timestamp() * 1000)
+    owner_id = owner(INTERNAL_SERVICE_SUBJECT)
+
+    for symbol in settings.symbols:
+        for tf, caps in TIMEFRAME_CAPABILITIES.items():
+            if not caps.prediction_supported:
+                continue
+            db = SessionLocal()
+            try:
+                active_engine = decision_engine_router.get_active_engine(db, INTERNAL_SERVICE_SUBJECT)
+                latest = (
+                    db.query(ActiveDriveDecision)
+                    .filter(
+                        ActiveDriveDecision.user_id == owner_id,
+                        ActiveDriveDecision.symbol == symbol,
+                        ActiveDriveDecision.timeframe == tf,
+                        ActiveDriveDecision.engine == active_engine.name.value,
+                        ActiveDriveDecision.shadow.is_(False),
+                    )
+                    .order_by(ActiveDriveDecision.created_at.desc())
+                    .first()
+                )
+            finally:
+                db.close()
+
+            due = latest is None
+            if latest is not None:
+                last_ms = int(latest.created_at.replace(tzinfo=timezone.utc).timestamp() * 1000)
+                if tf == "1M":
+                    due = calendar_month_age(last_ms, now_ms) >= 1
+                else:
+                    due = (now_ms - last_ms) >= (caps.fixed_duration_ms or 60_000)
+
+            if not due:
+                continue
+            try:
+                await compute_and_persist_prediction(symbol, interval=tf, current_user=INTERNAL_SERVICE_SUBJECT)
+            except Exception as e:
+                log_event(
+                    logger, message="observation_cycle_error", level=logging.ERROR, category="scheduler",
+                    symbol=symbol, timeframe=tf, error=repr(e),
+                )
+
+
+async def observation_loop():
+    while OBSERVATION_RUNNING:
+        try:
+            await _observation_cycle()
+        except Exception as e:
+            log_event(logger, message="observation_loop_error", level=logging.ERROR, category="scheduler", error=repr(e))
+        await asyncio.sleep(settings.observation_interval_seconds)
+
+
 def start_scheduler():
-    global RUNNING
+    global RUNNING, OBSERVATION_RUNNING
 
     if RUNNING:
         return
 
     RUNNING = True
+    OBSERVATION_RUNNING = True
     log_event(logger, message="scheduler_started", category="scheduler")
     asyncio.create_task(trading_loop())
+    asyncio.create_task(observation_loop())
 
 def stop_scheduler():
-    global RUNNING
+    global RUNNING, OBSERVATION_RUNNING
     RUNNING = False
+    OBSERVATION_RUNNING = False
     log_event(logger, message="scheduler_stopped", category="scheduler")

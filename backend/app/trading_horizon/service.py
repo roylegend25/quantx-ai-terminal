@@ -1,9 +1,16 @@
-"""Trading Horizon policy.
+"""ARCHIVED (main-purpose consolidation, Stage 2): Trading Horizon policy.
 
-This module does not place orders.  It converts Active Drive V2 timeframe
-decisions into one execution intent, or a fully explained NO_TRADE result.
-Keeping this policy pure makes it usable by paper/live callers without
-creating a second decision engine.
+Confirmed unreachable from production - only app.trading_horizon.authority
+(itself archived) and this package's own tests import it directly.
+tests/test_horizon_not_invoked_in_production.py statically enforces that no
+production module may import this module. Kept in place for historical
+reference, not deleted.
+
+This module does not place orders. It converted Active Drive V2 timeframe
+decisions into one execution intent, or a fully explained NO_TRADE result -
+superseded by app.decision_engine.execution_gate's single-authoritative-
+decision model, which does this directly on the persisted ActiveDriveDecision
+rather than through a separate policy/authority layer.
 """
 
 from __future__ import annotations

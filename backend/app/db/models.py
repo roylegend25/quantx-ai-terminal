@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, BigInteger, String, Float, DateTime, Text, JSON, Boolean, Index, UniqueConstraint, ForeignKey
+from sqlalchemy import Column, Integer, BigInteger, String, Float, DateTime, Date, Text, JSON, Boolean, Index, UniqueConstraint, ForeignKey
 from datetime import datetime, timezone
 from app.db.session import Base
 
@@ -215,6 +215,15 @@ class ActiveDriveDecision(Base):
     valid_from = Column(DateTime, nullable=True)
     valid_until = Column(DateTime, nullable=True, index=True)
     updated_at = Column(DateTime, nullable=True)
+    # Main-purpose consolidation (Stage 2): the full GET /api/prediction/{symbol}
+    # response, persisted once at compute time so that route can become
+    # read-only (frontend GET requests must never trigger V2 computation -
+    # only the scheduler's observation/execution cycles call
+    # compute_and_persist_prediction). Nullable/additive: decisions persisted
+    # before this existed simply have no cached full response and fall back
+    # to a payload reconstructed from decision_payload (see
+    # app.api.prediction._read_persisted_prediction).
+    full_response_payload = Column(JSON, nullable=True)
 
 
 class ActiveDriveDecisionConsumption(Base):
@@ -1768,3 +1777,241 @@ class PaperValidationGuard(Base):
     updated_at = Column(
         DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
     )
+
+
+# ---------------------------------------------------------------------------
+# Daily performance snapshots (main-purpose consolidation, Stage 2)
+#
+# Immutable, one-row-per-day-per-scope aggregates over the row-level source
+# of truth (PredictionLedger + PredictionResolution, same tables
+# app.decision_engine.repository.performance()/performance_batch() already
+# use for live evidence-gating - see app.analytics.daily_performance for the
+# aggregation job that fills these). None of the existing "performance"
+# tables (IndicatorPerformanceRollup, StrategyPerformance,
+# StrategyRollingMetrics, MLOps evaluations) are date-bucketed history - they
+# are continuously-overwritten current-state caches - so these are
+# genuinely new tables, not a repurposing of an existing one.
+#
+# contributor_type in the engine's own vocabulary is "strategy" | "ml" |
+# "quant" (app.decision_engine.v2.ActiveDriveV2Engine._candidate) -
+# DailyIndicatorPerformance is the cross-type umbrella (mirrors
+# IndicatorPerformanceRollup's existing source_name/source_version key,
+# which likewise never filters by type), while the strategy/model/
+# quant-signal tables are the type-filtered breakdowns.
+#
+# Idempotent by construction: re-running the same day's aggregation
+# recomputes and upserts by the UniqueConstraint below rather than
+# appending - never produces duplicate rows for the same scope.
+
+
+class DailyIndicatorPerformance(Base):
+    __tablename__ = "daily_indicator_performance"
+    __table_args__ = (
+        UniqueConstraint("date", "symbol", "timeframe", "contributor_type", "contributor_name",
+                          "contributor_version", "direction", "market_regime", "engine_version",
+                          name="uq_daily_indicator_performance_scope"),
+        Index("ix_daily_indicator_performance_contributor", "contributor_name", "contributor_version"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    date = Column(Date, nullable=False, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    timeframe = Column(String, nullable=False, index=True)
+    contributor_type = Column(String, nullable=False)
+    contributor_name = Column(String, nullable=False, index=True)
+    contributor_version = Column(String, nullable=False)
+    direction = Column(String, nullable=False)
+    market_regime = Column(String, nullable=True)
+    engine_version = Column(String, nullable=False)
+    total_eligible_predictions = Column(Integer, nullable=False, default=0)
+    resolved_predictions = Column(Integer, nullable=False, default=0)
+    correct = Column(Integer, nullable=False, default=0)
+    wrong = Column(Integer, nullable=False, default=0)
+    neutral = Column(Integer, nullable=False, default=0)
+    unresolved_not_due = Column(Integer, nullable=False, default=0)
+    coverage_rate = Column(Float, nullable=True)
+    directional_accuracy = Column(Float, nullable=True)
+    neutral_rate = Column(Float, nullable=True)
+    average_error = Column(Float, nullable=True)
+    median_error = Column(Float, nullable=True)
+    average_actual_return = Column(Float, nullable=True)
+    win_contribution = Column(Float, nullable=True)
+    loss_contribution = Column(Float, nullable=True)
+    sample_size = Column(Integer, nullable=False, default=0)
+    confidence_interval_low = Column(Float, nullable=True)
+    confidence_interval_high = Column(Float, nullable=True)
+    first_prediction_at = Column(DateTime, nullable=True)
+    last_prediction_at = Column(DateTime, nullable=True)
+    data_quality_status = Column(String, nullable=False, default="ok")
+    generated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    generation_version = Column(String, nullable=False, default="1.0.0")
+    fingerprint = Column(String, nullable=True)
+
+
+class DailyStrategyPerformance(Base):
+    __tablename__ = "daily_strategy_performance"
+    __table_args__ = (
+        UniqueConstraint("date", "symbol", "timeframe", "contributor_name", "contributor_version",
+                          "direction", "market_regime", "engine_version",
+                          name="uq_daily_strategy_performance_scope"),
+        Index("ix_daily_strategy_performance_contributor", "contributor_name", "contributor_version"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    date = Column(Date, nullable=False, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    timeframe = Column(String, nullable=False, index=True)
+    contributor_name = Column(String, nullable=False, index=True)
+    contributor_version = Column(String, nullable=False)
+    direction = Column(String, nullable=False)
+    market_regime = Column(String, nullable=True)
+    engine_version = Column(String, nullable=False)
+    total_eligible_predictions = Column(Integer, nullable=False, default=0)
+    resolved_predictions = Column(Integer, nullable=False, default=0)
+    correct = Column(Integer, nullable=False, default=0)
+    wrong = Column(Integer, nullable=False, default=0)
+    neutral = Column(Integer, nullable=False, default=0)
+    unresolved_not_due = Column(Integer, nullable=False, default=0)
+    coverage_rate = Column(Float, nullable=True)
+    directional_accuracy = Column(Float, nullable=True)
+    neutral_rate = Column(Float, nullable=True)
+    average_error = Column(Float, nullable=True)
+    median_error = Column(Float, nullable=True)
+    average_actual_return = Column(Float, nullable=True)
+    win_contribution = Column(Float, nullable=True)
+    loss_contribution = Column(Float, nullable=True)
+    sample_size = Column(Integer, nullable=False, default=0)
+    confidence_interval_low = Column(Float, nullable=True)
+    confidence_interval_high = Column(Float, nullable=True)
+    first_prediction_at = Column(DateTime, nullable=True)
+    last_prediction_at = Column(DateTime, nullable=True)
+    data_quality_status = Column(String, nullable=False, default="ok")
+    generated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    generation_version = Column(String, nullable=False, default="1.0.0")
+    fingerprint = Column(String, nullable=True)
+
+
+class DailyModelPerformance(Base):
+    __tablename__ = "daily_model_performance"
+    __table_args__ = (
+        UniqueConstraint("date", "symbol", "timeframe", "contributor_name", "contributor_version",
+                          "direction", "market_regime", "engine_version",
+                          name="uq_daily_model_performance_scope"),
+        Index("ix_daily_model_performance_contributor", "contributor_name", "contributor_version"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    date = Column(Date, nullable=False, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    timeframe = Column(String, nullable=False, index=True)
+    contributor_name = Column(String, nullable=False, index=True)
+    contributor_version = Column(String, nullable=False)
+    direction = Column(String, nullable=False)
+    market_regime = Column(String, nullable=True)
+    engine_version = Column(String, nullable=False)
+    total_eligible_predictions = Column(Integer, nullable=False, default=0)
+    resolved_predictions = Column(Integer, nullable=False, default=0)
+    correct = Column(Integer, nullable=False, default=0)
+    wrong = Column(Integer, nullable=False, default=0)
+    neutral = Column(Integer, nullable=False, default=0)
+    unresolved_not_due = Column(Integer, nullable=False, default=0)
+    coverage_rate = Column(Float, nullable=True)
+    directional_accuracy = Column(Float, nullable=True)
+    neutral_rate = Column(Float, nullable=True)
+    average_error = Column(Float, nullable=True)
+    median_error = Column(Float, nullable=True)
+    average_actual_return = Column(Float, nullable=True)
+    win_contribution = Column(Float, nullable=True)
+    loss_contribution = Column(Float, nullable=True)
+    sample_size = Column(Integer, nullable=False, default=0)
+    confidence_interval_low = Column(Float, nullable=True)
+    confidence_interval_high = Column(Float, nullable=True)
+    first_prediction_at = Column(DateTime, nullable=True)
+    last_prediction_at = Column(DateTime, nullable=True)
+    data_quality_status = Column(String, nullable=False, default="ok")
+    generated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    generation_version = Column(String, nullable=False, default="1.0.0")
+    fingerprint = Column(String, nullable=True)
+
+
+class DailyQuantSignalPerformance(Base):
+    __tablename__ = "daily_quant_signal_performance"
+    __table_args__ = (
+        UniqueConstraint("date", "symbol", "timeframe", "contributor_name", "contributor_version",
+                          "direction", "market_regime", "engine_version",
+                          name="uq_daily_quant_signal_performance_scope"),
+        Index("ix_daily_quant_signal_performance_contributor", "contributor_name", "contributor_version"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    date = Column(Date, nullable=False, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    timeframe = Column(String, nullable=False, index=True)
+    contributor_name = Column(String, nullable=False, index=True)
+    contributor_version = Column(String, nullable=False)
+    direction = Column(String, nullable=False)
+    market_regime = Column(String, nullable=True)
+    engine_version = Column(String, nullable=False)
+    total_eligible_predictions = Column(Integer, nullable=False, default=0)
+    resolved_predictions = Column(Integer, nullable=False, default=0)
+    correct = Column(Integer, nullable=False, default=0)
+    wrong = Column(Integer, nullable=False, default=0)
+    neutral = Column(Integer, nullable=False, default=0)
+    unresolved_not_due = Column(Integer, nullable=False, default=0)
+    coverage_rate = Column(Float, nullable=True)
+    directional_accuracy = Column(Float, nullable=True)
+    neutral_rate = Column(Float, nullable=True)
+    average_error = Column(Float, nullable=True)
+    median_error = Column(Float, nullable=True)
+    average_actual_return = Column(Float, nullable=True)
+    win_contribution = Column(Float, nullable=True)
+    loss_contribution = Column(Float, nullable=True)
+    sample_size = Column(Integer, nullable=False, default=0)
+    confidence_interval_low = Column(Float, nullable=True)
+    confidence_interval_high = Column(Float, nullable=True)
+    first_prediction_at = Column(DateTime, nullable=True)
+    last_prediction_at = Column(DateTime, nullable=True)
+    data_quality_status = Column(String, nullable=False, default="ok")
+    generated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    generation_version = Column(String, nullable=False, default="1.0.0")
+    fingerprint = Column(String, nullable=True)
+
+
+class DailyV2Performance(Base):
+    """Same shape as the per-contributor tables above, but scoped to the
+    overall Active Drive V2 decision (ActiveDriveDecision/PredictionLedger
+    with source_type ignored) rather than one contributor - the
+    'combined' row for a symbol/timeframe/day."""
+    __tablename__ = "daily_v2_performance"
+    __table_args__ = (
+        UniqueConstraint("date", "symbol", "timeframe", "direction", "market_regime", "engine_version",
+                          name="uq_daily_v2_performance_scope"),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    date = Column(Date, nullable=False, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    timeframe = Column(String, nullable=False, index=True)
+    direction = Column(String, nullable=False)
+    market_regime = Column(String, nullable=True)
+    engine_version = Column(String, nullable=False)
+    total_eligible_predictions = Column(Integer, nullable=False, default=0)
+    resolved_predictions = Column(Integer, nullable=False, default=0)
+    correct = Column(Integer, nullable=False, default=0)
+    wrong = Column(Integer, nullable=False, default=0)
+    neutral = Column(Integer, nullable=False, default=0)
+    unresolved_not_due = Column(Integer, nullable=False, default=0)
+    coverage_rate = Column(Float, nullable=True)
+    directional_accuracy = Column(Float, nullable=True)
+    neutral_rate = Column(Float, nullable=True)
+    average_error = Column(Float, nullable=True)
+    median_error = Column(Float, nullable=True)
+    average_actual_return = Column(Float, nullable=True)
+    win_contribution = Column(Float, nullable=True)
+    loss_contribution = Column(Float, nullable=True)
+    sample_size = Column(Integer, nullable=False, default=0)
+    confidence_interval_low = Column(Float, nullable=True)
+    confidence_interval_high = Column(Float, nullable=True)
+    execution_approved_count = Column(Integer, nullable=False, default=0)
+    execution_blocked_count = Column(Integer, nullable=False, default=0)
+    first_prediction_at = Column(DateTime, nullable=True)
+    last_prediction_at = Column(DateTime, nullable=True)
+    data_quality_status = Column(String, nullable=False, default="ok")
+    generated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    generation_version = Column(String, nullable=False, default="1.0.0")
+    fingerprint = Column(String, nullable=True)

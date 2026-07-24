@@ -724,7 +724,11 @@ async def binance_decision_status(symbol: str | None = None, db: Session = Depen
     this mode, the server/user locks, the kill switch and the real Binance
     account would actually let the order through right now. No paper
     position, ledger or P&L value is read anywhere in this function."""
-    from app.api.prediction import prediction as compute_prediction
+    # GET, read-only (main-purpose consolidation, Stage 2) - reads back
+    # whatever the scheduler's execution cycle or observation loop most
+    # recently persisted for (symbol, timeframe); never computes, matching
+    # this function's own "re-reading that signal" intent above.
+    from app.api.prediction import prediction as read_prediction
     from app.api.portfolio import binance_summary
 
     symbol = (symbol or settings.default_symbol).upper()
@@ -745,7 +749,7 @@ async def binance_decision_status(symbol: str | None = None, db: Session = Depen
         # itself resolves to for an unauthenticated/direct call (see its
         # docstring) - this is not a new fallback, just making explicit
         # what the dependency already does.
-        pred = await compute_prediction(symbol, interval=timeframe, current_user=settings.admin_username)
+        pred = await read_prediction(symbol, interval=timeframe, current_user=settings.admin_username)
     except Exception:
         pred = None
 

@@ -2,14 +2,12 @@
 its exposure through GET /api/prediction/{symbol} for BTCUSDT and ETHUSDT
 across every timeframe the chart offers."""
 
+import asyncio
 import math
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 from app.api import prediction as prediction_module
-from app.api.prediction import router as prediction_router
 from app.quant.forecast import HORIZON_BARS, build_forecast, horizon_bars
 
 INTERVAL_MS = {
@@ -128,12 +126,6 @@ def test_every_supported_interval_has_a_horizon():
 
 # ---------------------------------------------------------- API route level
 
-def _make_client():
-    app = FastAPI()
-    app.include_router(prediction_router)
-    return TestClient(app)
-
-
 @pytest.mark.parametrize("symbol", ["BTCUSDT", "ETHUSDT"])
 @pytest.mark.parametrize("timeframe", ["1m", "3m", "30m", "1h", "4h", "1d", "1w"])
 def test_prediction_route_exposes_consistent_forecast_fields(monkeypatch, symbol, timeframe):
@@ -146,10 +138,12 @@ def test_prediction_route_exposes_consistent_forecast_fields(monkeypatch, symbol
     monkeypatch.setattr(prediction_module.market_intelligence, "get_context", _fake_get_context)
     prediction_module._prediction_cache.clear()
 
-    client = _make_client()
-    resp = client.get(f"/api/prediction/{symbol}", params={"timeframe": timeframe})
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
+    # GET /{symbol} is read-only (main-purpose consolidation, Stage 2) -
+    # compute_and_persist_prediction is the scheduler-facing entry point
+    # that actually triggers a fresh V2 evaluation.
+    body = asyncio.run(prediction_module.compute_and_persist_prediction(
+        symbol, timeframe=timeframe, current_user="forecast-fields-user",
+    ))
 
     # spec'd top-level schema
     for key in (

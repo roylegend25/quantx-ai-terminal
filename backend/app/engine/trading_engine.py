@@ -65,7 +65,7 @@ class TradingEngine:
         from app.db.session import SessionLocal
         from app.decision_engine.profiles import resolve_execution_timeframe
         from app.decision_engine.repository import get_setting
-        from app.api.prediction import prediction as active_drive_prediction
+        from app.api.prediction import compute_and_persist_prediction as active_drive_prediction
 
         setting_db = SessionLocal()
         try:

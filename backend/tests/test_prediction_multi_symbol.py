@@ -10,6 +10,8 @@ wiring - route registration, klines fetch, feature computation, response
 shape - would show up here even though the two feed the same pipeline.
 """
 
+import asyncio
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -118,16 +120,18 @@ def _assert_valid_prediction_response(body: dict, symbol: str, timeframe: str = 
 
 
 def test_prediction_route_returns_valid_structure_for_both_symbols(monkeypatch):
+    """compute_and_persist_prediction (the scheduler-facing entry point,
+    called by trading_engine.py and the observation loop - see
+    app.trading.scheduler) is exercised directly here rather than through
+    GET /{symbol}, since that route is read-only (main-purpose
+    consolidation, Stage 2) and must never itself trigger computation."""
     monkeypatch.setattr(prediction_module.httpx, "AsyncClient", _FakeAsyncClient)
     monkeypatch.setattr(prediction_module.market_intelligence, "get_context", _fake_get_context)
 
-    client = make_client()
-
     for symbol in SYMBOLS:
         prediction_module._prediction_cache.clear()
-        resp = client.get(f"/api/prediction/{symbol}")
-        assert resp.status_code == 200
-        _assert_valid_prediction_response(resp.json(), symbol)
+        body = asyncio.run(prediction_module.compute_and_persist_prediction(symbol, current_user="multi-symbol-user"))
+        _assert_valid_prediction_response(body, symbol)
 
 
 def test_prediction_route_returns_valid_structure_for_every_timeframe(monkeypatch):
@@ -137,14 +141,13 @@ def test_prediction_route_returns_valid_structure_for_every_timeframe(monkeypatc
     monkeypatch.setattr(prediction_module.httpx, "AsyncClient", _FakeAsyncClient)
     monkeypatch.setattr(prediction_module.market_intelligence, "get_context", _fake_get_context)
 
-    client = make_client()
-
     for symbol in SYMBOLS:
         for tf in TIMEFRAMES:
             prediction_module._prediction_cache.clear()
-            resp = client.get(f"/api/prediction/{symbol}", params={"interval": tf})
-            assert resp.status_code == 200, f"{symbol}@{tf} failed: {resp.text}"
-            _assert_valid_prediction_response(resp.json(), symbol, timeframe=tf)
+            body = asyncio.run(prediction_module.compute_and_persist_prediction(
+                symbol, interval=tf, current_user="multi-symbol-user",
+            ))
+            _assert_valid_prediction_response(body, symbol, timeframe=tf)
 
 
 def test_prediction_route_accepts_timeframe_query_param_as_interval_alias(monkeypatch):
@@ -155,21 +158,59 @@ def test_prediction_route_accepts_timeframe_query_param_as_interval_alias(monkey
     monkeypatch.setattr(prediction_module.market_intelligence, "get_context", _fake_get_context)
     prediction_module._prediction_cache.clear()
 
-    client = make_client()
-    resp = client.get("/api/prediction/BTCUSDT", params={"timeframe": "1h"})
-    assert resp.status_code == 200
-    body = resp.json()
+    body = asyncio.run(prediction_module.compute_and_persist_prediction(
+        "BTCUSDT", timeframe="1h", current_user="multi-symbol-user",
+    ))
     assert body["interval"] == "1h"
     assert body["timeframe"] == "1h"
 
 
 def test_prediction_route_supports_3m_timeframe(monkeypatch):
     monkeypatch.setattr(prediction_module.httpx, "AsyncClient", _FakeAsyncClient)
-    client = make_client()
-    resp = client.get("/api/prediction/BTCUSDT", params={"timeframe": "3m"})
     monkeypatch.setattr(prediction_module.market_intelligence, "get_context", _fake_get_context)
+    body = asyncio.run(prediction_module.compute_and_persist_prediction(
+        "BTCUSDT", timeframe="3m", current_user="multi-symbol-user",
+    ))
+    assert body["timeframe"] == "3m"
+
+
+def test_get_route_is_read_only_and_returns_the_persisted_decision(monkeypatch):
+    """GET /{symbol} must never compute - it only reads back whatever
+    compute_and_persist_prediction most recently persisted (main-purpose
+    consolidation, Stage 2)."""
+    monkeypatch.setattr(prediction_module.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr(prediction_module.market_intelligence, "get_context", _fake_get_context)
+    prediction_module._prediction_cache.clear()
+
+    client = make_client()
+
+    # Nothing computed yet for this fresh (symbol, timeframe, user) triple -
+    # GET must return an honest "awaiting first computation" state, not a
+    # fabricated decision and not a 500.
+    resp = client.get("/api/prediction/BTCUSDT", params={"timeframe": "2h"})
     assert resp.status_code == 200
-    assert resp.json()["timeframe"] == "3m"
+    assert resp.json()["status"] == "awaiting_first_computation"
+    assert resp.json()["direction"] is None
+
+    computed = asyncio.run(prediction_module.compute_and_persist_prediction(
+        "BTCUSDT", timeframe="2h", current_user=prediction_module.settings.admin_username,
+    ))
+
+    compute_calls = {"count": 0}
+    original = prediction_module._compute_and_persist_prediction
+
+    async def counting_compute(*args, **kwargs):
+        compute_calls["count"] += 1
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(prediction_module, "_compute_and_persist_prediction", counting_compute)
+
+    resp = client.get("/api/prediction/BTCUSDT", params={"timeframe": "2h"})
+    assert resp.status_code == 200
+    assert compute_calls["count"] == 0, "GET must never call the compute path"
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["prediction"]["decision_id"] == computed["prediction"]["decision_id"]
 
 
 def test_prediction_history_route_returns_a_list_for_both_symbols():

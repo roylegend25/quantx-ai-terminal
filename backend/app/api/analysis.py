@@ -436,7 +436,11 @@ async def start_prediction_cycle(body: NewCycleRequest, current_user: str = Depe
     evaluation = None
     try:
         timeframe = parse_timeframe(body.timeframe).value
-        from app.api.prediction import prediction as active_drive_prediction
+        # POST, not GET - this route explicitly and deliberately triggers one
+        # fresh, rate-limited (60s), idempotency-keyed evaluation, so it uses
+        # compute_and_persist_prediction directly rather than the read-only
+        # GET /api/prediction/{symbol} (main-purpose consolidation, Stage 2).
+        from app.api.prediction import compute_and_persist_prediction as active_drive_prediction
         result = await active_drive_prediction(body.symbol.upper(), timeframe=timeframe, current_user=current_user)
         engine_result = result.get("decision_engine") or {}
         evaluation = {"symbol": body.symbol.upper(), "timeframe": timeframe,

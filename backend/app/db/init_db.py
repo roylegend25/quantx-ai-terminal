@@ -198,6 +198,16 @@ def _migrate_active_drive_edge_columns(bind=engine):
     return _add_missing_columns(bind, "active_drive_decisions", LEGACY_ADDITIVE_COLUMNS["active_drive_decisions"])
 
 
+def _migrate_active_drive_full_response_column(bind=engine):
+    """Main-purpose consolidation (Stage 2): additive/nullable column caching
+    the full GET /api/prediction/{symbol} response at compute time, so that
+    route can read it back instead of recomputing on every request. Existing
+    decisions predate this and keep NULL - the read path falls back to a
+    payload reconstructed from decision_payload for those rows (see
+    app.api.prediction._read_persisted_prediction)."""
+    return _add_missing_columns(bind, "active_drive_decisions", {"full_response_payload": "JSON"})
+
+
 def _migrate_indicator_execution_mode_columns(bind=engine):
     """Point-margin promotion + per-indicator eligibility columns (see
     decision_engine/eligibility.py). Additive/nullable across
@@ -560,6 +570,7 @@ def init_db():
     _migrate_indicator_execution_mode_columns()
     _migrate_execution_provenance_columns()
     _migrate_prediction_ledger_perf_batch_index()
+    _migrate_active_drive_full_response_column()
     upgrade_risk_settings_scope()
     inspector = inspect(engine)
     if "trading_control" in inspector.get_table_names():

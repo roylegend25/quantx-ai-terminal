@@ -22,6 +22,8 @@ STATUS_BACKFILL = {"running": False, "last_run": None, "last_success": None,
                     "last_resolved": 0, "last_error": None, "next_run": None, "last_stats": None}
 STATUS_INDICATOR_PERFORMANCE = {"running": False, "last_run": None, "last_success": None,
                                  "last_evaluated": 0, "last_error": None, "next_run": None}
+STATUS_DAILY_AGGREGATION = {"running": False, "last_run": None, "last_success": None,
+                             "last_scopes_written": 0, "last_error": None, "next_run": None}
 
 
 async def _recent_loop():
@@ -92,6 +94,31 @@ async def _indicator_performance_loop():
         await asyncio.sleep(settings.indicator_performance_interval_seconds)
 
 
+async def _daily_aggregation_loop():
+    global RUNNING
+    while RUNNING:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        STATUS_DAILY_AGGREGATION["last_run"] = now_iso
+        try:
+            from app.analytics.daily_performance import run_daily_aggregation
+            today = datetime.now(timezone.utc).date()
+            yesterday = today - timedelta(days=1)
+            written = 0
+            for target in (yesterday, today):
+                result = await asyncio.to_thread(run_daily_aggregation, target)
+                written += result["scopes_written"]
+            STATUS_DAILY_AGGREGATION.update(
+                last_success=datetime.now(timezone.utc).isoformat(), last_scopes_written=written, last_error=None)
+        except Exception as exc:
+            STATUS_DAILY_AGGREGATION["last_error"] = repr(exc)
+            log_event(logger, message="daily_aggregation_error", level=logging.ERROR,
+                      category="analytics", error=repr(exc))
+        STATUS_DAILY_AGGREGATION["next_run"] = (
+            datetime.now(timezone.utc) + timedelta(seconds=settings.daily_aggregation_interval_seconds)
+        ).isoformat()
+        await asyncio.sleep(settings.daily_aggregation_interval_seconds)
+
+
 def start_scheduler():
     global RUNNING
     if RUNNING:
@@ -100,9 +127,11 @@ def start_scheduler():
     STATUS["running"] = True
     STATUS_BACKFILL["running"] = True
     STATUS_INDICATOR_PERFORMANCE["running"] = True
+    STATUS_DAILY_AGGREGATION["running"] = True
     asyncio.create_task(_recent_loop())
     asyncio.create_task(_backfill_loop())
     asyncio.create_task(_indicator_performance_loop())
+    asyncio.create_task(_daily_aggregation_loop())
 
 
 def stop_scheduler():
@@ -111,6 +140,7 @@ def stop_scheduler():
     STATUS["running"] = False
     STATUS_BACKFILL["running"] = False
     STATUS_INDICATOR_PERFORMANCE["running"] = False
+    STATUS_DAILY_AGGREGATION["running"] = False
 
 
 def status():
@@ -120,6 +150,7 @@ def status():
 
 
 def queue_status():
-    """Full per-queue detail: {"recent": {...}, "historical": {...}, "indicator_performance": {...}}."""
+    """Full per-queue detail: {"recent": {...}, "historical": {...}, "indicator_performance": {...}, "daily_aggregation": {...}}."""
     return {"recent": dict(STATUS), "historical": dict(STATUS_BACKFILL),
-            "indicator_performance": dict(STATUS_INDICATOR_PERFORMANCE)}
+            "indicator_performance": dict(STATUS_INDICATOR_PERFORMANCE),
+            "daily_aggregation": dict(STATUS_DAILY_AGGREGATION)}
