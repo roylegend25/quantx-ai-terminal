@@ -476,13 +476,20 @@ def _migrate_performance_indexes():
     """Composite index for repository.performance()'s exact evidence-bucket
     filter plus the resolver's deadline scan. create_all only creates these
     on fresh databases; existing production DBs need them added here (a
-    one-time ~4s build at current table size, no-op afterwards)."""
+    one-time ~4s build at current table size, no-op afterwards).
+
+    The deadline-scan half of this used to also (re)create
+    ix_prediction_ledger_deadline - byte-for-byte the same single-column
+    index resolution_deadline's column-level index=True already produces as
+    ix_prediction_ledger_resolution_deadline (see models.py). That made this
+    idempotent migration self-defeating: every restart recreated the exact
+    duplicate a Stage 2 performance pass had just dropped from a live,
+    300k+ row, continuously-written table. Removed rather than left as a
+    silent duplicate-index generator."""
     with engine.begin() as conn:
         conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_prediction_ledger_perf_bucket ON prediction_ledger "
             "(user_id, engine, source_name, source_version, symbol, timeframe, market_regime)"))
-        conn.execute(text(
-            "CREATE INDEX IF NOT EXISTS ix_prediction_ledger_deadline ON prediction_ledger (resolution_deadline)"))
 
 
 def _migrate_lifecycle_status_column():

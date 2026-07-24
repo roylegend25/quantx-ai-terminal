@@ -6,6 +6,21 @@ import pytest
 from app.deployment.clock_preflight import evaluate_clock_preflight
 from app.exchanges.binance_errors import BinanceTimestampError, BinanceTimestampUnsafe
 from app.exchanges.binance_time import BinanceProduct, BinanceTimeService
+import app.exchanges.binance_futures_client as binance_futures_client
+
+
+@pytest.fixture(autouse=True)
+def _reset_binance_client_pool():
+    """binance_futures_client pools one httpx.AsyncClient module-wide (Stage 2
+    performance fix - was a fresh client, and a fresh TLS handshake, per call).
+    Tests below monkeypatch httpx.AsyncClient per-test expecting a fresh fake
+    client (and its own response queue) to be constructed for that test; without
+    resetting the pool first, a later test would reuse an earlier test's cached
+    (and already response-exhausted) fake client instead of its own monkeypatch
+    ever being consulted."""
+    binance_futures_client._reset_for_tests()
+    yield
+    binance_futures_client._reset_for_tests()
 
 
 def run(coro):

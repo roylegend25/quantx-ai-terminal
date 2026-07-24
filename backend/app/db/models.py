@@ -367,7 +367,13 @@ class PredictionLedger(Base):
                        # (user_id, engine, symbol, timeframe, market_regime), sort by
                        # the joined PredictionResolution.resolved_at.
                        Index("ix_prediction_ledger_perf_batch", "user_id", "engine", "symbol", "timeframe", "market_regime"),
-                       Index("ix_prediction_ledger_deadline", "resolution_deadline"),
+                       # resolution_deadline itself is already indexed via the column's
+                       # index=True below (ix_prediction_ledger_resolution_deadline) -
+                       # this used to also declare a second, byte-for-byte identical
+                       # single-column index (ix_prediction_ledger_deadline) here, so
+                       # every write to this 300k+ row, continuously-growing table paid
+                       # for maintaining the same B-tree twice. Dropped as part of the
+                       # Stage 2 performance fix (see scripts/drop_duplicate_prediction_ledger_index.py).
                        # Two-queue claim pattern (app.decision_engine.resolver): the
                        # recent-priority and historical-backfill queues both filter
                        # on lifecycle_status + resolution_deadline together.

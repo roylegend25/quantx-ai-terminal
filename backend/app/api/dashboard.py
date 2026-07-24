@@ -15,31 +15,79 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
 BINANCE_FAPI = "https://fapi.binance.com"
 
+# Reused across requests instead of opening (and TLS-handshaking) a fresh
+# connection on every dashboard poll - the WS market loop (app.api.ws) keeps
+# a similarly long-lived client for the same reason.
+_client: httpx.AsyncClient | None = None
+
+def _http_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(timeout=15)
+    return _client
+
+# Short single-flight cache: the dashboard is polled every ~10s from
+# potentially several open tabs, and app.api.ws already refreshes this same
+# ticker/funding/OI data once a second for live price streaming. This cache
+# stops each dashboard poll from independently re-fetching identical data
+# from Binance - concurrent callers within the TTL window share one
+# in-flight fetch instead of one each (same pattern as
+# app.api.prediction_results._TTLCache, adapted to asyncio.Lock since this
+# path awaits network I/O rather than doing sync DB work).
+_SNAPSHOT_TTL_SECONDS = 2.0
+_snapshot_cache: dict[str, tuple[float, dict]] = {}
+_snapshot_locks: dict[str, asyncio.Lock] = {}
+
+def _reset_for_tests() -> None:
+    """Test-only: drop the pooled client and cache so a test's monkeypatched
+    httpx.AsyncClient is actually exercised instead of a previous test's
+    cached client/data being reused."""
+    global _client
+    _client = None
+    _snapshot_cache.clear()
+    _snapshot_locks.clear()
+
 async def symbol_snapshot(client: httpx.AsyncClient, symbol: str):
-    # These 3 calls are independent read-only GETs against different
-    # endpoints - previously sequential (Stage 1 performance audit measured
-    # ~1.7s for 6 total across both symbols), now concurrent.
-    ticker, funding, oi = await asyncio.gather(
-        client.get(f"{BINANCE_FAPI}/fapi/v1/ticker/24hr", params={"symbol": symbol}),
-        client.get(f"{BINANCE_FAPI}/fapi/v1/premiumIndex", params={"symbol": symbol}),
-        client.get(f"{BINANCE_FAPI}/fapi/v1/openInterest", params={"symbol": symbol}),
-    )
+    now = asyncio.get_event_loop().time()
+    cached = _snapshot_cache.get(symbol)
+    if cached and (now - cached[0]) < _SNAPSHOT_TTL_SECONDS:
+        return cached[1]
 
-    ticker.raise_for_status()
-    funding.raise_for_status()
-    oi.raise_for_status()
+    lock = _snapshot_locks.setdefault(symbol, asyncio.Lock())
+    async with lock:
+        # Re-check after acquiring the lock: a caller that waited behind an
+        # in-flight fetch should reuse its result, not start a second one.
+        cached = _snapshot_cache.get(symbol)
+        now = asyncio.get_event_loop().time()
+        if cached and (now - cached[0]) < _SNAPSHOT_TTL_SECONDS:
+            return cached[1]
 
-    return {
-        "symbol": symbol,
-        "ticker": ticker.json(),
-        "funding": funding.json(),
-        "open_interest": oi.json(),
-    }
+        # These 3 calls are independent read-only GETs against different
+        # endpoints - previously sequential (Stage 1 performance audit
+        # measured ~1.7s for 6 total across both symbols), now concurrent.
+        ticker, funding, oi = await asyncio.gather(
+            client.get(f"{BINANCE_FAPI}/fapi/v1/ticker/24hr", params={"symbol": symbol}),
+            client.get(f"{BINANCE_FAPI}/fapi/v1/premiumIndex", params={"symbol": symbol}),
+            client.get(f"{BINANCE_FAPI}/fapi/v1/openInterest", params={"symbol": symbol}),
+        )
+
+        ticker.raise_for_status()
+        funding.raise_for_status()
+        oi.raise_for_status()
+
+        result = {
+            "symbol": symbol,
+            "ticker": ticker.json(),
+            "funding": funding.json(),
+            "open_interest": oi.json(),
+        }
+        _snapshot_cache[symbol] = (asyncio.get_event_loop().time(), result)
+        return result
 
 @router.get("")
 async def dashboard():
-    async with httpx.AsyncClient(timeout=15) as client:
-        btc, eth = await asyncio.gather(symbol_snapshot(client, "BTCUSDT"), symbol_snapshot(client, "ETHUSDT"))
+    client = _http_client()
+    btc, eth = await asyncio.gather(symbol_snapshot(client, "BTCUSDT"), symbol_snapshot(client, "ETHUSDT"))
 
     risk = settings_repository.get_settings(scope="paper")
 

@@ -13,6 +13,21 @@ export type Candle = {
 };
 
 const POLL_MS = 10000;
+// Stage 2 performance fix: dashboard/prediction/candles (loadPrimary) are
+// chart-critical and stay on the fast cadence above. Everything else
+// (loadSecondary - orderbook, portfolio, execution status, model center,
+// exchange status, lab/data-engine panels, ~20 endpoints total) is not
+// needed for the chart to render and was previously fetched on the same
+// 10s tick, both inflating request volume and gating the dashboard's
+// `loading` flag on whichever of those ~20 calls was slowest - which is
+// why the dashboard could keep showing "loading" long after prices and
+// the chart were already visible. It now polls independently, 3x slower.
+const SECONDARY_POLL_MS = 30000;
+// While the tab is hidden, both loops back off further instead of
+// continuing to poll a screen nobody is looking at (mirrors the pattern
+// already proven in usePolledResource.ts) - and catch up immediately on
+// becoming visible again rather than waiting out the slow interval.
+const HIDDEN_POLL_MULTIPLIER = 6;
 
 /**
  * Like useState, but skips the update (and the resulting re-render of every
@@ -96,9 +111,14 @@ export function useAppData(authed: boolean | null) {
 
   const toastTimer = useRef<number | null>(null);
   // Guards against out-of-order network responses: if the user switches
-  // symbol/interval (or the 10s poll fires) again before an in-flight load()
+  // symbol/interval (or a poll fires) again before an in-flight load
   // resolves, the older response must not clobber state with stale data.
-  const loadRequestId = useRef(0);
+  // Primary (chart-critical) and secondary (everything else) now run on
+  // independent timers, so they each need their own staleness guard - a
+  // secondary-batch response landing late must not be discarded just
+  // because a primary tick happened to fire in between, and vice versa.
+  const primaryRequestId = useRef(0);
+  const secondaryRequestId = useRef(0);
   const predictionAbort = useRef<AbortController | null>(null);
 
   const showToast = useCallback((message: string, tone: "success" | "error" = "success") => {
@@ -108,9 +128,13 @@ export function useAppData(authed: boolean | null) {
     toastTimer.current = window.setTimeout(() => setToast(""), 3000);
   }, []);
 
-  const load = useCallback(async () => {
-    const requestId = ++loadRequestId.current;
-    const isStale = () => loadRequestId.current !== requestId;
+  // Chart-critical: dashboard, prediction, candles. `loading` reflects only
+  // this batch now, so the dashboard stops showing "loading" once prices
+  // and the chart are actually visible, instead of waiting on the much
+  // larger secondary batch below.
+  const loadPrimary = useCallback(async () => {
+    const requestId = ++primaryRequestId.current;
+    const isStale = () => primaryRequestId.current !== requestId;
     predictionAbort.current?.abort();
     const controller = new AbortController();
     predictionAbort.current = controller;
@@ -160,85 +184,102 @@ export function useAppData(authed: boolean | null) {
         }
       );
       await Promise.all([dashP, predP, candleP]);
-      if (isStale()) return;
-
-      const [ob, tr, pf, pos, hist, ctx, tf, weights, bot, sys, stress, exStatus, exRisk, execStatus, execMetrics, mlModels, mlChampion, mlExperiments, mlDrift, mlChampionStatus] =
-        await Promise.all([
-          api.orderbook(symbol, 10).catch(() => null),
-          api.trades(symbol, 20).catch(() => ({ trades: [] })),
-          api.portfolio().catch(() => null),
-          api.positions().catch(() => ({ positions: [] })),
-          api.history().catch(() => ({ trades: [] })),
-          api.marketContext(symbol).catch(() => null),
-          api.timeframes(symbol).catch(() => null),
-          api.strategyWeights().catch(() => null),
-          api.botStatus().catch(() => null),
-          api.systemStatus().catch(() => null),
-          api.stressReport().catch(() => null),
-          api.exchangeStatus().catch(() => null),
-          api.exchangeRiskCheck().catch(() => null),
-          api.executionStatus().catch(() => null),
-          api.executionMetrics().catch(() => null),
-          api.modelsList().catch(() => null),
-          api.modelsChampion().catch(() => null),
-          api.modelsExperiments().catch(() => null),
-          api.modelsDrift().catch(() => null),
-          api.mlChampion().catch(() => null),
-        ]);
-
-      if (isStale()) return;
-
-      // A failed/empty fetch keeps the last known-good book on screen
-      // (mirrors useBinanceAccount's rate-limit handling) - orderbookUpdatedAt
-      // only advances on an actual successful read, so staleness is always
-      // measured from real data, never reset by a failure.
-      if (ob) { setOrderbook(ob); setOrderbookUpdatedAt(Date.now()); }
-      setTrades(tr?.trades || []);
-      setPortfolio(pf);
-      setPositions(pos?.positions || []);
-      setHistory(hist?.trades || []);
-      setMarketContext(ctx);
-      setTimeframesConsensus(tf);
-      setStrategyWeights(weights);
-      setBotStatus(bot);
-      setSystemStatus(sys);
-      setStressReport(stress);
-      setExchangeStatus(exStatus);
-      setExchangeRiskCheck(exRisk);
-      setExecutionStatus(execStatus);
-      setExecutionMetrics(execMetrics);
-      setModelCenter({
-        models: mlModels?.models || [],
-        champion: mlChampion?.champion || null,
-        experiments: mlExperiments?.experiments || [],
-        drift: mlDrift?.drift || {},
-      });
-      setChampionStatus(mlChampionStatus);
-
-      const connectedExchange = Object.entries(exStatus?.exchanges || {}).find(
-        ([, v]: [string, any]) => v?.connected && v?.configured
-      )?.[0];
-
-      if (connectedExchange) {
-        const [bal, epos, orders] = await Promise.all([
-          api.exchangeBalances(connectedExchange).catch(() => null),
-          api.exchangePositions(connectedExchange).catch(() => null),
-          api.exchangeOpenOrders(connectedExchange).catch(() => null),
-        ]);
-        setExchangeBalances(bal?.balances || []);
-        setExchangePositions(epos?.positions || []);
-        setExchangeOpenOrders(orders?.open_orders || []);
-      } else {
-        setExchangeBalances([]);
-        setExchangePositions([]);
-        setExchangeOpenOrders([]);
-      }
-
-      setLastUpdated(new Date());
     } finally {
       if (!isStale()) setLoading(false);
     }
   }, [symbol, interval]);
+
+  // Everything else: order book, portfolio/positions, execution status,
+  // model center, exchange status, lab/data-engine panels. None of this
+  // blocks the chart or the `loading` flag - it fills in on its own,
+  // slower cadence (see SECONDARY_POLL_MS).
+  const loadSecondary = useCallback(async () => {
+    const requestId = ++secondaryRequestId.current;
+    const isStale = () => secondaryRequestId.current !== requestId;
+
+    const [ob, tr, pf, pos, hist, ctx, tf, weights, bot, sys, stress, exStatus, exRisk, execStatus, execMetrics, mlModels, mlChampion, mlExperiments, mlDrift, mlChampionStatus] =
+      await Promise.all([
+        api.orderbook(symbol, 10).catch(() => null),
+        api.trades(symbol, 20).catch(() => ({ trades: [] })),
+        api.portfolio().catch(() => null),
+        api.positions().catch(() => ({ positions: [] })),
+        api.history().catch(() => ({ trades: [] })),
+        api.marketContext(symbol).catch(() => null),
+        api.timeframes(symbol).catch(() => null),
+        api.strategyWeights().catch(() => null),
+        api.botStatus().catch(() => null),
+        api.systemStatus().catch(() => null),
+        api.stressReport().catch(() => null),
+        api.exchangeStatus().catch(() => null),
+        api.exchangeRiskCheck().catch(() => null),
+        api.executionStatus().catch(() => null),
+        api.executionMetrics().catch(() => null),
+        api.modelsList().catch(() => null),
+        api.modelsChampion().catch(() => null),
+        api.modelsExperiments().catch(() => null),
+        api.modelsDrift().catch(() => null),
+        api.mlChampion().catch(() => null),
+      ]);
+
+    if (isStale()) return;
+
+    // A failed/empty fetch keeps the last known-good book on screen
+    // (mirrors useBinanceAccount's rate-limit handling) - orderbookUpdatedAt
+    // only advances on an actual successful read, so staleness is always
+    // measured from real data, never reset by a failure.
+    if (ob) { setOrderbook(ob); setOrderbookUpdatedAt(Date.now()); }
+    setTrades(tr?.trades || []);
+    setPortfolio(pf);
+    setPositions(pos?.positions || []);
+    setHistory(hist?.trades || []);
+    setMarketContext(ctx);
+    setTimeframesConsensus(tf);
+    setStrategyWeights(weights);
+    setBotStatus(bot);
+    setSystemStatus(sys);
+    setStressReport(stress);
+    setExchangeStatus(exStatus);
+    setExchangeRiskCheck(exRisk);
+    setExecutionStatus(execStatus);
+    setExecutionMetrics(execMetrics);
+    setModelCenter({
+      models: mlModels?.models || [],
+      champion: mlChampion?.champion || null,
+      experiments: mlExperiments?.experiments || [],
+      drift: mlDrift?.drift || {},
+    });
+    setChampionStatus(mlChampionStatus);
+
+    const connectedExchange = Object.entries(exStatus?.exchanges || {}).find(
+      ([, v]: [string, any]) => v?.connected && v?.configured
+    )?.[0];
+
+    if (connectedExchange) {
+      const [bal, epos, orders] = await Promise.all([
+        api.exchangeBalances(connectedExchange).catch(() => null),
+        api.exchangePositions(connectedExchange).catch(() => null),
+        api.exchangeOpenOrders(connectedExchange).catch(() => null),
+      ]);
+      if (isStale()) return;
+      setExchangeBalances(bal?.balances || []);
+      setExchangePositions(epos?.positions || []);
+      setExchangeOpenOrders(orders?.open_orders || []);
+    } else {
+      setExchangeBalances([]);
+      setExchangePositions([]);
+      setExchangeOpenOrders([]);
+    }
+
+    setLastUpdated(new Date());
+  }, [symbol]);
+
+  // Kept for the explicit post-mutation refresh call sites below (opening/
+  // closing a paper trade etc. want both batches refreshed immediately,
+  // same as before this split) - not used by the poll loop itself anymore.
+  const load = useCallback(async () => {
+    await loadPrimary();
+    await loadSecondary();
+  }, [loadPrimary, loadSecondary]);
 
   useEffect(() => {
     try { localStorage.setItem(TIMEFRAME_STORAGE_KEY, interval); } catch { /* unavailable storage */ }
@@ -515,9 +556,68 @@ export function useAppData(authed: boolean | null) {
 
   useEffect(() => {
     if (!authed) return;
-    load();
-    const id = window.setInterval(load, POLL_MS);
-    return () => { window.clearInterval(id); predictionAbort.current?.abort(); };
+    let cancelled = false;
+    let primaryTimer: number | null = null;
+    let secondaryTimer: number | null = null;
+    // Bumped every time the loops are (re)started - a visibility flip while
+    // a fetch is already in flight must not leave that older call's
+    // post-resolve continuation free to schedule a second, uncoordinated
+    // timer chain running alongside the new one forever. Each recursive
+    // step only re-arms the timer if it's still the current generation.
+    let primaryGen = 0;
+    let secondaryGen = 0;
+
+    const schedulePrimary = (gen: number) => {
+      if (cancelled || gen !== primaryGen) return;
+      const delay = document.visibilityState === "hidden" ? POLL_MS * HIDDEN_POLL_MULTIPLIER : POLL_MS;
+      primaryTimer = window.setTimeout(async () => {
+        if (cancelled || gen !== primaryGen) return;
+        await loadPrimary();
+        schedulePrimary(gen);
+      }, delay);
+    };
+    const scheduleSecondary = (gen: number) => {
+      if (cancelled || gen !== secondaryGen) return;
+      const delay = document.visibilityState === "hidden" ? SECONDARY_POLL_MS * HIDDEN_POLL_MULTIPLIER : SECONDARY_POLL_MS;
+      secondaryTimer = window.setTimeout(async () => {
+        if (cancelled || gen !== secondaryGen) return;
+        await loadSecondary();
+        scheduleSecondary(gen);
+      }, delay);
+    };
+
+    const restartPrimary = () => {
+      if (primaryTimer != null) window.clearTimeout(primaryTimer);
+      const gen = ++primaryGen;
+      loadPrimary().then(() => { if (!cancelled) schedulePrimary(gen); });
+    };
+    const restartSecondary = () => {
+      if (secondaryTimer != null) window.clearTimeout(secondaryTimer);
+      const gen = ++secondaryGen;
+      loadSecondary().then(() => { if (!cancelled) scheduleSecondary(gen); });
+    };
+
+    restartPrimary();
+    restartSecondary();
+
+    // Wake both loops immediately on becoming visible again instead of
+    // waiting out whatever's left of the slow hidden-tab interval.
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible" || cancelled) return;
+      restartPrimary();
+      restartSecondary();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      cancelled = true;
+      primaryGen += 1;
+      secondaryGen += 1;
+      if (primaryTimer != null) window.clearTimeout(primaryTimer);
+      if (secondaryTimer != null) window.clearTimeout(secondaryTimer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      predictionAbort.current?.abort();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, interval, authed]);
 

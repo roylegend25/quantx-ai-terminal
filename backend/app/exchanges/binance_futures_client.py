@@ -64,6 +64,32 @@ _position_mode_cache: dict[str, tuple[float, bool]] = {}
 EXCHANGE_FILTERS_TTL_SECONDS = 3600
 logger = get_logger("quantx.binance_futures")
 
+# Stage 2 performance fix: every Binance REST call used to open a fresh
+# httpx.AsyncClient (new TCP+TLS handshake every time - see _request below).
+# BinanceFuturesClient itself is constructed fresh per request at most call
+# sites (app/api/portfolio.py, app/trading/execution_router.py), so a
+# per-instance pooled client wouldn't help; the pool has to live at module
+# scope. All instances share one connection pool now, same pattern already
+# proven in app/api/dashboard.py's _http_client(). Every call site uses the
+# same default timeout (15s - checked: no caller overrides it), so one
+# shared client's fixed timeout does not change behavior for any of them.
+_client: httpx.AsyncClient | None = None
+
+
+def _http_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(timeout=15.0)
+    return _client
+
+
+def _reset_for_tests() -> None:
+    """Test-only: drop the pooled client so a test's monkeypatched
+    httpx.AsyncClient is actually exercised instead of a previous test's
+    cached client being reused."""
+    global _client
+    _client = None
+
 
 class LiveTradingLocked(RuntimeError):
     """Raised when an order-capable production (non-testnet) client is
@@ -211,8 +237,8 @@ class BinanceFuturesClient:
         headers = {"X-MBX-APIKEY": self._api_key} if signed else {}
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                r = await client.request(method, f"{self.base_url}{path}", params=query, headers=headers)
+            client = _http_client()
+            r = await client.request(method, f"{self.base_url}{path}", params=query, headers=headers)
         except (httpx.TimeoutException, httpx.TransportError) as e:
             raise BinanceNetworkError(f"Binance request failed: {type(e).__name__}") from e
 
